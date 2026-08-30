@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../map/map_screen.dart' show startFailureMessage;
+import '../theme/tokens.dart';
+import '../tracking/permissions.dart';
 import '../trip/gated_ticker.dart';
 import '../trip/trip_controller.dart';
 import '../valhalla/models.dart';
@@ -8,7 +11,7 @@ import '../valhalla/models.dart';
 /// one-tap "Démarrer" pill — both drive the same shared [TripController],
 /// see trip_controller.dart) large, or a minimal start affordance when
 /// idle. Kept deliberately thin: all trip lifecycle logic lives in
-/// [TripController]/[SessionController].
+/// [TripController] and, while recording, in the foreground service.
 class SessionScreen extends ConsumerStatefulWidget {
   const SessionScreen({super.key});
 
@@ -17,18 +20,15 @@ class SessionScreen extends ConsumerStatefulWidget {
 }
 
 class _SessionScreenState extends ConsumerState<SessionScreen> {
-  RoutingProfile _profile = RoutingProfile.walk;
-
-  /// Local UI tick, gated to only run while recording (see [GatedTicker]):
-  /// TripController only notifies on start/stop, not per GPS fix (see
-  /// trip_controller.dart), so the live distance/duration numbers need
-  /// their own refresh — but only while there's actually a trip to show.
+  /// Local UI tick, gated to only run while recording (see [GatedTicker]).
+  /// The service publishes a snapshot every couple of seconds, but the
+  /// duration has to advance every second — and the tick is also where the
+  /// hardware step counter is sampled (see [TripController.tick]).
   late final _ticker = GatedTicker(onTick: () {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    ref.read(tripControllerProvider).tick();
+    setState(() {});
   });
-
-  static const String _kPositionUnavailableMessage =
-      'Position indisponible — activez la localisation ou définissez un départ manuel.';
 
   @override
   void dispose() {
@@ -38,10 +38,9 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
 
   Future<void> _start() async {
     final trip = ref.read(tripControllerProvider);
-    final started = await trip.startTrip(profile: _profile);
-    if (!started && mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text(_kPositionUnavailableMessage)));
+    if (!await trip.startTrip(profile: trip.profile) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(startFailureMessage(trip.lastOutcome))));
     }
   }
 
@@ -64,8 +63,6 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   Widget build(BuildContext context) {
     final trip = ref.watch(tripControllerProvider);
     _ticker.sync(trip.isRecording);
-    final session = trip.sessionController;
-    final distance = session.recorder?.distanceKm ?? 0.0;
     final isRecording = trip.isRecording;
     final textTheme = Theme.of(context).textTheme;
 
@@ -88,12 +85,9 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     icon: Icon(Icons.directions_bike),
                   ),
                 ],
-                selected: {_profile},
-                onSelectionChanged: (s) {
-                  if (!isRecording) {
-                    setState(() => _profile = s.first);
-                  }
-                },
+                selected: {trip.profile},
+                onSelectionChanged:
+                    isRecording ? null : (s) => trip.setProfile(s.first),
               ),
             ),
             Expanded(
@@ -108,17 +102,25 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     ),
                   // Distance display — Bricolage Grotesque, "gros chiffres".
                   Text(
-                    '${distance.toStringAsFixed(2)} km',
+                    '${trip.distanceKm.toStringAsFixed(2)} km',
                     style: textTheme.displayMedium,
                   ),
                   const SizedBox(height: 8),
-                  // Duration display.
                   Text(
-                    _formatDuration(session.elapsed),
+                    _formatDuration(trip.elapsed),
                     style: textTheme.headlineSmall,
                   ),
+                  const SizedBox(height: AppSpacing.sm),
+                  Text('${trip.steps} pas', style: textTheme.titleMedium),
+                  if (trip.needsReview)
+                    Padding(
+                      padding: const EdgeInsets.only(top: AppSpacing.xs),
+                      child: Text(
+                        'À vérifier — distance sans pas détectés',
+                        style: textTheme.labelSmall,
+                      ),
+                    ),
                   const SizedBox(height: 32),
-                  // Start/Stop button.
                   ElevatedButton(
                     onPressed: isRecording ? _stop : _start,
                     style: isRecording
@@ -132,14 +134,17 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 ],
               ),
             ),
-            // UI note about keeping app open.
             Padding(
               padding: const EdgeInsets.all(16),
               child: Card(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Text(
-                    'Gardez l\'app ouverte pendant la session (v1)',
+                    trip.isRecording &&
+                            trip.trackingMode == TrackingMode.foregroundOnly
+                        ? 'Le suivi s\'arrêtera si l\'écran s\'éteint.'
+                        : 'Le trajet continue écran éteint, même si vous '
+                            'quittez l\'application.',
                     style: textTheme.bodySmall,
                     textAlign: TextAlign.center,
                   ),

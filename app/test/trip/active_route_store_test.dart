@@ -49,14 +49,14 @@ void main() {
     expect(restored!.destination, const (46.54, 6.65));
     expect(restored.departure, const (46.52, 6.63));
     expect(restored.profile, RoutingProfile.bike);
-    expect(restored.route.distanceKm, closeTo(2.4, 1e-9));
-    expect(restored.route.duration, const Duration(minutes: 32));
-    expect(restored.route.shape, hasLength(3));
-    expect(restored.route.shape.first.$1, closeTo(46.52, 1e-9));
-    expect(restored.route.shape.last.$2, closeTo(6.65, 1e-9));
-    expect(restored.route.maneuvers, hasLength(2));
-    expect(restored.route.maneuvers.first.instruction, 'Prenez à gauche');
-    expect(restored.route.maneuvers.last.beginShapeIndex, 1);
+    expect(restored.route!.distanceKm, closeTo(2.4, 1e-9));
+    expect(restored.route!.duration, const Duration(minutes: 32));
+    expect(restored.route!.shape, hasLength(3));
+    expect(restored.route!.shape.first.$1, closeTo(46.52, 1e-9));
+    expect(restored.route!.shape.last.$2, closeTo(6.65, 1e-9));
+    expect(restored.route!.maneuvers, hasLength(2));
+    expect(restored.route!.maneuvers.first.instruction, 'Prenez à gauche');
+    expect(restored.route!.maneuvers.last.beginShapeIndex, 1);
   });
 
   test('departure is optional (live GPS departure is not pinned)', () async {
@@ -88,11 +88,30 @@ void main() {
     expect(await store().load(), isNull);
   });
 
-  test('a truncated/half-written file loads as null instead of throwing', () async {
+  test('a document with nothing planned in it loads as null', () async {
     final file = File('${dir.path}/active_route.json');
-    // Valid JSON, but missing the fields the model needs.
     await file.writeAsString(jsonEncode({'profile': 'walk'}));
     expect(await store().load(), isNull);
+  });
+
+  test('a departure picked before any destination is persisted on its own',
+      () async {
+    // The map lets the user pin a custom departure first; losing it on a tab
+    // switch is the same bug as losing the route, just smaller.
+    await store().save(const ActiveRoute(
+        departure: (46.52, 6.63), profile: RoutingProfile.walk));
+
+    final restored = await store().load();
+    expect(restored!.departure, const (46.52, 6.63));
+    expect(restored.route, isNull);
+    expect(restored.destination, isNull);
+  });
+
+  test('saving an empty plan removes the document', () async {
+    final s = store();
+    await s.save(_activeRoute());
+    await s.save(const ActiveRoute(profile: RoutingProfile.walk));
+    expect(await s.load(), isNull);
   });
 
   test('save creates the parent directory when it does not exist yet', () async {

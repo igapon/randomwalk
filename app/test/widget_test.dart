@@ -1,8 +1,6 @@
-// Basic smoke test for the RandomWalk app shell.
-//
-// Verifies that the app boots and the three-tab bottom navigation
-// (Carte / Session / Classement) is present. Placeholder screens are
-// replaced by later tasks (5/8, 9, 10).
+// Shell-level tests: the three-tab navigation, the fact that screens stay
+// mounted across tab switches (IndexedStack), and the « Trajet interrompu »
+// recovery banner that a cold start after a process kill puts up.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,63 +8,198 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:randomwalk/main.dart';
 import 'package:randomwalk/map/map_screen.dart';
 import 'package:randomwalk/theme/theme.dart';
+import 'package:randomwalk/tracking/permissions.dart';
+import 'package:randomwalk/tracking/steps.dart';
+import 'package:randomwalk/tracking/trip_snapshot.dart';
+import 'package:randomwalk/trip/trip_controller.dart';
+import 'package:randomwalk/valhalla/models.dart';
+
+import 'support/trip_fakes.dart';
 
 void main() {
-  // Test 1: Verify the real wiring types
+  late FakeTripTracker tracker;
+  late FakeTotalDistanceStore totals;
+
+  TripController buildTrip() => TripController(
+        tracker: tracker,
+        routeStore: MemoryRouteStore(),
+        totalStore: totals,
+        ensurePermissions: () async => const TripPermissions(
+            outcome: TripPermissionOutcome.ready,
+            mode: TrackingMode.background),
+        createStepCounter: (seed) =>
+            SessionStepCounter(FakeStepSensor(), seed: seed),
+        persistProfile: (_) async {},
+        loadProfile: () async => null,
+      );
+
+  Future<TripController> pumpShell(WidgetTester tester,
+      {List<Widget>? screens}) async {
+    final trip = buildTrip();
+    await trip.restore();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [tripControllerProvider.overrideWith((ref) => trip)],
+        child: MaterialApp(
+          title: 'RandomWalk Test',
+          theme: AppTheme.light,
+          home: HomeShell(screensOverride: screens),
+        ),
+      ),
+    );
+    return trip;
+  }
+
+  setUp(() {
+    tracker = FakeTripTracker();
+    totals = FakeTotalDistanceStore();
+  });
+
   test('HomeShell.defaultScreens wiring is correct', () {
     expect(HomeShell.defaultScreens, hasLength(3));
     expect(HomeShell.defaultScreens[0], isA<MapScreen>());
   });
 
-  testWidgets('RandomWalkApp shows the three-tab shell', (WidgetTester tester) async {
-    // Create test markers for each screen
-    final testScreens = <Widget>[
+  testWidgets('RandomWalkApp shows the three-tab shell', (tester) async {
+    await pumpShell(tester, screens: <Widget>[
       const Center(child: Text('Tab0Marker')),
       const Center(child: Text('Tab1Marker')),
       const Center(child: Text('Tab2Marker')),
-    ];
+    ]);
 
-    // Pump the REAL HomeShell with test screen overrides
-    await tester.pumpWidget(
-      ProviderScope(
-        child: MaterialApp(
-          title: 'RandomWalk Test',
-          theme: AppTheme.light,
-          home: HomeShell(screensOverride: testScreens),
-        ),
-      ),
-    );
+    // IndexedStack keeps every screen in the tree; only the selected one is
+    // painted, so visibility — not existence — is what identifies the tab.
+    expect(find.text('Tab0Marker', skipOffstage: true), findsOneWidget);
+    expect(find.text('Tab1Marker', skipOffstage: true), findsNothing);
+    expect(find.text('Tab2Marker', skipOffstage: true), findsNothing);
 
-    // Verify tab 0 is selected and shows the correct marker
-    expect(find.text('Tab0Marker'), findsOneWidget);
-    expect(find.text('Tab1Marker'), findsNothing);
-    expect(find.text('Tab2Marker'), findsNothing);
-
-    // Verify the bottom navigation bar shows all three tabs
     expect(find.text('Carte'), findsOneWidget);
     expect(find.text('Session'), findsOneWidget);
     expect(find.text('Classement'), findsOneWidget);
 
-    // Tap Session tab and verify it shows
     await tester.tap(find.text('Session'));
     await tester.pumpAndSettle();
-    expect(find.text('Tab1Marker'), findsOneWidget);
-    expect(find.text('Tab0Marker'), findsNothing);
-    expect(find.text('Tab2Marker'), findsNothing);
+    expect(find.text('Tab1Marker', skipOffstage: true), findsOneWidget);
+    expect(find.text('Tab0Marker', skipOffstage: true), findsNothing);
 
-    // Tap Classement tab and verify it shows
     await tester.tap(find.text('Classement'));
     await tester.pumpAndSettle();
-    expect(find.text('Tab2Marker'), findsOneWidget);
-    expect(find.text('Tab0Marker'), findsNothing);
-    expect(find.text('Tab1Marker'), findsNothing);
+    expect(find.text('Tab2Marker', skipOffstage: true), findsOneWidget);
 
-    // Tap Carte tab and verify it shows again
     await tester.tap(find.text('Carte'));
     await tester.pumpAndSettle();
-    expect(find.text('Tab0Marker'), findsOneWidget);
-    expect(find.text('Tab1Marker'), findsNothing);
-    expect(find.text('Tab2Marker'), findsNothing);
+    expect(find.text('Tab0Marker', skipOffstage: true), findsOneWidget);
+  });
+
+  testWidgets('screens are kept alive across tab switches', (tester) async {
+    await pumpShell(tester, screens: const <Widget>[
+      _CountingScreen(label: 'Carte'),
+      Center(child: Text('Session')),
+      Center(child: Text('Classement')),
+    ]);
+    expect(_CountingScreen.initCount, 1);
+
+    await tester.tap(find.text('Session'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Carte').last);
+    await tester.pumpAndSettle();
+
+    // The whole point of IndexedStack here: the map is not rebuilt from
+    // scratch (and its native surface not recreated) on every glance at
+    // another tab.
+    expect(_CountingScreen.initCount, 1);
+  });
+
+  group('interrupted trip banner', () {
+    setUp(() {
+      tracker
+        ..persisted = TripSnapshot(
+          status: TripStatus.recording,
+          distanceKm: 2.4,
+          steps: 3100,
+          startedAt: DateTime.utc(2026, 8, 30, 9, 30),
+          updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
+          profile: RoutingProfile.walk,
+          routeBound: false,
+        )
+        ..running = false;
+    });
+
+    testWidgets('offers Reprendre / Terminer after a process kill',
+        (tester) async {
+      await pumpShell(tester, screens: const [
+        SizedBox.shrink(),
+        SizedBox.shrink(),
+        SizedBox.shrink()
+      ]);
+
+      expect(find.text('Trajet interrompu'), findsOneWidget);
+      expect(find.text('2,40 km enregistrés'), findsOneWidget);
+      expect(find.text('Reprendre'), findsOneWidget);
+      expect(find.text('Terminer'), findsOneWidget);
+    });
+
+    testWidgets('Reprendre restarts the service with the saved distance',
+        (tester) async {
+      await pumpShell(tester, screens: const [
+        SizedBox.shrink(),
+        SizedBox.shrink(),
+        SizedBox.shrink()
+      ]);
+
+      await tester.tap(find.text('Reprendre'));
+      await tester.pumpAndSettle();
+
+      expect(tracker.startedWith.single.distanceKm, closeTo(2.4, 1e-9));
+      expect(tracker.startedWith.single.steps, 3100);
+      expect(find.text('Trajet interrompu'), findsNothing);
+    });
+
+    testWidgets('Terminer banks the distance and dismisses the banner',
+        (tester) async {
+      await pumpShell(tester, screens: const [
+        SizedBox.shrink(),
+        SizedBox.shrink(),
+        SizedBox.shrink()
+      ]);
+
+      await tester.tap(find.text('Terminer'));
+      await tester.pumpAndSettle();
+
+      expect(totals.total, closeTo(2.4, 1e-9));
+      expect(find.text('Trajet interrompu'), findsNothing);
+    });
+
+    testWidgets('no banner when nothing was interrupted', (tester) async {
+      tracker.persisted = null;
+      await pumpShell(tester, screens: const [
+        SizedBox.shrink(),
+        SizedBox.shrink(),
+        SizedBox.shrink()
+      ]);
+      expect(find.text('Trajet interrompu'), findsNothing);
+    });
   });
 }
 
+/// Counts how many times it was built from scratch, to prove the shell
+/// keeps screens mounted.
+class _CountingScreen extends StatefulWidget {
+  const _CountingScreen({required this.label});
+  final String label;
+  static int initCount = 0;
+
+  @override
+  State<_CountingScreen> createState() => _CountingScreenState();
+}
+
+class _CountingScreenState extends State<_CountingScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _CountingScreen.initCount++;
+  }
+
+  @override
+  Widget build(BuildContext context) => Center(child: Text(widget.label));
+}

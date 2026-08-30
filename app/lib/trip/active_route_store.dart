@@ -2,9 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
-
 import '../valhalla/models.dart';
 
 /// The planning state the map screen used to keep in its own `State`:
@@ -16,50 +13,62 @@ import '../valhalla/models.dart';
 /// (which remounts the whole `MapLibreMap`), and — via [ActiveRouteStore] —
 /// the process being killed while the app sits in the background.
 class ActiveRoute {
-  final RouteResult route;
-  final (double, double) destination;
+  /// Null while the user has picked points but no route has been computed
+  /// yet (or the computation failed).
+  final RouteResult? route;
+  final (double, double)? destination;
   final (double, double)? departure;
   final RoutingProfile profile;
 
   const ActiveRoute({
-    required this.route,
-    required this.destination,
+    this.route,
+    this.destination,
     this.departure,
     required this.profile,
   });
 
+  /// Nothing has been planned. Persisting this is the same as persisting
+  /// nothing, and [ActiveRouteStore.load] never returns one.
+  bool get isEmpty =>
+      route == null && destination == null && departure == null;
+
   ActiveRoute copyWith({
     RouteResult? route,
+    bool clearRoute = false,
     (double, double)? destination,
     (double, double)? departure,
     bool clearDeparture = false,
     RoutingProfile? profile,
   }) =>
       ActiveRoute(
-        route: route ?? this.route,
+        route: clearRoute ? null : (route ?? this.route),
         destination: destination ?? this.destination,
         departure: clearDeparture ? null : (departure ?? this.departure),
         profile: profile ?? this.profile,
       );
 
   Map<String, dynamic> toJson() => {
-        'route': route.toJson(),
-        'destination': [destination.$1, destination.$2],
+        if (route != null) 'route': route!.toJson(),
+        if (destination != null)
+          'destination': [destination!.$1, destination!.$2],
         if (departure != null) 'departure': [departure!.$1, departure!.$2],
         'profile': profile.name,
       };
 
   factory ActiveRoute.fromJson(Map<String, dynamic> j) {
-    (double, double) pair(Object? raw) {
+    (double, double)? pair(Object? raw) {
+      if (raw == null) return null;
       final list = raw as List<dynamic>;
       return ((list[0] as num).toDouble(), (list[1] as num).toDouble());
     }
 
-    final departure = j['departure'];
+    final route = j['route'];
     return ActiveRoute(
-      route: RouteResult.fromJson(j['route'] as Map<String, dynamic>),
+      route: route == null
+          ? null
+          : RouteResult.fromJson(route as Map<String, dynamic>),
       destination: pair(j['destination']),
-      departure: departure == null ? null : pair(departure),
+      departure: pair(j['departure']),
       profile: RoutingProfile.values.firstWhere(
         (p) => p.name == j['profile'],
         orElse: () => RoutingProfile.walk,
@@ -100,7 +109,9 @@ class FileActiveRouteStore implements ActiveRouteStore {
       if (!await file.exists()) return null;
       final raw = await file.readAsString();
       if (raw.trim().isEmpty) return null;
-      return ActiveRoute.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final route =
+          ActiveRoute.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      return route.isEmpty ? null : route;
       // A document we cannot read is indistinguishable, from the user's
       // point of view, from having planned nothing — and it must never take
       // the app down at startup, which is the only place `load` is called.
@@ -114,12 +125,15 @@ class FileActiveRouteStore implements ActiveRouteStore {
   }
 
   @override
-  Future<void> save(ActiveRoute route) => _serialize(() async {
+  Future<void> save(ActiveRoute route) {
+    if (route.isEmpty) return clear();
+    return _serialize(() async {
         await file.parent.create(recursive: true);
         final tmp = File('${file.path}.tmp');
         await tmp.writeAsString(jsonEncode(route.toJson()), flush: true);
         await tmp.rename(file.path);
       });
+  }
 
   @override
   Future<void> clear() => _serialize(() async {
@@ -134,10 +148,3 @@ class FileActiveRouteStore implements ActiveRouteStore {
     return next;
   }
 }
-
-/// Resolved once per app run; the directory lookup is a platform channel
-/// call, and every planning change would otherwise pay for it.
-final activeRouteStoreProvider = FutureProvider<ActiveRouteStore>((ref) async {
-  final dir = await getApplicationSupportDirectory();
-  return FileActiveRouteStore(File('${dir.path}/active_route.json'));
-});

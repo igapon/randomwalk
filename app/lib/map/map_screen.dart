@@ -11,6 +11,8 @@ import 'latest_only.dart';
 import 'route_controller.dart';
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
+import '../tracking/permissions.dart';
+import '../trip/active_route_store.dart';
 import '../trip/gated_ticker.dart';
 import '../trip/trip_controller.dart';
 import '../valhalla/engine.dart';
@@ -34,6 +36,19 @@ const _kLocationDeniedMessage =
     'Localisation refusée — activez-la dans les réglages.';
 const _kPositionUnavailableMessage =
     'Position indisponible — activez la localisation ou définissez un départ manuel.';
+const _kLocationServiceOffMessage =
+    'Localisation désactivée — activez-la dans les réglages Android.';
+const _kOpenedSettingsMessage =
+    'Choisissez « Autoriser tout le temps », puis appuyez de nouveau sur Démarrer.';
+
+/// Message for a trip that refused to start, phrased from the reason the
+/// permission flow gave (see [TripPermissionOutcome]).
+String startFailureMessage(TripPermissionOutcome? outcome) =>
+    switch (outcome) {
+      TripPermissionOutcome.locationServiceOff => _kLocationServiceOffMessage,
+      TripPermissionOutcome.openedSettings => _kOpenedSettingsMessage,
+      _ => _kPositionUnavailableMessage,
+    };
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -45,22 +60,21 @@ class MapScreenState extends ConsumerState<MapScreen> {
   MapLibreMapController? controller;
   bool _iconsRegistered = false;
 
-  // Departure defaults to the live GPS position; [_departureOverride] is set
-  // only after the user explicitly picks a custom departure (see
-  // [_armSetDeparture]).
-  LatLng? _departureOverride;
+  // Native handles for what is currently drawn. These are the only pieces
+  // of map state that legitimately live in the widget: they belong to one
+  // native map instance and die with it. What they *represent* — the
+  // planned route, its endpoints, the profile — lives in TripController,
+  // which is what makes it survive a tab switch or a cold start.
   Symbol? _departureMarker;
-
-  LatLng? _destination;
   Symbol? _destinationMarker;
-
-  // Route line: a wide ink "casing" underneath a narrower yellow line on
-  // top (two addLine calls — casing added first so it sits below).
   Line? _routeLineCasing;
   Line? _routeLine;
 
-  RoutingProfile _profile = RoutingProfile.walk;
-  RouteResult? _result;
+  /// The plan the overlays above were drawn from, so [_syncOverlays] can
+  /// tell "already drawn" from "needs redrawing" without diffing geometry.
+  ActiveRoute? _drawn;
+  bool _syncing = false;
+
   bool _planning = false;
   ({int done, int total})? _downloadProgress;
 
@@ -78,13 +92,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   /// Refreshes the live stats banner (distance/duration) once a second
   /// while — and only while — a trip is recording (gated in [build] on
-  /// `trip.isRecording`; see [GatedTicker]). TripController only notifies
-  /// listeners on start/stop (see trip_controller.dart), not per GPS fix,
-  /// so this is the same lightweight polling pattern session_screen.dart
-  /// already used; running it unconditionally while idle would rebuild
-  /// this screen once a second for nothing (battery, GPS-adjacent app).
+  /// `trip.isRecording`; see [GatedTicker]). The tick also samples the
+  /// hardware step counter, which is only readable from this isolate (see
+  /// [TripController.tick]). Running it unconditionally while idle would
+  /// rebuild this screen once a second for nothing.
   late final _statsTicker = GatedTicker(onTick: () {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    ref.read(tripControllerProvider).tick();
+    setState(() {});
   });
 
   @override
@@ -111,10 +126,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
         follow ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none);
   }
 
-  /// Fires once per native map instance (see [_onMapCreated]'s doc): resets
-  /// stale handles, then — once the new style has loaded (required before
-  /// addImage/addSymbol/addLine — see [_onStyleLoaded]'s caller) — restores
-  /// whatever was on the map before the remount.
+  /// The planning state to edit: whatever is stored, or an empty plan
+  /// carrying the current profile.
+  ActiveRoute _plan(TripController trip) =>
+      trip.activeRoute ?? ActiveRoute(profile: trip.profile);
+
+  /// Fires once per native map instance: resets stale handles, then — once
+  /// the new style has loaded (required before addImage/addSymbol/addLine)
+  /// — redraws whatever the app state says should be on the map.
   void _onMapCreated(MapLibreMapController c) {
     controller = c;
     _iconsRegistered = false;
@@ -123,11 +142,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // native map instance — and everything drawn on it — is gone, so these
     // Symbol/Line handles now point at a disposed controller. Null them
     // out immediately so a later removeSymbol/removeLine can't target a
-    // foreign controller; _onStyleLoaded redraws them against the fresh one.
+    // foreign controller; _syncOverlays redraws against the fresh one.
     _routeLineCasing = null;
     _routeLine = null;
     _departureMarker = null;
     _destinationMarker = null;
+    _drawn = null;
   }
 
   Future<void> _onStyleLoaded() async {
@@ -135,59 +155,96 @@ class MapScreenState extends ConsumerState<MapScreen> {
     await _redrawAfterRemount();
   }
 
-  /// Re-adds whatever route/markers/camera-follow were active before this
-  /// native map instance was (re)created — a no-op on first mount, since
-  /// none of the state below is set yet at that point.
+  /// Re-adds whatever route/markers/camera-follow the app state says are
+  /// active, against this (possibly brand new) native map instance.
   Future<void> _redrawAfterRemount() async {
-    final departure = _departureOverride;
-    if (departure != null) {
-      final marker = await controller?.addSymbol(SymbolOptions(
-          geometry: departure,
-          iconImage: _kIconMarkerA,
-          iconSize: 1.0,
-          iconAnchor: 'center'));
-      if (mounted) setState(() => _departureMarker = marker);
-    }
-    final destination = _destination;
-    if (destination != null) {
-      final marker = await controller?.addSymbol(SymbolOptions(
-          geometry: destination,
-          iconImage: _kIconMarkerB,
-          iconSize: 1.0,
-          iconAnchor: 'center'));
-      if (mounted) setState(() => _destinationMarker = marker);
-    }
-    final result = _result;
-    if (result != null) {
-      final geometry = [for (final (lat, lon) in result.shape) LatLng(lat, lon)];
-      final casing = await controller?.addLine(LineOptions(
-          geometry: geometry,
-          lineColor: AppColors.routeLineCasingHex,
-          lineWidth: 7,
-          lineOpacity: 1.0));
-      final line = await controller?.addLine(LineOptions(
-          geometry: geometry,
-          lineColor: AppColors.routeLineHex,
-          lineWidth: 4.5));
-      if (mounted) {
-        setState(() {
-          _routeLineCasing = casing;
-          _routeLine = line;
-        });
-      }
-    }
+    await _syncOverlays();
     final trip = ref.read(tripControllerProvider);
     if (trip.isRecording && trip.isRouteBound) {
       controller?.updateMyLocationTrackingMode(MyLocationTrackingMode.tracking);
     }
   }
 
+  /// Reconciles the map's overlays with [TripController.activeRoute].
+  ///
+  /// One place draws, so there is one place to get right: planning a route,
+  /// switching tabs back, flipping the theme and restoring at cold start
+  /// all end here rather than each adding symbols their own way.
+  Future<void> _syncOverlays() async {
+    if (_syncing || controller == null) return;
+    final target = ref.read(tripControllerProvider).activeRoute;
+    if (identical(target, _drawn)) return;
+    _syncing = true;
+    try {
+      await _registerWaymarkIcons();
+      await _removeOverlays();
+      if (target != null) await _drawOverlays(target);
+      _drawn = target;
+    } finally {
+      _syncing = false;
+    }
+    if (!mounted) return;
+    setState(() {});
+    // The plan can change while we are awaiting the platform channel; one
+    // more pass settles it (and is a no-op in the common case).
+    if (!identical(ref.read(tripControllerProvider).activeRoute, _drawn)) {
+      unawaited(_syncOverlays());
+    }
+  }
+
+  Future<void> _removeOverlays() async {
+    final symbols = [_departureMarker, _destinationMarker].nonNulls.toList();
+    final lines = [_routeLine, _routeLineCasing].nonNulls.toList();
+    _departureMarker = null;
+    _destinationMarker = null;
+    _routeLine = null;
+    _routeLineCasing = null;
+    for (final s in symbols) {
+      await controller?.removeSymbol(s);
+    }
+    for (final l in lines) {
+      await controller?.removeLine(l);
+    }
+  }
+
+  Future<void> _drawOverlays(ActiveRoute plan) async {
+    final departure = plan.departure;
+    if (departure != null) {
+      _departureMarker = await controller?.addSymbol(SymbolOptions(
+          geometry: LatLng(departure.$1, departure.$2),
+          iconImage: _kIconMarkerA,
+          iconSize: 1.0,
+          iconAnchor: 'center'));
+    }
+    final destination = plan.destination;
+    if (destination != null) {
+      _destinationMarker = await controller?.addSymbol(SymbolOptions(
+          geometry: LatLng(destination.$1, destination.$2),
+          iconImage: _kIconMarkerB,
+          iconSize: 1.0,
+          iconAnchor: 'center'));
+    }
+    final route = plan.route;
+    if (route != null) {
+      final geometry = [for (final (lat, lon) in route.shape) LatLng(lat, lon)];
+      // Casing first (drawn below), then the yellow line on top.
+      _routeLineCasing = await controller?.addLine(LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineCasingHex,
+          lineWidth: 7,
+          lineOpacity: 1.0));
+      _routeLine = await controller?.addLine(LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineHex,
+          lineWidth: 4.5));
+    }
+  }
+
   /// Registers the waymark diamond icons on the current native map
   /// instance. `_iconsRegistered` is only set once the addImage calls have
   /// actually succeeded — if the style isn't ready yet or a call throws,
-  /// it stays false so the next caller (this screen calls it defensively
-  /// from [_setDeparture]/[_setDestination] too) retries instead of
-  /// silently leaving the map without its marker icons forever.
+  /// it stays false so the next caller retries instead of silently leaving
+  /// the map without its marker icons forever.
   Future<void> _registerWaymarkIcons() async {
     if (_iconsRegistered || controller == null) return;
     final contour = await waymarkDiamondPng(
@@ -240,68 +297,22 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _onMapLongClick(Point<double> point, LatLng coords) async {
+    final trip = ref.read(tripControllerProvider);
     if (_armSetDeparture) {
-      _armSetDeparture = false;
-      await _setDeparture(coords);
-      if (_destination != null) await _planRoute();
+      setState(() => _armSetDeparture = false);
+      await trip.saveActiveRoute(
+          _plan(trip).copyWith(departure: (coords.latitude, coords.longitude)));
+      if (trip.activeRoute?.destination != null) await _planRoute();
       return;
     }
-    await _setDestination(coords);
+    await trip.saveActiveRoute(_plan(trip).copyWith(
+        destination: (coords.latitude, coords.longitude), clearRoute: true));
     await _planRoute();
   }
 
-  Future<void> _setDeparture(LatLng coords) async {
-    await _registerWaymarkIcons();
-    final old = _departureMarker;
-    final marker = await controller?.addSymbol(SymbolOptions(
-        geometry: coords,
-        iconImage: _kIconMarkerA,
-        iconSize: 1.0,
-        iconAnchor: 'center'));
-    if (old != null) await controller?.removeSymbol(old);
-    if (!mounted) return;
-    setState(() {
-      _departureOverride = coords;
-      _departureMarker = marker;
-    });
-  }
-
-  Future<void> _setDestination(LatLng coords) async {
-    await _registerWaymarkIcons();
-    final old = _destinationMarker;
-    final marker = await controller?.addSymbol(SymbolOptions(
-        geometry: coords,
-        iconImage: _kIconMarkerB,
-        iconSize: 1.0,
-        iconAnchor: 'center'));
-    if (old != null) await controller?.removeSymbol(old);
-    if (!mounted) return;
-    setState(() {
-      _destination = coords;
-      _destinationMarker = marker;
-    });
-  }
-
   Future<void> _clearRoute() async {
-    final casing = _routeLineCasing;
-    final line = _routeLine;
-    final departureMarker = _departureMarker;
-    final destinationMarker = _destinationMarker;
-    if (line != null) await controller?.removeLine(line);
-    if (casing != null) await controller?.removeLine(casing);
-    if (departureMarker != null) await controller?.removeSymbol(departureMarker);
-    if (destinationMarker != null) await controller?.removeSymbol(destinationMarker);
-    if (!mounted) return;
-    setState(() {
-      _routeLineCasing = null;
-      _routeLine = null;
-      _departureOverride = null;
-      _departureMarker = null;
-      _destination = null;
-      _destinationMarker = null;
-      _result = null;
-      _armSetDeparture = false;
-    });
+    setState(() => _armSetDeparture = false);
+    await ref.read(tripControllerProvider).clearActiveRoute();
   }
 
   void _armDepartureChange() {
@@ -311,9 +322,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _planRoute() async {
-    final destination = _destination;
+    final trip = ref.read(tripControllerProvider);
+    final plan = _plan(trip);
+    final destination = plan.destination;
     if (destination == null) return;
-    final departure = _departureOverride ?? await _currentPositionOrNull();
+    final pinned = plan.departure;
+    final departure = pinned != null
+        ? LatLng(pinned.$1, pinned.$2)
+        : await _currentPositionOrNull();
     if (!mounted) return;
     if (departure == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -323,7 +339,6 @@ class MapScreenState extends ConsumerState<MapScreen> {
     setState(() {
       _planning = true;
       _downloadProgress = null;
-      _result = null;
     });
     final sink = ref.read(progressSinkProvider);
     sink.onProgress = (done, total) {
@@ -335,28 +350,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
       final result = await planner.plan(RouteRequest(
           fromLat: departure.latitude,
           fromLon: departure.longitude,
-          toLat: destination.latitude,
-          toLon: destination.longitude,
-          profile: _profile));
-      final geometry = [for (final (lat, lon) in result.shape) LatLng(lat, lon)];
-      // Casing first (drawn below), then the yellow line on top.
-      final oldCasing = _routeLineCasing;
-      final newCasing = await controller?.addLine(LineOptions(
-          geometry: geometry,
-          lineColor: AppColors.routeLineCasingHex,
-          lineWidth: 7,
-          lineOpacity: 1.0));
-      if (oldCasing != null) await controller?.removeLine(oldCasing);
-      final oldLine = _routeLine;
-      final newLine = await controller?.addLine(LineOptions(
-          geometry: geometry, lineColor: AppColors.routeLineHex, lineWidth: 4.5));
-      if (oldLine != null) await controller?.removeLine(oldLine);
-      if (!mounted) return;
-      setState(() {
-        _routeLineCasing = newCasing;
-        _routeLine = newLine;
-        _result = result;
-      });
+          toLat: destination.$1,
+          toLon: destination.$2,
+          profile: plan.profile));
+      // Re-read the plan: the user may have moved a pin while the engine
+      // was working, and the freshly computed route belongs to whatever
+      // the plan says *now*, not to the snapshot taken above.
+      await trip.saveActiveRoute(_plan(trip).copyWith(route: result));
       // RoutingException: no path found in an otherwise-covered area.
       // SocketException/HttpException/ClientException: the coverage fetch
       // failed offline with no warm cache (see CoverageRepository) — from
@@ -416,10 +416,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
       _searchError = null;
     });
     final service = ref.read(geocodingServiceProvider);
-    final near = _departureOverride;
+    final near = ref.read(tripControllerProvider).activeRoute?.departure;
     try {
-      final results = await service.search(query,
-          nearLat: near?.latitude, nearLon: near?.longitude);
+      final results =
+          await service.search(query, nearLat: near?.$1, nearLon: near?.$2);
       if (!mounted || !_searchGeneration.isCurrent(gen)) return;
       setState(() {
         _searchResults = results;
@@ -436,7 +436,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _selectSearchResult(GeocodeResult result) async {
-    final coords = LatLng(result.lat, result.lon);
+    final trip = ref.read(tripControllerProvider);
     _searchController.clear();
     // Invalidate any still-in-flight search for a previous keystroke so its
     // response can't repopulate the list after the user already picked one.
@@ -446,8 +446,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
       _searchError = null;
     });
     FocusScope.of(context).unfocus();
-    await _setDestination(coords);
-    await controller?.animateCamera(CameraUpdate.newLatLng(coords));
+    await trip.saveActiveRoute(_plan(trip)
+        .copyWith(destination: (result.lat, result.lon), clearRoute: true));
+    await controller?.animateCamera(
+        CameraUpdate.newLatLng(LatLng(result.lat, result.lon)));
     await _planRoute();
   }
 
@@ -469,12 +471,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// Starts a trip bound to the currently planned route: camera-follow is
   /// switched on by TripController via [_onCameraFollowChanged].
   Future<void> _startRouteTrip() async {
-    final result = _result;
-    if (result == null) return;
-    final started = await ref.read(tripControllerProvider).startTrip(route: result);
-    if (!started && mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text(_kPositionUnavailableMessage)));
+    final trip = ref.read(tripControllerProvider);
+    final route = trip.route;
+    if (route == null) return;
+    if (!await trip.startTrip(route: route) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(startFailureMessage(trip.lastOutcome))));
     }
   }
 
@@ -488,11 +490,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
       builder: (_) => const _ProfileSheet(),
     );
     if (profile == null || !mounted) return;
-    final started =
-        await ref.read(tripControllerProvider).startTrip(profile: profile);
-    if (!started && mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text(_kPositionUnavailableMessage)));
+    final trip = ref.read(tripControllerProvider);
+    if (!await trip.startTrip(profile: profile) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(startFailureMessage(trip.lastOutcome))));
     }
   }
 
@@ -500,27 +501,40 @@ class MapScreenState extends ConsumerState<MapScreen> {
     await ref.read(tripControllerProvider).stopTrip();
   }
 
+  Future<void> _onProfileChanged(RoutingProfile profile) async {
+    final trip = ref.read(tripControllerProvider);
+    await trip.setProfile(profile);
+    if (trip.activeRoute?.destination != null) await _planRoute();
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final trip = ref.watch(tripControllerProvider);
     _statsTicker.sync(trip.isRecording);
+    // The plan can change from anywhere (a restore at startup, the session
+    // tab, a search result); redraw after the frame that noticed.
+    if (!identical(trip.activeRoute, _drawn) && !_syncing) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => unawaited(_syncOverlays()));
+    }
     final brightness = Theme.of(context).brightness;
     final styleUrl =
         brightness == Brightness.dark ? kMapStyleUrlDark : kMapStyleUrlLight;
+    final result = trip.route;
 
     Widget? bottomBanner;
     if (_planning) {
       bottomBanner = _ProgressBanner(progress: _downloadProgress);
     } else if (trip.isRecording) {
       bottomBanner = _StatsBanner(
-        distanceKm: trip.sessionController.recorder?.distanceKm ?? 0,
-        elapsed: _formatDuration(trip.sessionController.elapsed),
+        distanceKm: trip.distanceKm,
+        elapsed: _formatDuration(trip.elapsed),
         onStop: _stopTrip,
       );
-    } else if (_result != null) {
+    } else if (result != null) {
       bottomBanner = _ResultBanner(
-        text: _formatResult(_result!),
+        text: _formatResult(result),
         onChangeDeparture: _armDepartureChange,
         onClear: _clearRoute,
         onStart: _startRouteTrip,
@@ -580,13 +594,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
                             label: Text('Vélo'),
                             icon: Icon(Icons.directions_bike)),
                       ],
-                      selected: {_profile},
+                      selected: {trip.profile},
                       onSelectionChanged: trip.isRecording
                           ? null
-                          : (s) {
-                              setState(() => _profile = s.first);
-                              if (_destination != null) _planRoute();
-                            },
+                          : (s) => _onProfileChanged(s.first),
                     ),
                   ],
                 ),
