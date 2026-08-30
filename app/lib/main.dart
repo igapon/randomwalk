@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:randomwalk/map/map_screen.dart';
 
 void main() => runApp(const ProviderScope(child: RandomWalkApp()));
 
@@ -21,10 +22,10 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
-  static const _screens = <Widget>[
-    Center(child: Text('Carte')),      // remplacé Task 5/8
-    Center(child: Text('Session')),    // remplacé Task 9
-    Center(child: Text('Classement')), // remplacé Task 10
+  static final _screens = <Widget>[
+    const MapScreen(),
+    const Center(child: Text('Session')),    // remplacé Task 9
+    const Center(child: Text('Classement')), // remplacé Task 10
   ];
   @override
   Widget build(BuildContext context) => Scaffold(
