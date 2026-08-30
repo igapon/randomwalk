@@ -171,7 +171,11 @@ class TripController extends ChangeNotifier {
   /// launch). Returns false — with [lastOutcome] set — when the trip could
   /// not start.
   Future<bool> startTrip({RouteResult? route, RoutingProfile? profile}) async {
-    if (_state == TripState.recording || _starting) return false;
+    // Refused while a trip is interrupted, not just while one is recording:
+    // a fresh zeroed seed would overwrite the snapshot the « Trajet
+    // interrompu » banner is offering to resume, silently binning the
+    // distance it is showing. The banner is the only way out of that state.
+    if (_state != TripState.idle || _starting) return false;
 
     if (profile != null) {
       _profile = profile;

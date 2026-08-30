@@ -11,10 +11,10 @@ import 'latest_only.dart';
 import 'route_controller.dart';
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
-import '../tracking/permissions.dart';
 import '../trip/active_route_store.dart';
 import '../trip/gated_ticker.dart';
 import '../trip/trip_controller.dart';
+import '../trip/trip_messages.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/models.dart';
 
@@ -31,24 +31,6 @@ const kMapAttribution = 'OpenFreeMap © OpenMapTiles, Data from OpenStreetMap';
 const _kIconMarkerA = 'waymark-marker-a';
 const _kIconMarkerB = 'waymark-marker-b';
 const _kWaymarkIconSizePx = 44.0;
-
-const _kLocationDeniedMessage =
-    'Localisation refusée — activez-la dans les réglages.';
-const _kPositionUnavailableMessage =
-    'Position indisponible — activez la localisation ou définissez un départ manuel.';
-const _kLocationServiceOffMessage =
-    'Localisation désactivée — activez-la dans les réglages Android.';
-const _kOpenedSettingsMessage =
-    'Choisissez « Autoriser tout le temps », puis appuyez de nouveau sur Démarrer.';
-
-/// Message for a trip that refused to start, phrased from the reason the
-/// permission flow gave (see [TripPermissionOutcome]).
-String startFailureMessage(TripPermissionOutcome? outcome) =>
-    switch (outcome) {
-      TripPermissionOutcome.locationServiceOff => _kLocationServiceOffMessage,
-      TripPermissionOutcome.openedSettings => _kOpenedSettingsMessage,
-      _ => _kPositionUnavailableMessage,
-    };
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -260,7 +242,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// any reason: permission denied, location services turned off system-
   /// wide (as opposed to just app permission), or the platform call itself
   /// failing/timing out. Callers treat `null` uniformly — see
-  /// [_kLocationDeniedMessage] / [_kPositionUnavailableMessage].
+  /// [kLocationDeniedMessage] / [kPositionUnavailableMessage].
   Future<LatLng?> _currentPositionOrNull() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return null;
@@ -289,7 +271,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (pos == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text(_kLocationDeniedMessage)));
+            .showSnackBar(const SnackBar(content: Text(kLocationDeniedMessage)));
       }
       return;
     }
@@ -333,7 +315,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (!mounted) return;
     if (departure == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(_kPositionUnavailableMessage)));
+          const SnackBar(content: Text(kPositionUnavailableMessage)));
       return;
     }
     setState(() {

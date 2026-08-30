@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../map/map_screen.dart' show startFailureMessage;
 import '../theme/tokens.dart';
 import '../tracking/permissions.dart';
 import '../trip/gated_ticker.dart';
 import '../trip/trip_controller.dart';
+import '../trip/trip_messages.dart';
 import '../valhalla/models.dart';
 
 /// Shows the trip currently recording (started here or from the map's

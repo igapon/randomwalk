@@ -429,6 +429,16 @@ void main() {
       expect(tracker.startedWith, isEmpty);
     });
 
+    test('Démarrer cannot bin an interrupted trip behind the banner', () async {
+      final trip = build();
+      await trip.restore();
+
+      expect(await trip.startTrip(), isFalse);
+      expect(trip.state, TripState.interrupted);
+      expect(trip.distanceKm, closeTo(2.4, 1e-9));
+      expect(tracker.startedWith, isEmpty);
+    });
+
     test('resuming when nothing was interrupted is a no-op', () async {
       tracker.persisted = null;
       final trip = build();
