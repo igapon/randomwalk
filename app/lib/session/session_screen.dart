@@ -21,11 +21,30 @@ class _SessionScreenState extends State<SessionScreen> {
 
   static const String _kPositionUnavailableMessage =
       'Position indisponible — activez la localisation ou définissez un départ manuel.';
+  static const String _kGpsErrorMessage =
+      'Signal GPS perdu — session enregistrée.';
 
   @override
   void initState() {
     super.initState();
     _controller = SessionController(store: TotalDistanceStore());
+    // Set up callbacks.
+    _controller.onSessionError = _onSessionError;
+    _controller.onSessionEnded = _onSessionEnded;
+  }
+
+  Future<void> _onSessionError(String? errorMessage) async {
+    if (mounted) {
+      _elapsedTimer?.cancel();
+      _elapsedTimer = null;
+      setState(() => _elapsed = Duration.zero);
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(_kGpsErrorMessage)));
+    }
+  }
+
+  Future<void> _onSessionEnded(double totalKm) async {
+    widget.onSessionEnded?.call(totalKm);
   }
 
   Future<void> _startSession() async {
@@ -55,12 +74,10 @@ class _SessionScreenState extends State<SessionScreen> {
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
 
-    final totalKm = await _controller.stop();
+    await _controller.stop();
 
     if (!mounted) return;
     setState(() => _elapsed = Duration.zero);
-
-    widget.onSessionEnded?.call(totalKm);
   }
 
   String _formatDuration(Duration d) {

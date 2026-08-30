@@ -16,11 +16,21 @@ class SessionController {
   bool _isStarting = false;
   StreamSubscription<Position>? _positionStream;
 
+  /// Callback when a session ends (successful stop or error).
+  /// Invoked with the total km accumulated in the session.
+  Future<void> Function(double totalKm)? onSessionEnded;
+
+  /// Callback when a session ends due to GPS stream error.
+  /// Invoked with an optional error message.
+  Future<void> Function(String? errorMessage)? onSessionError;
+
   SessionController({
     required this._store,
     Stream<Position> Function(LocationSettings)? getPositionStream,
     DateTime Function()? getClock,
     Future<bool> Function()? checkPermissions,
+    this.onSessionEnded,
+    this.onSessionError,
   })  : _getPositionStream = getPositionStream ??
             ((LocationSettings settings) => Geolocator.getPositionStream(locationSettings: settings)),
         _getClock = getClock ?? DateTime.now,
@@ -80,10 +90,8 @@ class SessionController {
           _recorder?.add(sample);
         },
         onError: (e) {
-          // Stop on error.
-          _positionStream?.cancel();
-          _positionStream = null;
-          _isRecording = false;
+          // Finish session on stream error, persisting partial distance.
+          _finishSession(isError: true, errorMessage: e?.toString());
         },
       );
 
@@ -98,7 +106,16 @@ class SessionController {
   /// Returns the total distance accumulated in this session, or 0 if not
   /// recording.
   Future<double> stop() async {
-    if (!_isRecording) return 0;
+    return (await _finishSession(isError: false)) ?? 0;
+  }
+
+  /// Internal: finishes a session (manual stop or stream error), persists
+  /// distance, and invokes appropriate callbacks.
+  Future<double?> _finishSession({
+    required bool isError,
+    String? errorMessage,
+  }) async {
+    if (!_isRecording) return null;
 
     _isRecording = false;
     await _positionStream?.cancel();
@@ -108,6 +125,12 @@ class SessionController {
     final totalKm = await _store.addAndGetTotalKm(distanceKm);
 
     _recorder = null;
+
+    // Invoke appropriate callbacks.
+    if (isError) {
+      await onSessionError?.call(errorMessage);
+    }
+    await onSessionEnded?.call(totalKm);
 
     return totalKm;
   }
