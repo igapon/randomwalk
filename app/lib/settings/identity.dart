@@ -16,7 +16,17 @@ class PlayerIdentity {
 class IdentityStore {
   static const _idKey = 'player_id', _pseudoKey = 'player_pseudo';
 
-  Future<PlayerIdentity> get() async {
+  /// Memoizes the first-call initialization (read-existing-or-generate a
+  /// uuid, then persist it) so concurrent callers of [get] share the same
+  /// in-flight `Future` instead of each racing to read `null`, generate
+  /// their own uuid, and separately write it — which could otherwise leave
+  /// the pseudo derived from a different uuid than the one ultimately
+  /// persisted, or waste a generated uuid entirely.
+  Future<PlayerIdentity>? _pending;
+
+  Future<PlayerIdentity> get() => _pending ??= _load();
+
+  Future<PlayerIdentity> _load() async {
     final prefs = await SharedPreferences.getInstance();
     var id = prefs.getString(_idKey);
     if (id == null) {
@@ -33,6 +43,10 @@ class IdentityStore {
 
   /// Updates the pseudo. Throws [ArgumentError] if outside the 1-24 char
   /// range once trimmed; callers should validate user input beforehand.
+  ///
+  /// Refreshes the memoized [get] result to the new pseudo (same userId) so
+  /// a subsequent [get] call reflects the change immediately instead of
+  /// replaying the stale identity captured by the first [_load].
   Future<void> setPseudo(String pseudo) async {
     final trimmed = pseudo.trim();
     if (trimmed.isEmpty || trimmed.length > 24) {
@@ -40,6 +54,8 @@ class IdentityStore {
     }
     await (await SharedPreferences.getInstance())
         .setString(_pseudoKey, trimmed);
+    final current = await get();
+    _pending = Future.value(PlayerIdentity(userId: current.userId, pseudo: trimmed));
   }
 }
 
