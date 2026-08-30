@@ -68,7 +68,7 @@ d'exploration (« mode aventure »).
 | `navigation` | Suivi de route, instructions, détection d'écart, recalcul | routing, location |
 | `exploration` | Map-matching des traces, couverture d'edges, cellules H3 | routing, core_events |
 | `game` | Fog of war, landmarks, pièces, énergie, XP, badges | exploration, core_events |
-| `regions` | Catalogue, téléchargement repris/vérifié, versions | — |
+| `coverage` | Cellules adaptatives : détection, téléchargement repris/vérifié, purge LRU | — |
 | `sync` | Push/pull d'événements vers Supabase, file persistante | core_events |
 | `ui_*` | Écrans par domaine | tous |
 
@@ -141,17 +141,35 @@ issue de l'historique utilisateur ; défauts avant historique : 4,5 km/h
 - **Source POIs** : extraits d'OSM par région (même job que les tuiles
   Valhalla), fichier compact téléchargé avec la région.
 
-### 4.7 Régions téléchargeables
-Catalogue par région (pays/sous-région) : tuiles carte + tuiles Valhalla +
-POIs jeu, versionnés. Téléchargement par morceaux avec reprise et checksums.
-Génération : job serveur périodique à partir d'extraits OSM (Geofabrik),
-publication CDN.
+### 4.7 Couverture adaptative (régions invisibles)
+La notion de « région » est invisible pour l'utilisateur : **la couverture
+s'adapte à sa position**.
+
+- Le monde est découpé en **cellules fixes** (grille ~50×50 km). L'app détecte
+  la position de l'utilisateur et télécharge automatiquement (en Wi-Fi par
+  défaut) les cellules couvrant sa zone + une couronne autour ; en déplacement
+  ou lors de la planification d'une route ailleurs, les cellules manquantes
+  sont proposées/préchargées.
+- Côté serveur : les cellules (tuiles carte + tuiles Valhalla + POIs jeu,
+  versionnées) sont **générées à la demande puis mises en cache** à partir
+  d'extraits OSM — pas de pré-construction mondiale. Première demande d'une
+  cellule : préparation en arrière-plan (l'app affiche la progression) ;
+  demandes suivantes : téléchargement direct.
+- Téléchargement par morceaux avec reprise et checksums ; purge LRU locale des
+  cellules non utilisées ; rafraîchissement périodique des cellules actives.
+- Réglages : gestion manuelle possible (voir/supprimer/précharger une zone,
+  ex. avant un voyage).
+
+**Infrastructure** : pipeline de génération + stockage/CDN hébergés sur
+`dev.lmqc.fr` (extraits OSM via Geofabrik/pyosmium, `valhalla_build_tiles`,
+extraction POIs par `osmium tags-filter`).
 
 ## 5. Données et sync
 
 SQLite local, miroir Postgres/PostGIS :
 `traces`, `covered_edges`, `revealed_cells`, `landmark_visits`,
-`wallet_events`, `energy_events`, `xp_events`, `badges`, `regions`.
+`wallet_events`, `energy_events`, `xp_events`, `badges`, `cells`
+(cellules de couverture téléchargées : versions carte/routage/POIs, dernier usage).
 
 Écriture exclusivement via **journal d'événements append-only**
 (UUID v7, horodatage, device_id). Sync = push/pull d'événements ; l'état est
@@ -189,7 +207,7 @@ de M5).
 
 | Jalon | Contenu |
 |---|---|
-| **M1 Fondations** | App Flutter + MapLibre, Valhalla FFI Android (A→B piéton/vélo), téléchargement région test (Suisse romande) |
+| **M1 Fondations** | App Flutter + MapLibre, Valhalla FFI Android (A→B piéton/vélo), couverture adaptative : pipeline de cellules sur dev.lmqc.fr + téléchargement auto autour de la position |
 | **M2 Navigation** | Turn-by-turn, foreground service écran éteint, notifications, TTS, recalcul |
 | **M3 Boucles** | Distance/temps fixe, candidats multiples, UI de choix |
 | **M4 Exploration + jeu** | Map-matching, couverture, fog of war, landmarks, économie, XP/badges |
