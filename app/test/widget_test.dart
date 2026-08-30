@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:randomwalk/main.dart';
 import 'package:randomwalk/map/map_screen.dart';
+import 'package:randomwalk/theme/theme.dart';
 
 void main() {
   // Test 1: Verify the real wiring types
@@ -30,7 +31,7 @@ void main() {
       ProviderScope(
         child: MaterialApp(
           title: 'RandomWalk Test',
-          theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+          theme: AppTheme.light,
           home: HomeShell(screensOverride: testScreens),
         ),
       ),

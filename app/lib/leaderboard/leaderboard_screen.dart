@@ -142,6 +142,10 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   Widget _buildError(_LeaderboardErrorKind kind) {
     return RefreshIndicator(
       onRefresh: _refresh,
+      // RefreshIndicator reads colorScheme.primary directly, not the
+      // theme's progressIndicatorTheme — the saturated yellow would be
+      // near-invisible on paper, so pass onSurface explicitly here too.
+      color: Theme.of(context).colorScheme.onSurface,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
@@ -180,6 +184,7 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
     if (top.isEmpty && !extraRow) {
       return RefreshIndicator(
         onRefresh: _refresh,
+        color: Theme.of(context).colorScheme.onSurface,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
@@ -194,6 +199,7 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
 
     return RefreshIndicator(
       onRefresh: _refresh,
+      color: Theme.of(context).colorScheme.onSurface,
       child: ListView.builder(
         physics: const AlwaysScrollableScrollPhysics(),
         itemCount: top.length + (extraRow ? 1 : 0),

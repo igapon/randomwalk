@@ -21,8 +21,22 @@ void main() {
     expect(theme.colorScheme.primary, const Color(0xFFE6B800));
     // Dark mode keeps ink-on-yellow too — never white/paper on yellow.
     expect(theme.colorScheme.onPrimary, AppColors.ink);
+    // Brief: fond (scaffold) #12201A, surfaces (cards/sheets/bars) #1C2B25
+    // — two distinct tones, not the same color.
+    expect(theme.scaffoldBackgroundColor, const Color(0xFF12201A));
+    expect(theme.scaffoldBackgroundColor, AppColors.darkBg);
     expect(theme.colorScheme.surface, const Color(0xFF1C2B25));
-    expect(theme.scaffoldBackgroundColor, const Color(0xFF1C2B25));
+    expect(theme.colorScheme.surface, AppColors.darkSurface);
+    expect(theme.cardTheme.color, AppColors.darkSurface);
+    expect(theme.appBarTheme.backgroundColor, AppColors.darkSurface);
+    expect(theme.navigationBarTheme.backgroundColor, AppColors.darkSurface);
+  });
+
+  test('AppTheme.light scaffold and surfaces both read as paper (no split in light)', () {
+    final theme = AppTheme.light;
+    expect(theme.scaffoldBackgroundColor, AppColors.paper);
+    expect(theme.colorScheme.surface, AppColors.paper);
+    expect(theme.cardTheme.color, AppColors.paper);
   });
 
   test('text theme maps display/body/label to the three embedded families', () {
@@ -49,5 +63,12 @@ void main() {
     final indicator = AppTheme.light.navigationBarTheme.indicatorColor;
     expect(indicator, isNot(const Color(0xFFF5B800)));
     expect(indicator, AppColors.yellowPaleLight);
+  });
+
+  test('progress indicators are legible (never the ~1.7:1 yellow-on-paper default)', () {
+    expect(AppTheme.light.progressIndicatorTheme.color, isNot(const Color(0xFFF5B800)));
+    expect(AppTheme.light.progressIndicatorTheme.color, AppColors.ink);
+    expect(AppTheme.dark.progressIndicatorTheme.color, isNot(const Color(0xFFE6B800)));
+    expect(AppTheme.dark.progressIndicatorTheme.color, AppColors.paper);
   });
 }

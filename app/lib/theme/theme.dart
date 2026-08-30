@@ -9,8 +9,8 @@ import 'tokens.dart';
 class AppTheme {
   AppTheme._();
 
-  static final ThemeData light = _build(_lightScheme);
-  static final ThemeData dark = _build(_darkScheme);
+  static final ThemeData light = _build(_lightScheme, AppColors.paper);
+  static final ThemeData dark = _build(_darkScheme, AppColors.darkBg);
 
   static const _lightScheme = ColorScheme(
     brightness: Brightness.light,
@@ -52,7 +52,13 @@ class AppTheme {
     outlineVariant: Color(0xFF33413A),
   );
 
-  static ThemeData _build(ColorScheme scheme) {
+  /// [background] is the scaffold color: brief distinguishes it from
+  /// [ColorScheme.surface] in dark mode only (fond `#12201A` vs. surfaces
+  /// `#1C2B25` — cards/sheets/bars all read `scheme.surface` below, or fall
+  /// back to it via ColorScheme's surfaceContainer* getters, so they stay
+  /// on the lighter dark-surface tone while the scaffold itself sits on
+  /// the darker background).
+  static ThemeData _build(ColorScheme scheme, Color background) {
     final onSurface = scheme.onSurface;
     TextStyle display(double size, FontWeight weight) => TextStyle(
         fontFamily: AppFonts.display,
@@ -99,7 +105,7 @@ class AppTheme {
       useMaterial3: true,
       brightness: scheme.brightness,
       colorScheme: scheme,
-      scaffoldBackgroundColor: scheme.surface,
+      scaffoldBackgroundColor: background,
       textTheme: textTheme,
       fontFamily: AppFonts.body,
     );
@@ -158,6 +164,13 @@ class AppTheme {
         foregroundColor: scheme.onSurface,
         titleTextStyle: display(22, FontWeight.w600),
       ),
+      // Default CircularProgressIndicator color is colorScheme.primary —
+      // the saturated yellow reads at ~1.7:1 on paper (near-invisible).
+      // onSurface is ink in light / paper in dark, both legible. Note
+      // this does NOT reach RefreshIndicator (it reads colorScheme.primary
+      // directly, not this theme extension), so every RefreshIndicator
+      // call site must also pass `color: colorScheme.onSurface` itself.
+      progressIndicatorTheme: ProgressIndicatorThemeData(color: scheme.onSurface),
     );
   }
 }

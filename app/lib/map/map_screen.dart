@@ -9,6 +9,7 @@ import 'latest_only.dart';
 import 'route_controller.dart';
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
+import '../trip/gated_ticker.dart';
 import '../trip/trip_controller.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/models.dart';
@@ -74,23 +75,26 @@ class MapScreenState extends ConsumerState<MapScreen> {
   bool _searching = false;
 
   /// Refreshes the live stats banner (distance/duration) once a second
-  /// while a trip is recording. TripController only notifies listeners on
-  /// start/stop (see trip_controller.dart), not per GPS fix, so this is
-  /// the same lightweight polling pattern session_screen.dart already used.
-  Timer? _statsTicker;
+  /// while — and only while — a trip is recording (gated in [build] on
+  /// `trip.isRecording`; see [GatedTicker]). TripController only notifies
+  /// listeners on start/stop (see trip_controller.dart), not per GPS fix,
+  /// so this is the same lightweight polling pattern session_screen.dart
+  /// already used; running it unconditionally while idle would rebuild
+  /// this screen once a second for nothing (battery, GPS-adjacent app).
+  late final _statsTicker = GatedTicker(onTick: () {
+    if (mounted) setState(() {});
+  });
 
   @override
   void initState() {
     super.initState();
     ref.read(tripControllerProvider).onCameraFollowChanged =
         _onCameraFollowChanged;
-    _statsTicker =
-        Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
   }
 
   @override
   void dispose() {
-    _statsTicker?.cancel();
+    _statsTicker.dispose();
     _searchDebounce?.cancel();
     _searchController.dispose();
     final trip = ref.read(tripControllerProvider);
@@ -105,15 +109,92 @@ class MapScreenState extends ConsumerState<MapScreen> {
         follow ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none);
   }
 
+  /// Fires once per native map instance (see [_onMapCreated]'s doc): resets
+  /// stale handles, then — once the new style has loaded (required before
+  /// addImage/addSymbol/addLine — see [_onStyleLoaded]'s caller) — restores
+  /// whatever was on the map before the remount.
+  void _onMapCreated(MapLibreMapController c) {
+    controller = c;
+    _iconsRegistered = false;
+    // A brightness flip remounts MapLibreMap under a new ValueKey(styleUrl)
+    // (no live style-swap API in this maplibre_gl version): the previous
+    // native map instance — and everything drawn on it — is gone, so these
+    // Symbol/Line handles now point at a disposed controller. Null them
+    // out immediately so a later removeSymbol/removeLine can't target a
+    // foreign controller; _onStyleLoaded redraws them against the fresh one.
+    _routeLineCasing = null;
+    _routeLine = null;
+    _departureMarker = null;
+    _destinationMarker = null;
+  }
+
+  Future<void> _onStyleLoaded() async {
+    await _registerWaymarkIcons();
+    await _redrawAfterRemount();
+  }
+
+  /// Re-adds whatever route/markers/camera-follow were active before this
+  /// native map instance was (re)created — a no-op on first mount, since
+  /// none of the state below is set yet at that point.
+  Future<void> _redrawAfterRemount() async {
+    final departure = _departureOverride;
+    if (departure != null) {
+      final marker = await controller?.addSymbol(SymbolOptions(
+          geometry: departure,
+          iconImage: _kIconMarkerA,
+          iconSize: 1.0,
+          iconAnchor: 'center'));
+      if (mounted) setState(() => _departureMarker = marker);
+    }
+    final destination = _destination;
+    if (destination != null) {
+      final marker = await controller?.addSymbol(SymbolOptions(
+          geometry: destination,
+          iconImage: _kIconMarkerB,
+          iconSize: 1.0,
+          iconAnchor: 'center'));
+      if (mounted) setState(() => _destinationMarker = marker);
+    }
+    final result = _result;
+    if (result != null) {
+      final geometry = [for (final (lat, lon) in result.shape) LatLng(lat, lon)];
+      final casing = await controller?.addLine(LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineCasingHex,
+          lineWidth: 7,
+          lineOpacity: 1.0));
+      final line = await controller?.addLine(LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineHex,
+          lineWidth: 4.5));
+      if (mounted) {
+        setState(() {
+          _routeLineCasing = casing;
+          _routeLine = line;
+        });
+      }
+    }
+    final trip = ref.read(tripControllerProvider);
+    if (trip.isRecording && trip.isRouteBound) {
+      controller?.updateMyLocationTrackingMode(MyLocationTrackingMode.tracking);
+    }
+  }
+
+  /// Registers the waymark diamond icons on the current native map
+  /// instance. `_iconsRegistered` is only set once the addImage calls have
+  /// actually succeeded — if the style isn't ready yet or a call throws,
+  /// it stays false so the next caller (this screen calls it defensively
+  /// from [_setDeparture]/[_setDestination] too) retries instead of
+  /// silently leaving the map without its marker icons forever.
   Future<void> _registerWaymarkIcons() async {
     if (_iconsRegistered || controller == null) return;
-    _iconsRegistered = true;
     final contour = await waymarkDiamondPng(
         sizePx: _kWaymarkIconSizePx, color: AppColors.ink, filled: false, strokeWidth: 4);
     final filled = await waymarkDiamondPng(
         sizePx: _kWaymarkIconSizePx, color: AppColors.ink);
     await controller?.addImage(_kIconMarkerA, contour);
     await controller?.addImage(_kIconMarkerB, filled);
+    _iconsRegistered = true;
   }
 
   /// Resolves the live GPS position, or `null` if it isn't available for
@@ -260,13 +341,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
       final oldCasing = _routeLineCasing;
       final newCasing = await controller?.addLine(LineOptions(
           geometry: geometry,
-          lineColor: '#1C2B25',
+          lineColor: AppColors.routeLineCasingHex,
           lineWidth: 7,
           lineOpacity: 1.0));
       if (oldCasing != null) await controller?.removeLine(oldCasing);
       final oldLine = _routeLine;
       final newLine = await controller?.addLine(LineOptions(
-          geometry: geometry, lineColor: '#F5B800', lineWidth: 4.5));
+          geometry: geometry, lineColor: AppColors.routeLineHex, lineWidth: 4.5));
       if (oldLine != null) await controller?.removeLine(oldLine);
       if (!mounted) return;
       setState(() {
@@ -408,6 +489,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final trip = ref.watch(tripControllerProvider);
+    _statsTicker.sync(trip.isRecording);
     final brightness = Theme.of(context).brightness;
     final styleUrl =
         brightness == Brightness.dark ? kMapStyleUrlDark : kMapStyleUrlLight;
@@ -443,17 +525,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
             myLocationEnabled: true,
             myLocationTrackingMode: MyLocationTrackingMode.none,
             attributionButtonPosition: AttributionButtonPosition.bottomLeft,
-            onMapCreated: (c) {
-              // A brightness flip remounts this widget under a new
-              // ValueKey(styleUrl) (MapLibre has no live style-swap in this
-              // version) — the native map instance is fresh, so its symbol
-              // icons need registering again too.
-              controller = c;
-              _iconsRegistered = false;
-            },
+            onMapCreated: _onMapCreated,
             // addImage/addSymbol must wait for the style to finish loading
             // (see maplibre_map.dart's onStyleLoadedCallback doc).
-            onStyleLoadedCallback: _registerWaymarkIcons,
+            onStyleLoadedCallback: _onStyleLoaded,
             onMapLongClick: _onMapLongClick,
           ),
           Positioned(
@@ -687,7 +762,7 @@ class _ResultBanner extends StatelessWidget {
                 const SizedBox(width: 4),
                 ElevatedButton.icon(
                   onPressed: onStart,
-                  icon: const WaymarkDiamond(size: 12, color: Color(0xFF1C2B25)),
+                  icon: const WaymarkDiamond(size: 12, color: AppColors.ink),
                   label: const Text('Démarrer l\'itinéraire'),
                 ),
               ],
@@ -709,7 +784,7 @@ class _StartPill extends StatelessWidget {
         width: double.infinity,
         child: ElevatedButton.icon(
           onPressed: onStart,
-          icon: const WaymarkDiamond(size: 14, color: Color(0xFF1C2B25)),
+          icon: const WaymarkDiamond(size: 14, color: AppColors.ink),
           label: const Text('Démarrer'),
         ),
       );

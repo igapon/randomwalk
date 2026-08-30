@@ -1,6 +1,6 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../trip/gated_ticker.dart';
 import '../trip/trip_controller.dart';
 import '../valhalla/models.dart';
 
@@ -19,25 +19,20 @@ class SessionScreen extends ConsumerStatefulWidget {
 class _SessionScreenState extends ConsumerState<SessionScreen> {
   RoutingProfile _profile = RoutingProfile.walk;
 
-  /// Local UI tick: TripController only notifies on start/stop, not per
-  /// GPS fix (see trip_controller.dart), so the live distance/duration
-  /// numbers are refreshed the same lightweight way map_screen.dart does.
-  Timer? _ticker;
+  /// Local UI tick, gated to only run while recording (see [GatedTicker]):
+  /// TripController only notifies on start/stop, not per GPS fix (see
+  /// trip_controller.dart), so the live distance/duration numbers need
+  /// their own refresh — but only while there's actually a trip to show.
+  late final _ticker = GatedTicker(onTick: () {
+    if (mounted) setState(() {});
+  });
 
   static const String _kPositionUnavailableMessage =
       'Position indisponible — activez la localisation ou définissez un départ manuel.';
 
   @override
-  void initState() {
-    super.initState();
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
-  }
-
-  @override
   void dispose() {
-    _ticker?.cancel();
+    _ticker.dispose();
     super.dispose();
   }
 
@@ -68,6 +63,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   @override
   Widget build(BuildContext context) {
     final trip = ref.watch(tripControllerProvider);
+    _ticker.sync(trip.isRecording);
     final session = trip.sessionController;
     final distance = session.recorder?.distanceKm ?? 0.0;
     final isRecording = trip.isRecording;

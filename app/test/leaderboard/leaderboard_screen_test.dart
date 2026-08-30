@@ -110,4 +110,19 @@ void main() {
 
     expect(find.textContaining('hors ligne'), findsOneWidget);
   });
+
+  testWidgets(
+      'RefreshIndicator spinner is legible (not the ~1.7:1 yellow-on-paper default)',
+      (tester) async {
+    final repo = _FakeRepo(() async => const LeaderboardData(
+          top: [LeaderboardEntry(pseudo: 'Ana', totalKm: 12, rank: 1)],
+          me: null,
+        ));
+    await tester.pumpWidget(_app(repo));
+    await tester.pumpAndSettle();
+
+    final indicator = tester.widget<RefreshIndicator>(find.byType(RefreshIndicator));
+    expect(indicator.color, isNot(const Color(0xFFF5B800)));
+    expect(indicator.color, AppTheme.light.colorScheme.onSurface);
+  });
 }

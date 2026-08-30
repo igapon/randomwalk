@@ -42,6 +42,12 @@ class AppColors {
   /// line on top (two addLine calls — see map_screen.dart).
   static const routeLineCasing = ink;
   static const routeLine = yellow;
+
+  /// Hex-string forms of the two colors above, for MapLibre's `LineOptions`
+  /// (String-typed, not `Color`) — kept alongside so the route line drawn
+  /// on the map can't silently drift from these tokens.
+  static const routeLineCasingHex = '#1C2B25';
+  static const routeLineHex = '#F5B800';
 }
 
 class AppRadii {
