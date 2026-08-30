@@ -1,0 +1,17 @@
+services:
+  leaderboard:
+    build: .
+    container_name: randomwalk-leaderboard
+    restart: unless-stopped
+    volumes:
+      - /srv/randomwalk/leaderboard-data:/data
+    networks: [frappe_docker_default]
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.rwlb.rule: Host(`drive.lmqc.fr`)
+      traefik.http.routers.rwlb.entrypoints: websecure
+      traefik.http.routers.rwlb.tls.certresolver: main-resolver
+      traefik.http.services.rwlb.loadbalancer.server.port: "8000"
+networks:
+  frappe_docker_default:
+    external: true
