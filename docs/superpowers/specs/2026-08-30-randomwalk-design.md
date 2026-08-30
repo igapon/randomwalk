@@ -30,7 +30,7 @@ d'exploration (« mode aventure »).
 |---|---|---|
 | Stack app | **Flutter** (Dart) | Un codebase Android+iOS ; natif limité au GPS background, FFI et montre |
 | Carte | **MapLibre GL** (`maplibre_gl`) | Rendu vectoriel OSM, open source, support offline |
-| Routage | **Valhalla embarqué** (C++ via FFI) | Offline, zéro coût serveur de routage, recalcul instantané, map-matching (Meili) inclus |
+| Routage | **Valhalla embarqué** via l'AAR précompilé `io.github.rallista:valhalla-mobile` (0.6.3, Valhalla 3.6.2) piloté par MethodChannel — API JSON in/out ; FFI direct possible plus tard sans changer l'interface Dart | Offline, zéro coût serveur de routage, recalcul instantané, map-matching (Meili) inclus, pas de toolchain NDK à maintenir. Contrainte : version Valhalla identique côté build serveur (tuiles) et côté app |
 | Backend | **Supabase** (Auth + Postgres/PostGIS) | Comptes + sync dès v1 ; PostGIS prêt pour le collaboratif géo |
 | Données | **Local-first, SQLite (drift)** + journal d'événements synchronisé | Offline total, sync sans conflits, base du multijoueur |
 | État Flutter | Riverpod | Standard, testable |
@@ -151,9 +151,10 @@ le serveur ne fait aucun travail par requête.
   fournisseur gratuit (OpenFreeMap) — rien ne transite par notre serveur.
 - **Routage** : les tuiles Valhalla vivent sur une grille géographique fixe
   (niveau 2 = 0,25° ≈ 25 km, niveaux 1 et 0 plus larges pour la hiérarchie).
-  Le serveur fait un **build périodique unique** (cron) d'une grande zone
-  (Suisse d'abord, extensible à l'Europe) et publie l'arborescence de tuiles
-  **en statique** (nginx). L'app calcule les ids de tuiles couvrant la
+  Un **build périodique unique** (cron) couvre une grande zone (M1 : Suisse +
+  France frontalière — extraits Geofabrik fusionnés puis découpés, un seul
+  build ; extensible à l'Europe) et publie l'arborescence de tuiles en
+  statique. L'app calcule les ids de tuiles couvrant la
   position + une couronne (calcul purement local, la grille est déterministe)
   et télécharge uniquement celles-ci. Cohérence garantie : toutes les tuiles
   publiées viennent du même build (`dataset_version` global ; l'app ne
@@ -164,11 +165,16 @@ le serveur ne fait aucun travail par requête.
   re-téléchargement quand `dataset_version` change (en Wi-Fi par défaut).
 - Réglages : voir/supprimer/précharger une zone (ex. avant un voyage).
 
-**Infrastructure `dev.lmqc.fr`** (volontairement minimale) :
-1. Job cron de build : Geofabrik → `valhalla_build_tiles` (Docker) →
-   publication atomique des tuiles + manifeste (`dataset_version`, checksums).
-2. nginx statique pour les tuiles et manifestes.
-3. Micro-API leaderboard (voir 4.8) — seul composant dynamique.
+**Infrastructure** (volontairement minimale ; le VPS dev.lmqc.fr a peu de
+disque — les tuiles n'y touchent pas) :
+1. **Build : GitHub Actions** (cron hebdo + déclenchement manuel) — Geofabrik
+   → `valhalla_build_tiles` (Docker, version Valhalla épinglée = celle de
+   l'app) → manifeste (`dataset_version`, checksums).
+2. **Stockage/CDN : GitHub Releases** d'un dépôt public `randomwalk-tiles`
+   (1 asset par tuile + `manifest.json`) ; découverte via l'URL stable
+   `releases/latest/download/manifest.json`, bande passante gratuite.
+3. **VPS dev.lmqc.fr : uniquement la micro-API leaderboard** (voir 4.8),
+   conteneur Docker derrière le Traefik existant.
 
 ### 4.8 Leaderboard primitif (v1, dès M1)
 Classement global minimal synchronisé via `dev.lmqc.fr` :
@@ -176,6 +182,8 @@ Classement global minimal synchronisé via `dev.lmqc.fr` :
   envoi périodique du score (km cumulés ; XP quand la couche jeu existera).
 - Serveur : micro-API (2 endpoints : `POST /v1/score`, `GET /v1/leaderboard`)
   avec stockage SQLite, limitation de débit basique. Pas de compte requis.
+  Exposée sur `https://drive.lmqc.fr` (sous-domaine réutilisé — l'ancien
+  conteneur lmqc-drive est arrêté et conservé, pas supprimé).
 - UI : écran classement (top 50 + rang de l'utilisateur), pseudo modifiable.
 - À l'arrivée de Supabase (M5), l'identité anonyme est rattachée au compte ;
   l'API leaderboard migre ou est absorbée — le client passe par la même
