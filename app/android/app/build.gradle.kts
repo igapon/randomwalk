@@ -40,6 +40,10 @@ kotlin {
     }
 }
 
+dependencies {
+    implementation("io.github.rallista:valhalla-mobile:0.6.3")
+}
+
 flutter {
     source = "../.."
 }
