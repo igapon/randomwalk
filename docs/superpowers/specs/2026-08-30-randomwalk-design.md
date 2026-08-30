@@ -82,6 +82,13 @@ Profils Valhalla `pedestrian` et `bicycle`, alternatives, instructions
 turn-by-turn localisées (fr/en). Coûts ajustés pour privilégier les voies
 agréables (pénalité grands axes).
 
+UX de planification : **le départ par défaut est la position actuelle** ;
+la destination se choisit par appui long sur la carte **ou par recherche
+d'adresse** (barre type Google Maps — géocodage Photon/OSM en ligne, biaisé
+vers la position, derrière une interface `GeocodingService` remplaçable ;
+la recherche exige le réseau, le routage reste offline). Départ modifiable
+manuellement.
+
 ### 4.2 Boucles et routes à distance fixe
 1. Placer k points intermédiaires (2–4) sur un cercle autour du départ, azimuts
    partiellement aléatoires ; rayon initial ≈ distance_cible / 2π (boucle).
