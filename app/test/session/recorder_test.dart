@@ -19,14 +19,14 @@ void main() {
   test('ignores inaccurate fixes', () {
     final r = SessionRecorder();
     r.add(s(46.5, 6.6));
-    r.add(s(46.6, 6.6, acc: 80, t: 60)); // 11 km d'un coup, précision 80 m
+    r.add(s(46.6, 6.6, acc: 80, t: 60)); // 11 km in one jump, 80 m accuracy
     expect(r.distanceKm, 0);
   });
 
   test('ignores implausible jumps (over 90 km/h)', () {
     final r = SessionRecorder();
     r.add(s(46.5, 6.6));
-    r.add(s(46.6, 6.6, t: 60)); // 11 km en 1 min = 660 km/h
+    r.add(s(46.6, 6.6, t: 60)); // 11 km in 1 min = 660 km/h
     expect(r.distanceKm, 0);
   });
 

@@ -84,7 +84,6 @@ class CoverageRepository {
     final tileDir = Directory('${root.path}/${manifest.datasetVersion}');
     await tileDir.create(recursive: true);
     _sweepPartFiles(tileDir);
-    await _purgeOtherVersions(manifest.datasetVersion);
     final wanted = neededPaths(lat, lon)
         .where(manifest.tiles.containsKey)
         .toList();
@@ -103,6 +102,17 @@ class CoverageRepository {
       if (have) await _touch(tileDir, path);
     }
     await _purgeLru(tileDir);
+    // Only reclaim old dataset versions once this run's downloads are
+    // fully complete: purging *before* the download loop (or after one
+    // that had failures, e.g. mid-run network loss) could delete the
+    // previous, fully-usable offline directory while leaving the new one
+    // incomplete — destroying the offline guarantee ensureCoverage/plan()
+    // otherwise provide. A partial new version is left in place too, so
+    // the next successful run can finish topping it up instead of
+    // re-downloading everything.
+    if (failed == 0) {
+      await _purgeOtherVersions(manifest.datasetVersion);
+    }
     return CoverageResult(
         datasetVersion: manifest.datasetVersion,
         tileDirPath: tileDir.path,

@@ -165,4 +165,48 @@ void main() {
     // The manifest cache file lives directly under root and must survive.
     expect(File('${root.path}/manifest.cache.json').existsSync(), isTrue);
   });
+
+  test(
+      'keeps an old, fully-usable dataset version until the new version finishes downloading',
+      () async {
+    final root = await Directory.systemTemp.createTemp('cov');
+    // A previously-downloaded, fully-usable old version — this is the
+    // offline fallback fix #1 relies on; it must survive an interrupted
+    // upgrade to a newer dataset version.
+    final oldVersionDir = Directory('${root.path}/OLD-VERSION');
+    final oldTile = File('${oldVersionDir.path}/${knownPaths.first}');
+    await oldTile.create(recursive: true);
+    await oldTile.writeAsBytes(tileBytes);
+
+    var tilesFail = true;
+    final c = MockClient((req) async {
+      if (req.url.path.endsWith('manifest.json')) {
+        final m = manifestFor(knownPaths)..['dataset_version'] = 'NEW-VERSION';
+        return http.Response(jsonEncode(m), 200);
+      }
+      if (req.url.path.endsWith('.gph')) {
+        return tilesFail
+            ? http.Response('not found', 404)
+            : http.Response.bytes(tileBytes, 200);
+      }
+      return http.Response('not found', 404);
+    });
+    final repo = CoverageRepository(root: root, client: c);
+
+    // Manifest fetch succeeds (new version), but every tile download fails
+    // (e.g. connectivity dropped mid-download).
+    final incomplete = await repo.ensureCoverage(lat, lon);
+    expect(incomplete.datasetVersion, 'NEW-VERSION');
+    expect(incomplete.failed, greaterThan(0));
+    expect(oldVersionDir.existsSync(), isTrue,
+        reason:
+            'a partial new-version download must not destroy the old, still-usable one');
+
+    // A later, fully-successful run completes the new version...
+    tilesFail = false;
+    final complete = await repo.ensureCoverage(lat, lon);
+    expect(complete.failed, 0);
+    // ...and only now is the old version reclaimed.
+    expect(oldVersionDir.existsSync(), isFalse);
+  });
 }
