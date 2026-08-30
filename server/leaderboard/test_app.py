@@ -77,3 +77,39 @@ def test_plausible_daily_increase_accepted(client):
     submit(client, "f" * 8, "frank", 0.0)
     r = submit(client, "f" * 8, "frank", 42.0)
     assert r.json()["total_km"] == 42.0
+
+
+def test_schema_migration_from_old_schema(tmp_path, monkeypatch):
+    """Test migration from old schema (without day/day_base_km columns)."""
+    import sqlite3
+
+    # Create a DB with the OLD schema
+    old_db_path = tmp_path / "old_lb.sqlite"
+    conn = sqlite3.connect(str(old_db_path))
+    conn.execute(
+        "CREATE TABLE scores("
+        " user_id TEXT PRIMARY KEY, pseudo TEXT NOT NULL,"
+        " total_km REAL NOT NULL, updated_at REAL NOT NULL)")
+    conn.execute(
+        "INSERT INTO scores(user_id, pseudo, total_km, updated_at)"
+        " VALUES(?, ?, ?, ?)",
+        ("gggggggg", "grace", 150.0, 1000000.0))
+    conn.commit()
+    conn.close()
+
+    # Point app to old DB and reload
+    monkeypatch.setenv("LEADERBOARD_DB", str(old_db_path))
+    import app as app_module
+    importlib.reload(app_module)
+    client = TestClient(app_module.app)
+
+    # Both endpoints should work (old row accessible, schema migrated)
+    r = client.get("/v1/leaderboard", params={"user_id": "gggggggg"}).json()
+    assert r["me"] is not None
+    assert r["me"]["pseudo"] == "grace"
+    assert r["me"]["total_km"] == 150.0
+    assert r["me"]["rank"] == 1
+
+    # Verify the row can be updated (should handle NULL day as "not today")
+    r = submit(client, "gggggggg", "grace", 160.0)
+    assert r.json()["total_km"] == 160.0  # Should accept the increase

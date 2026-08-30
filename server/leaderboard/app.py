@@ -22,6 +22,14 @@ def _db() -> sqlite3.Connection:
         " user_id TEXT PRIMARY KEY, pseudo TEXT NOT NULL,"
         " total_km REAL NOT NULL, updated_at REAL NOT NULL,"
         " day TEXT, day_base_km REAL)")
+
+    # Schema migration: add missing columns if table exists from old schema
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(scores)")}
+    if "day" not in existing_columns:
+        conn.execute("ALTER TABLE scores ADD COLUMN day TEXT")
+    if "day_base_km" not in existing_columns:
+        conn.execute("ALTER TABLE scores ADD COLUMN day_base_km REAL")
+
     return conn
 
 
