@@ -11,6 +11,11 @@ class SessionController {
   final DateTime Function() _getClock;
   final Future<bool> Function() _checkPermissions;
 
+  /// Injectable so the foreground-service isolate can ask for Android-
+  /// specific background behaviour (an explicit update interval) without
+  /// this class importing anything platform-specific.
+  final LocationSettings _locationSettings;
+
   SessionRecorder? _recorder;
   bool _isRecording = false;
   bool _isStarting = false;
@@ -29,9 +34,13 @@ class SessionController {
     Stream<Position> Function(LocationSettings)? getPositionStream,
     DateTime Function()? getClock,
     Future<bool> Function()? checkPermissions,
+    LocationSettings? locationSettings,
     this.onSessionEnded,
     this.onSessionError,
-  })  : _getPositionStream = getPositionStream ??
+  })  : _locationSettings = locationSettings ??
+            const LocationSettings(
+                accuracy: LocationAccuracy.best, distanceFilter: 3),
+        _getPositionStream = getPositionStream ??
             ((LocationSettings settings) => Geolocator.getPositionStream(locationSettings: settings)),
         _getClock = getClock ?? DateTime.now,
         _checkPermissions = checkPermissions ?? _defaultCheckPermissions;
@@ -73,12 +82,7 @@ class SessionController {
       _recorder = SessionRecorder();
 
       // Subscribe to position stream.
-      _positionStream = _getPositionStream(
-        const LocationSettings(
-          accuracy: LocationAccuracy.best,
-          distanceFilter: 3,
-        ),
-      ).listen(
+      _positionStream = _getPositionStream(_locationSettings).listen(
         (Position position) {
           final sample = GpsSample(
             lat: position.latitude,
