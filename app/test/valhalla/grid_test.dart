@@ -2,8 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/valhalla/grid.dart';
 
 void main() {
-  // Point de référence de la doc Valhalla (« why tiles ») :
-  // (41.413203, -73.623787) → tuile niveau 2 id 756425.
+  // Reference point from the Valhalla docs (« why tiles »):
+  // (41.413203, -73.623787) → level-2 tile id 756425.
   const lat = 41.413203, lon = -73.623787;
 
   test('level sizes and ids match the valhalla scheme', () {

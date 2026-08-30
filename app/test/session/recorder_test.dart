@@ -9,7 +9,7 @@ GpsSample s(double lat, double lon,
 void main() {
   test('accumulates haversine distance over a straight walk', () {
     final r = SessionRecorder();
-    // ~111 m par pas de 0.001° de latitude
+    // ~111 m per 0.001° latitude step
     for (var i = 0; i <= 10; i++) {
       r.add(s(46.5 + i * 0.001, 6.6, t: i * 60));
     }
