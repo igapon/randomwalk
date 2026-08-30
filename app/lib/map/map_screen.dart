@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'geocoding.dart';
+import 'latest_only.dart';
 import 'route_controller.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/models.dart';
@@ -14,6 +15,8 @@ const kMapAttribution = 'OpenFreeMap © OpenMapTiles, Data from OpenStreetMap';
 
 const _kLocationDeniedMessage =
     'Localisation refusée — activez-la dans les réglages.';
+const _kPositionUnavailableMessage =
+    'Position indisponible — activez la localisation ou définissez un départ manuel.';
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -46,6 +49,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   final _searchController = TextEditingController();
   Timer? _searchDebounce;
+  final _searchGeneration = LatestOnly();
   List<GeocodeResult> _searchResults = [];
   String? _searchError;
   bool _searching = false;
@@ -57,7 +61,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
     super.dispose();
   }
 
+  /// Resolves the live GPS position, or `null` if it isn't available for
+  /// any reason: permission denied, location services turned off system-
+  /// wide (as opposed to just app permission), or the platform call itself
+  /// failing/timing out. Callers treat `null` uniformly — see
+  /// [_kLocationDeniedMessage] / [_kPositionUnavailableMessage].
   Future<LatLng?> _currentPositionOrNull() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return null;
     var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
@@ -66,8 +77,16 @@ class MapScreenState extends ConsumerState<MapScreen> {
         permission == LocationPermission.deniedForever) {
       return null;
     }
-    final pos = await Geolocator.getCurrentPosition();
-    return LatLng(pos.latitude, pos.longitude);
+    try {
+      final pos = await Geolocator.getCurrentPosition();
+      return LatLng(pos.latitude, pos.longitude);
+    } on LocationServiceDisabledException {
+      // Services can be switched off in the gap between the check above
+      // and this call; treat it the same as the up-front check.
+      return null;
+    } on TimeoutException {
+      return null;
+    }
   }
 
   Future<void> _centerOnUser() async {
@@ -154,11 +173,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final destination = _destination;
     if (destination == null) return;
     final departure = _departureOverride ?? await _currentPositionOrNull();
+    if (!mounted) return;
     if (departure == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text(_kLocationDeniedMessage)));
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(_kPositionUnavailableMessage)));
       return;
     }
     setState(() {
@@ -210,6 +228,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
   void _onSearchChanged(String query) {
     _searchDebounce?.cancel();
     if (query.trim().isEmpty) {
+      // Bump the generation too: if a search for a previous query is still
+      // in flight, its response must not repopulate results the user just
+      // cleared.
+      _searchGeneration.start();
       setState(() {
         _searchResults = [];
         _searchError = null;
@@ -221,6 +243,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _runSearch(String query) async {
+    // Tag this call with a generation token so that, if a newer search
+    // starts before this one's HTTP response comes back, the stale result
+    // is dropped instead of clobbering what the newer call already showed
+    // (or is still loading).
+    final gen = _searchGeneration.start();
+    if (!mounted) return;
     setState(() {
       _searching = true;
       _searchError = null;
@@ -230,13 +258,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
     try {
       final results = await service.search(query,
           nearLat: near?.latitude, nearLon: near?.longitude);
-      if (!mounted) return;
+      if (!mounted || !_searchGeneration.isCurrent(gen)) return;
       setState(() {
         _searchResults = results;
         _searching = false;
       });
     } on GeocodingException {
-      if (!mounted) return;
+      if (!mounted || !_searchGeneration.isCurrent(gen)) return;
       setState(() {
         _searchResults = [];
         _searching = false;
@@ -248,6 +276,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _selectSearchResult(GeocodeResult result) async {
     final coords = LatLng(result.lat, result.lon);
     _searchController.clear();
+    // Invalidate any still-in-flight search for a previous keystroke so its
+    // response can't repopulate the list after the user already picked one.
+    _searchGeneration.start();
     setState(() {
       _searchResults = [];
       _searchError = null;
