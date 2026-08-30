@@ -70,6 +70,30 @@ flutter:
   assets:
     - assets/valhalla_config.json
 
+  fonts:
+    - family: Bricolage Grotesque
+      fonts:
+        - asset: assets/fonts/BricolageGrotesque/BricolageGrotesque[opsz,wdth,wght].ttf
+          weight: 400
+        - asset: assets/fonts/BricolageGrotesque/BricolageGrotesque[opsz,wdth,wght].ttf
+          weight: 600
+        - asset: assets/fonts/BricolageGrotesque/BricolageGrotesque[opsz,wdth,wght].ttf
+          weight: 700
+    - family: Schibsted Grotesk
+      fonts:
+        - asset: assets/fonts/SchibstedGrotesk/SchibstedGrotesk[wght].ttf
+          weight: 400
+        - asset: assets/fonts/SchibstedGrotesk/SchibstedGrotesk[wght].ttf
+          weight: 500
+        - asset: assets/fonts/SchibstedGrotesk/SchibstedGrotesk[wght].ttf
+          weight: 700
+    - family: IBM Plex Mono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono/IBMPlexMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexMono/IBMPlexMono-Medium.ttf
+          weight: 500
+
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 
