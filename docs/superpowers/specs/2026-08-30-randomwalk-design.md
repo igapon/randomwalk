@@ -55,8 +55,9 @@ d'exploration (« mode aventure »).
 │  Auth (email + Google/Apple) · Postgres + PostGIS          │
 │  Tables miroir du journal d'événements                     │
 └─────────────────────────────────────────────────────────────┘
-        + CDN statique : par région → tuiles carte MapLibre,
-          tuiles routables Valhalla, extrait POIs jeu
+        + dev.lmqc.fr : tuiles Valhalla statiques (build cron unique,
+          téléchargées à la demande par le client) + micro-API leaderboard
+        + OpenFreeMap : tuiles d'affichage MapLibre (direct client)
 ```
 
 ### Modules Dart (paquets internes)
@@ -141,28 +142,44 @@ issue de l'historique utilisateur ; défauts avant historique : 4,5 km/h
 - **Source POIs** : extraits d'OSM par région (même job que les tuiles
   Valhalla), fichier compact téléchargé avec la région.
 
-### 4.7 Couverture adaptative (régions invisibles)
+### 4.7 Couverture adaptative, tirée par le client (serveur minimal)
 La notion de « région » est invisible pour l'utilisateur : **la couverture
-s'adapte à sa position**.
+s'adapte à sa position**, et c'est **le client qui télécharge ses tuiles** —
+le serveur ne fait aucun travail par requête.
 
-- Le monde est découpé en **cellules fixes** (grille ~50×50 km). L'app détecte
-  la position de l'utilisateur et télécharge automatiquement (en Wi-Fi par
-  défaut) les cellules couvrant sa zone + une couronne autour ; en déplacement
-  ou lors de la planification d'une route ailleurs, les cellules manquantes
-  sont proposées/préchargées.
-- Côté serveur : les cellules (tuiles carte + tuiles Valhalla + POIs jeu,
-  versionnées) sont **générées à la demande puis mises en cache** à partir
-  d'extraits OSM — pas de pré-construction mondiale. Première demande d'une
-  cellule : préparation en arrière-plan (l'app affiche la progression) ;
-  demandes suivantes : téléchargement direct.
-- Téléchargement par morceaux avec reprise et checksums ; purge LRU locale des
-  cellules non utilisées ; rafraîchissement périodique des cellules actives.
-- Réglages : gestion manuelle possible (voir/supprimer/précharger une zone,
-  ex. avant un voyage).
+- **Affichage** : MapLibre consomme directement les tuiles vectorielles d'un
+  fournisseur gratuit (OpenFreeMap) — rien ne transite par notre serveur.
+- **Routage** : les tuiles Valhalla vivent sur une grille géographique fixe
+  (niveau 2 = 0,25° ≈ 25 km, niveaux 1 et 0 plus larges pour la hiérarchie).
+  Le serveur fait un **build périodique unique** (cron) d'une grande zone
+  (Suisse d'abord, extensible à l'Europe) et publie l'arborescence de tuiles
+  **en statique** (nginx). L'app calcule les ids de tuiles couvrant la
+  position + une couronne (calcul purement local, la grille est déterministe)
+  et télécharge uniquement celles-ci. Cohérence garantie : toutes les tuiles
+  publiées viennent du même build (`dataset_version` global ; l'app ne
+  mélange jamais deux versions).
+- **POIs jeu** (M4) : extraits par cellule dans le même job cron, servis en
+  statique de la même façon.
+- Téléchargement avec reprise (HTTP Range) et checksums ; purge LRU locale ;
+  re-téléchargement quand `dataset_version` change (en Wi-Fi par défaut).
+- Réglages : voir/supprimer/précharger une zone (ex. avant un voyage).
 
-**Infrastructure** : pipeline de génération + stockage/CDN hébergés sur
-`dev.lmqc.fr` (extraits OSM via Geofabrik/pyosmium, `valhalla_build_tiles`,
-extraction POIs par `osmium tags-filter`).
+**Infrastructure `dev.lmqc.fr`** (volontairement minimale) :
+1. Job cron de build : Geofabrik → `valhalla_build_tiles` (Docker) →
+   publication atomique des tuiles + manifeste (`dataset_version`, checksums).
+2. nginx statique pour les tuiles et manifestes.
+3. Micro-API leaderboard (voir 4.8) — seul composant dynamique.
+
+### 4.8 Leaderboard primitif (v1, dès M1)
+Classement global minimal synchronisé via `dev.lmqc.fr` :
+- Client : identité anonyme générée sur l'appareil (UUID + pseudo choisi),
+  envoi périodique du score (km cumulés ; XP quand la couche jeu existera).
+- Serveur : micro-API (2 endpoints : `POST /v1/score`, `GET /v1/leaderboard`)
+  avec stockage SQLite, limitation de débit basique. Pas de compte requis.
+- UI : écran classement (top 50 + rang de l'utilisateur), pseudo modifiable.
+- À l'arrivée de Supabase (M5), l'identité anonyme est rattachée au compte ;
+  l'API leaderboard migre ou est absorbée — le client passe par la même
+  interface Dart (`LeaderboardRepository`) dans les deux cas.
 
 ## 5. Données et sync
 
@@ -207,7 +224,7 @@ de M5).
 
 | Jalon | Contenu |
 |---|---|
-| **M1 Fondations** | App Flutter + MapLibre, Valhalla FFI Android (A→B piéton/vélo), couverture adaptative : pipeline de cellules sur dev.lmqc.fr + téléchargement auto autour de la position |
+| **M1 Fondations** | App Flutter + MapLibre (tuiles OpenFreeMap), Valhalla FFI Android (A→B piéton/vélo), tuiles de routage statiques sur dev.lmqc.fr téléchargées par le client autour de sa position, leaderboard primitif |
 | **M2 Navigation** | Turn-by-turn, foreground service écran éteint, notifications, TTS, recalcul |
 | **M3 Boucles** | Distance/temps fixe, candidats multiples, UI de choix |
 | **M4 Exploration + jeu** | Map-matching, couverture, fog of war, landmarks, économie, XP/badges |
