@@ -2009,3 +2009,21 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
 - [ ] **Step 4: Restylage session + classement** — SessionScreen : trajet en cours en grand (Bricolage), historique visuel minimal ; LeaderboardScreen : rangs en Plex Mono, ligne « moi » surlignée jaune pâle, header display.
 - [ ] **Step 5: Vérifs** — flutter analyze 0 ; flutter test tout vert (tests existants adaptés si sélecteurs/labels changent) ; push ; CI 4 jobs verts. Vérif visuelle device différée (APK M1).
 - [ ] **Step 6: Commit** — `feat: waymark visual identity and one-tap trip start` (+ commit séparé pour les fonts si volumineux).
+
+---
+
+### Task 13: Trajet robuste — état persistant, tracking arrière-plan, permissions complètes
+
+*(Exigences propriétaire pendant QA device : « je commence l'itinéraire, puis je fais autre chose, et le chemin disparaît » ; « je veux vraiment pouvoir fermer l'application, ou éteindre l'écran, et que ça marche encore » ; « demande la permission d'avoir le GPS tout le temps » ; « demande la permission du health pour ce qui est des pas, pour s'assurer que la personne est active ». Avance le cœur background de M2.)*
+
+**Files:**
+- Create: `app/lib/trip/active_route_store.dart` (+ tests), `app/lib/tracking/tracking_service.dart` (+ handler natif/isolate), `app/lib/tracking/steps.dart`
+- Modify: `app/lib/main.dart` (IndexedStack, restauration au démarrage), `app/lib/map/map_screen.dart` (rendu depuis l'état applicatif), `app/lib/trip/trip_controller.dart`, `app/lib/session/session_controller.dart`, `app/lib/session/session_screen.dart`, `app/android/**` (permissions, service), `app/pubspec.yaml`
+
+**Exigences (contraignantes):**
+1. **État applicatif du trajet** : itinéraire planifié (RouteResult+destination+profil) et trajet en cours vivent dans des providers/état applicatif, PAS dans l'état des écrans ; MapScreen se redessine depuis cet état à chaque (re)création (réutiliser _redrawAfterRemount). HomeShell passe en IndexedStack.
+2. **Persistance disque continue** : route active + progression de session (distance, pas, départ, profil) écrites en continu (throttlé) ; au démarrage à froid : restauration + bannière « Trajet interrompu — Reprendre / Terminer » (Reprendre conserve distance/pas accumulés).
+3. **Foreground service** (flutter_foreground_task ou équivalent maintenu — vérifier l'API actuelle sur pub.dev/context7) : l'enregistrement GPS + pas tourne dans le service ; survit écran éteint ET app balayée des récents ; notification persistante sobre (distance · durée) thème « balisage » ; l'UI lit l'état du service (IPC/storage partagé). Arrêt du trajet → service stoppé proprement.
+4. **Permissions** (flux UX en français, demandées au bon moment, jamais en rafale au premier lancement) : localisation précise → « Autoriser tout le temps » (ACCESS_BACKGROUND_LOCATION, redirection réglages Android 11+ avec écran explicatif), ACTIVITY_RECOGNITION (pas), POST_NOTIFICATIONS (Android 13+). Refus → dégradation gracieuse documentée (tracking premier plan seulement) avec bandeau explicatif.
+5. **Pas** : package pedometer (capteur TYPE_STEP_COUNTER), delta de pas par session, affiché dans les stats de session et persisté ; plausibilité marche (des km sans pas ⇒ marquer la session « à vérifier » localement — exploitation serveur en M5). Health Connect = M4.
+6. Tests : unités pour ActiveRouteStore (persist/restore), reprise de session (distance+pas conservés), machine à états service (fake handler) ; CI 4 jobs verts ; QA device par le propriétaire (écran éteint, app fermée, reprise).
