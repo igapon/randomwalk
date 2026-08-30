@@ -18,12 +18,15 @@ class _FakeIdentityStore implements IdentityStore {
 }
 
 class _FakeRepo implements LeaderboardRepository {
-  _FakeRepo(this._fetchImpl);
+  _FakeRepo(this._fetchImpl, {this.onSubmit});
   final Future<LeaderboardData> Function() _fetchImpl;
+  final void Function(PlayerIdentity id, double totalKm)? onSubmit;
 
   @override
-  Future<SubmitResult> submit(PlayerIdentity id, double totalKm) async =>
-      const SubmitResult(rank: 1, totalKm: 0);
+  Future<SubmitResult> submit(PlayerIdentity id, double totalKm) async {
+    onSubmit?.call(id, totalKm);
+    return const SubmitResult(rank: 1, totalKm: 0);
+  }
 
   @override
   Future<LeaderboardData> fetch(String userId) => _fetchImpl();
@@ -124,5 +127,54 @@ void main() {
     final indicator = tester.widget<RefreshIndicator>(find.byType(RefreshIndicator));
     expect(indicator.color, isNot(const Color(0xFFF5B800)));
     expect(indicator.color, AppTheme.light.colorScheme.onSurface);
+  });
+
+  testWidgets('matches "me" by userId, not rank, so ties resolve correctly',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final repo = _FakeRepo(() async => const LeaderboardData(
+          top: [
+            LeaderboardEntry(
+                userId: 'u-other', pseudo: 'Other', totalKm: 100, rank: 1),
+            LeaderboardEntry(
+                userId: 'u-test', pseudo: 'Testeur', totalKm: 100, rank: 1),
+          ],
+          me: null,
+        ));
+    await tester.pumpWidget(_app(repo));
+    await tester.pumpAndSettle();
+
+    // Both rows tie at rank 1 — only the row whose userId matches the
+    // local identity ('u-test', see _FakeIdentityStore) should render bold.
+    final otherText = tester.widget<Text>(find.text('Other'));
+    final meText = tester.widget<Text>(find.text('Testeur'));
+    expect(otherText.style?.fontWeight, isNot(FontWeight.w700));
+    expect(meText.style?.fontWeight, FontWeight.w700);
+  });
+
+  testWidgets('skips the submit entirely when the local total is zero',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    var submitted = false;
+    final repo = _FakeRepo(
+        () async => const LeaderboardData(top: [], me: null),
+        onSubmit: (_, __) => submitted = true);
+    await tester.pumpWidget(_app(repo));
+    await tester.pumpAndSettle();
+
+    expect(submitted, isFalse);
+  });
+
+  testWidgets('submits the local total when it is greater than zero',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({'total_km': 5.0});
+    double? submittedKm;
+    final repo = _FakeRepo(
+        () async => const LeaderboardData(top: [], me: null),
+        onSubmit: (_, km) => submittedKm = km);
+    await tester.pumpWidget(_app(repo));
+    await tester.pumpAndSettle();
+
+    expect(submittedKm, 5.0);
   });
 }

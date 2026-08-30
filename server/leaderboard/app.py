@@ -95,10 +95,14 @@ def submit_score(s: Score):
 @app.get("/v1/leaderboard")
 def leaderboard(user_id: str | None = None):
     with contextlib.closing(_db()) as conn:
-        # Use window function RANK() for consistent competition ranking
-        top = [{"pseudo": p, "total_km": k, "rank": r}
-               for p, k, r in conn.execute(
-                   "SELECT pseudo, total_km, RANK() OVER (ORDER BY total_km DESC) AS rnk"
+        # Use window function RANK() for consistent competition ranking.
+        # user_id is included so clients can identify their own row by id
+        # instead of by rank, which is ambiguous whenever two or more users
+        # tie (a common case, e.g. several users at 0 km).
+        top = [{"user_id": u, "pseudo": p, "total_km": k, "rank": r}
+               for u, p, k, r in conn.execute(
+                   "SELECT user_id, pseudo, total_km,"
+                   " RANK() OVER (ORDER BY total_km DESC) AS rnk"
                    " FROM scores"
                    " ORDER BY total_km DESC, updated_at ASC LIMIT 50")]
         me = None

@@ -45,6 +45,12 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   _LeaderboardErrorKind? _error;
   bool _loading = true;
 
+  /// The local player's userId, captured on each load — used to match "me"
+  /// among [top] entries by identity instead of by rank (rank ties whenever
+  /// two or more players share a total, most commonly several players who
+  /// have never submitted a real distance all sitting at 0 km).
+  String? _myUserId;
+
   @override
   void initState() {
     super.initState();
@@ -53,10 +59,16 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
 
   Future<LeaderboardData> _submitAndFetch() async {
     final identity = await ref.read(identityStoreProvider).get();
+    _myUserId = identity.userId;
     final repo = ref.read(leaderboardRepositoryProvider);
     try {
       final totalKm = await _totalStore.totalKm();
-      await repo.submit(identity, totalKm);
+      // A brand-new player (or one who never recorded a real session) has
+      // totalKm == 0 — submitting that would create (or keep alive) a
+      // tied-at-zero row on the backend for every tab open, for no reason.
+      if (totalKm > 0) {
+        await repo.submit(identity, totalKm);
+      }
     } catch (_) {
       // Best-effort: submission failures here stay silent — the local
       // total is the source of truth and will be retried on the next
@@ -178,7 +190,8 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   Widget _buildList(LeaderboardData data) {
     final top = data.top.take(50).toList();
     final me = data.me;
-    final meInTop = me != null && top.any((e) => e.rank == me.rank);
+    final meInTop = me != null && _myUserId != null &&
+        top.any((e) => e.userId == _myUserId);
     final extraRow = me != null && !meInTop;
 
     if (top.isEmpty && !extraRow) {
@@ -206,7 +219,7 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
         itemBuilder: (context, index) {
           if (index < top.length) {
             final e = top[index];
-            final isMe = me != null && e.rank == me.rank;
+            final isMe = _myUserId != null && e.userId == _myUserId;
             return _entryTile(e, isMe);
           }
           return _entryTile(me!, true);

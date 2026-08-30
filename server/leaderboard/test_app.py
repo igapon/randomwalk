@@ -21,6 +21,7 @@ def test_submit_and_rank(client):
     assert submit(client, "b" * 8, "bob", 9.0).json()["rank"] == 1
     r = client.get("/v1/leaderboard", params={"user_id": "a" * 8}).json()
     assert [e["pseudo"] for e in r["top"]] == ["bob", "alice"]
+    assert [e["user_id"] for e in r["top"]] == ["b" * 8, "a" * 8]
     assert r["me"]["rank"] == 2
 
 
@@ -56,6 +57,21 @@ def test_tied_users_consistent_rank(client):
     lb_bob = client.get("/v1/leaderboard", params={"user_id": "b" * 8}).json()
     assert lb_alice["me"]["rank"] == 1
     assert lb_bob["me"]["rank"] == 1
+
+
+def test_top_entries_include_user_id_to_disambiguate_ties(client):
+    """top[] carries user_id so a client can match "me" by id, not by rank
+    (which is ambiguous whenever two or more rows tie — e.g. several users
+    who have never submitted a real distance all sitting at 0 km)."""
+    submit(client, "a" * 8, "alice", 100.0)
+    submit(client, "b" * 8, "bob", 100.0)
+    r = client.get("/v1/leaderboard").json()
+    ids = {e["user_id"] for e in r["top"]}
+    assert ids == {"a" * 8, "b" * 8}
+    assert all(e["rank"] == 1 for e in r["top"])
+    # pseudo/total_km/rank remain present alongside user_id.
+    for e in r["top"]:
+        assert set(e.keys()) == {"user_id", "pseudo", "total_km", "rank"}
 
 
 def test_rapid_submissions_same_day_capped(client):

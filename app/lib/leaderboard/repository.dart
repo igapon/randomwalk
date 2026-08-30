@@ -13,12 +13,21 @@ class LeaderboardException implements Exception {
 }
 
 class LeaderboardEntry {
+  /// Nullable for backward compat with a server response that predates the
+  /// server including it (or a `me` entry that still omits it) — callers
+  /// matching "me" should treat a `null` userId as "can't tell", not "not
+  /// me".
+  final String? userId;
   final String pseudo;
   final double totalKm;
   final int rank;
   const LeaderboardEntry(
-      {required this.pseudo, required this.totalKm, required this.rank});
+      {this.userId,
+      required this.pseudo,
+      required this.totalKm,
+      required this.rank});
   factory LeaderboardEntry.fromJson(Map<String, dynamic> j) => LeaderboardEntry(
+      userId: j['user_id'] as String?,
       pseudo: j['pseudo'] as String,
       totalKm: (j['total_km'] as num).toDouble(),
       rank: j['rank'] as int);
