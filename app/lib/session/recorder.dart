@@ -58,12 +58,24 @@ class SessionRecorder {
 
 class TotalDistanceStore {
   static const _key = 'total_km';
-  Future<double> totalKm() async =>
-      (await SharedPreferences.getInstance()).getDouble(_key) ?? 0;
+  Future<dynamic> _pendingOp = Future.value();
+
+  Future<double> totalKm() async {
+    await _pendingOp;
+    return (await SharedPreferences.getInstance()).getDouble(_key) ?? 0;
+  }
+
+  /// Atomically adds km to total and returns the new total. Calls are
+  /// serialized to prevent interleaving of read-then-write operations.
   Future<double> addAndGetTotalKm(double km) async {
-    final prefs = await SharedPreferences.getInstance();
-    final total = (prefs.getDouble(_key) ?? 0) + km;
-    await prefs.setDouble(_key, total);
-    return total;
+    _pendingOp = _pendingOp.then((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      final total = (prefs.getDouble(_key) ?? 0) + km;
+      await prefs.setDouble(_key, total);
+      return total;
+    });
+    return _pendingOp.then((_) async {
+      return (await SharedPreferences.getInstance()).getDouble(_key) ?? 0;
+    });
   }
 }

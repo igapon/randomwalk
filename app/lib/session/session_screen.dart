@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'recorder.dart';
+import 'session_controller.dart';
 
 enum ActivityMode { walk, bike }
 
@@ -14,108 +14,52 @@ class SessionScreen extends StatefulWidget {
 }
 
 class _SessionScreenState extends State<SessionScreen> {
-  final SessionRecorder _recorder = SessionRecorder();
-  final TotalDistanceStore _store = TotalDistanceStore();
-
-  bool _isRecording = false;
+  late final SessionController _controller;
   ActivityMode _mode = ActivityMode.walk;
   Duration _elapsed = Duration.zero;
-  StreamSubscription<Position>? _positionStream;
   Timer? _elapsedTimer;
 
-  static const String _kLocationDeniedMessage =
-      'Localisation refusée — activez-la dans les réglages.';
   static const String _kPositionUnavailableMessage =
       'Position indisponible — activez la localisation ou définissez un départ manuel.';
 
-  /// Check if location services are available and permissions are granted.
-  Future<bool> _checkAndRequestLocationPermissions() async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
+  @override
+  void initState() {
+    super.initState();
+    _controller = SessionController(store: TotalDistanceStore());
+  }
+
+  Future<void> _startSession() async {
+    final started = await _controller.start();
+    if (!started) {
+      // Permission denied or already starting.
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text(_kPositionUnavailableMessage)));
       }
-      return false;
+      return;
     }
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(_kLocationDeniedMessage)));
-      }
-      return false;
-    }
-    return true;
-  }
-
-  Future<void> _startSession() async {
-    final canAccess = await _checkAndRequestLocationPermissions();
-    if (!canAccess) return;
 
     if (!mounted) return;
-    setState(() => _isRecording = true);
+    setState(() {});
 
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          _elapsed = _recorder.elapsed(DateTime.now());
+          _elapsed = _controller.elapsed;
         });
       }
     });
-
-    try {
-      _positionStream = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.best,
-          distanceFilter: 3,
-        ),
-      ).listen(
-        (Position position) {
-          final sample = GpsSample(
-            lat: position.latitude,
-            lon: position.longitude,
-            accuracyM: position.accuracy,
-            speedMps: position.speed,
-            time: position.timestamp,
-          );
-          _recorder.add(sample);
-          if (mounted) {
-            setState(() {});
-          }
-        },
-        onError: (e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text(_kPositionUnavailableMessage)));
-            _stopSession();
-          }
-        },
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(_kPositionUnavailableMessage)));
-        _stopSession();
-      }
-    }
   }
 
   Future<void> _stopSession() async {
-    await _positionStream?.cancel();
-    _positionStream = null;
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
 
-    if (!mounted) return;
-    setState(() => _isRecording = false);
+    final totalKm = await _controller.stop();
 
-    final totalKm = await _store.addAndGetTotalKm(_recorder.distanceKm);
+    if (!mounted) return;
+    setState(() => _elapsed = Duration.zero);
+
     widget.onSessionEnded?.call(totalKm);
   }
 
@@ -132,13 +76,16 @@ class _SessionScreenState extends State<SessionScreen> {
 
   @override
   void dispose() {
-    _positionStream?.cancel();
     _elapsedTimer?.cancel();
+    _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final distance = _controller.recorder?.distanceKm ?? 0.0;
+    final isRecording = _controller.isRecording;
+
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -160,7 +107,7 @@ class _SessionScreenState extends State<SessionScreen> {
                 ],
                 selected: {_mode},
                 onSelectionChanged: (s) {
-                  if (!_isRecording) {
+                  if (!isRecording) {
                     setState(() => _mode = s.first);
                   }
                 },
@@ -172,7 +119,7 @@ class _SessionScreenState extends State<SessionScreen> {
                 children: [
                   // Distance display
                   Text(
-                    '${_recorder.distanceKm.toStringAsFixed(2)} km',
+                    '${distance.toStringAsFixed(2)} km',
                     style: Theme.of(context).textTheme.displayMedium,
                   ),
                   const SizedBox(height: 8),
@@ -184,7 +131,7 @@ class _SessionScreenState extends State<SessionScreen> {
                   const SizedBox(height: 32),
                   // Start/Stop button
                   ElevatedButton(
-                    onPressed: _isRecording ? _stopSession : _startSession,
+                    onPressed: isRecording ? _stopSession : _startSession,
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 48,
@@ -192,7 +139,7 @@ class _SessionScreenState extends State<SessionScreen> {
                       ),
                     ),
                     child: Text(
-                      _isRecording ? 'Terminer' : 'Démarrer',
+                      isRecording ? 'Terminer' : 'Démarrer',
                       style: const TextStyle(fontSize: 20),
                     ),
                   ),
