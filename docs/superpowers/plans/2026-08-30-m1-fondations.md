@@ -18,6 +18,7 @@
 - Région M1 : **Suisse + France frontalière** — fusion `osmium merge` des extraits Geofabrik `europe/switzerland`, `europe/france/rhone-alpes`, `europe/france/franche-comte`, `europe/france/alsace`, découpée au bbox `4.8,45.0 → 11.0,48.2` (Suisse + ~50 km), puis UN SEUL build Valhalla (jamais de tuiles issues de builds séparés). Nom de région : `ch-fr`.
 - Git : identité `iaro <iaro@ik.me>` (déjà configurée), messages Conventional Commits. Dépôt app : `igapon/randomwalk` (privé). Dépôt tuiles : `igapon/randomwalk-tiles` (public — requis pour les téléchargements de Releases sans auth).
 - UI en français ; code, commentaires et messages de commit en anglais.
+- **Insets Android obligatoires** : tout écran/overlay gère la barre système du bas (SafeArea / MediaQuery.viewPadding) — FAB, bandeaux bas, boutons flottants jamais masqués par la barre de navigation (erreur récurrente signalée par le propriétaire du projet ; vérifier en gestuel et en 3-boutons).
 - SSH serveur : `ssh dev.lmqc.fr` (alias configuré → ubuntu@51.77.231.190). Réseau Traefik : `frappe_docker_default`, certresolver `main-resolver`, entrypoint `websecure`.
 - TDD : chaque comportement non trivial naît d'un test qui échoue d'abord.
 
