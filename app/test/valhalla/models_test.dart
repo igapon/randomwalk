@@ -5,7 +5,7 @@ import 'package:randomwalk/valhalla/models.dart';
 void main() {
   test('decodePolyline6 round-trips a known point pair', () {
     // encodage polyline précision 6 de [(46.52, 6.63), (46.521, 6.631)]
-    final pts = decodePolyline6(encodePolyline6ForTest([
+    final pts = decodePolyline6(encodePolyline6([
       (46.52, 6.63),
       (46.521, 6.631),
     ]));
@@ -20,7 +20,7 @@ void main() {
     // normally shown encoded at precision 5 as "_p~iF~ps|U_ulLnnqC_mqNvxq`@".
     // Valhalla encodes shapes at precision 6, so the string below was produced by
     // a standalone Node.js re-implementation of the algorithm (not by this file's
-    // encodePolyline6ForTest — a round trip through the same encoder can't catch a
+    // encodePolyline6 — a round trip through the same encoder can't catch a
     // symmetric sign/shift bug). That Node script was cross-checked by re-encoding
     // these exact points at precision 5, which reproduced Google's canonical
     // string above byte for byte, before it was used to compute the precision-6
@@ -38,7 +38,7 @@ void main() {
 
   test('decodePolyline6 handles negative deltas (independent golden vector)',
       () {
-    // Same standalone Node.js encoder as above (not encodePolyline6ForTest),
+    // Same standalone Node.js encoder as above (not encodePolyline6),
     // for a point pair that forces a negative delta on both lat and lon —
     // the case a same-sign round trip would never exercise.
     const encoded = '_c`|@_c`|@~fayB~tpzA';
@@ -53,7 +53,7 @@ void main() {
   test('RouteResult parses a valhalla trip json', () {
     final j = jsonDecode('''
     {"trip":{"summary":{"length":1.234,"time":900},
-      "legs":[{"shape":"${encodePolyline6ForTest([(46.52, 6.63), (46.53, 6.64)])}",
+      "legs":[{"shape":"${encodePolyline6([(46.52, 6.63), (46.53, 6.64)])}",
         "maneuvers":[{"instruction":"Marchez vers le nord.","length":1.234,"begin_shape_index":0}]}]}}
     ''') as Map<String, dynamic>;
     final r = RouteResult.fromValhallaJson(j);

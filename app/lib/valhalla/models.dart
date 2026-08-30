@@ -30,6 +30,18 @@ class Maneuver {
       {required this.instruction,
       required this.lengthKm,
       required this.beginShapeIndex});
+
+  Map<String, dynamic> toJson() => {
+        'instruction': instruction,
+        'lengthKm': lengthKm,
+        'beginShapeIndex': beginShapeIndex,
+      };
+
+  factory Maneuver.fromJson(Map<String, dynamic> j) => Maneuver(
+        instruction: j['instruction'] as String,
+        lengthKm: (j['lengthKm'] as num).toDouble(),
+        beginShapeIndex: j['beginShapeIndex'] as int,
+      );
 }
 
 class RouteResult {
@@ -42,6 +54,29 @@ class RouteResult {
       required this.distanceKm,
       required this.duration,
       required this.maneuvers});
+
+  /// Round-trippable form used to persist the *planned* route across process
+  /// death (see `ActiveRouteStore`). Deliberately not Valhalla's own shape:
+  /// this is our own model, and re-deriving it from a raw trip response would
+  /// mean keeping (and re-parsing) the whole Valhalla payload on disk.
+  /// The polyline is re-encoded rather than stored as a list of pairs — the
+  /// same 1e-6 encoding the engine already speaks, ~6x smaller on disk.
+  Map<String, dynamic> toJson() => {
+        'shape': encodePolyline6(shape),
+        'distanceKm': distanceKm,
+        'durationSeconds': duration.inSeconds,
+        'maneuvers': [for (final m in maneuvers) m.toJson()],
+      };
+
+  factory RouteResult.fromJson(Map<String, dynamic> j) => RouteResult(
+        shape: decodePolyline6(j['shape'] as String),
+        distanceKm: (j['distanceKm'] as num).toDouble(),
+        duration: Duration(seconds: j['durationSeconds'] as int),
+        maneuvers: [
+          for (final m in (j['maneuvers'] as List<dynamic>))
+            Maneuver.fromJson(m as Map<String, dynamic>),
+        ],
+      );
 
   factory RouteResult.fromValhallaJson(Map<String, dynamic> j) {
     final trip = j['trip'] as Map<String, dynamic>;
@@ -90,8 +125,10 @@ List<(double, double)> decodePolyline6(String encoded) {
   return points;
 }
 
-/// Test helper (encoder) — kept here so tests don't duplicate the format.
-String encodePolyline6ForTest(List<(double, double)> pts) {
+/// Inverse of [decodePolyline6]. Used by [RouteResult.toJson] to persist a
+/// planned route compactly, and by the model tests to build fixtures without
+/// duplicating the format.
+String encodePolyline6(List<(double, double)> pts) {
   final sb = StringBuffer();
   var lastLat = 0, lastLon = 0;
   void emit(int v) {
