@@ -211,6 +211,17 @@ class ForegroundServiceTripTracker implements TripTracker {
       );
 }
 
+/// Where a (re)starting service isolate picks the trip up from.
+///
+/// [persisted] is the last snapshot written to disk; [seed] is what the UI
+/// handed over when the user pressed Démarrer. The persisted one wins:
+/// `allowAutoRestart` means Android can kill and relaunch the service
+/// mid-trip and run `onStart` again, and restarting from the seed would
+/// silently reset the distance to whatever it was at the start of the trip.
+/// Restarting from the snapshot loses at most one write interval.
+TripSnapshot? resumePoint(TripSnapshot? persisted, TripSnapshot? seed) =>
+    persisted != null && persisted.isRecording ? persisted : seed;
+
 /// The service isolate's entry point. Must be a top-level function marked
 /// `vm:entry-point` — the AOT compiler cannot see it otherwise.
 @pragma('vm:entry-point')
@@ -237,19 +248,24 @@ class TripTaskHandler extends TaskHandler {
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     final path = await FlutterForegroundTask.getData<String>(
         key: _kSnapshotPathKey);
-    final rawSeed =
-        await FlutterForegroundTask.getData<String>(key: _kSeedKey);
-    if (path == null || rawSeed == null) return;
+    if (path == null) return;
 
-    final seed = TripSnapshot.fromJson(
-        jsonDecode(rawSeed) as Map<String, dynamic>);
+    final store = FileTripSnapshotStore(File(path));
+    final seed = await _resumePoint(store);
+    if (seed == null) return;
     _seed = seed;
     _steps = seed.steps;
-    _writer = ThrottledSnapshotWriter(FileTripSnapshotStore(File(path)));
+    _writer = ThrottledSnapshotWriter(store);
 
     final session = SessionController(
-      store: _DiscardingDistanceStore(),
+      store: _PassThroughDistanceStore(),
       checkPermissions: () async => true,
+      // Banks what the recorder measured into the running total *before* it
+      // is discarded. Without this, a GPS stream error mid-trip would drop
+      // the trip's distance back to whatever it was at the last (re)start:
+      // SessionController nulls its recorder when a session finishes, and
+      // [_snapshotAt] reads the distance from that recorder.
+      onSessionEnded: _bank,
       onSessionError: (message) async => FlutterForegroundTask.sendDataToMain(
           jsonEncode({_kGpsErrorKey: message})),
       locationSettings: AndroidSettings(
@@ -264,6 +280,17 @@ class TripTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
+    // A GPS stream error ends the underlying session (see
+    // SessionController._finishSession). In the foreground that meant the
+    // trip was over; for a background recorder it usually means a transient
+    // provider hiccup, so retry rather than silently stopping a walk the
+    // user thinks is still being measured. Already-measured distance is
+    // safe in [_seed] by now, so a restart resumes on top of it.
+    final session = _session;
+    if (session != null && !session.isRecording && !session.isStarting) {
+      session.start();
+    }
+
     final snapshot = _snapshotAt(timestamp);
     if (snapshot == null) return;
     _writer?.submit(snapshot);
@@ -288,6 +315,23 @@ class TripTaskHandler extends TaskHandler {
     _session = null;
   }
 
+  /// Folds a finished session's distance into the running total.
+  Future<void> _bank(double sessionKm) async {
+    final seed = _seed;
+    if (seed == null) return;
+    _seed = seed.copyWith(distanceKm: seed.distanceKm + sessionKm);
+  }
+
+  Future<TripSnapshot?> _resumePoint(TripSnapshotStore store) async {
+    final raw = await FlutterForegroundTask.getData<String>(key: _kSeedKey);
+    return resumePoint(
+      await store.read(),
+      raw == null
+          ? null
+          : TripSnapshot.fromJson(jsonDecode(raw) as Map<String, dynamic>),
+    );
+  }
+
   TripSnapshot? _snapshotAt(DateTime now) {
     final seed = _seed;
     if (seed == null) return null;
@@ -301,11 +345,15 @@ class TripTaskHandler extends TaskHandler {
 }
 
 /// [SessionController] insists on a [TotalDistanceStore]; inside the service
-/// isolate there is nothing to bank into. The cumulative total and the
-/// leaderboard submit happen once, in the UI, when the trip is finalised —
-/// doing it here would double-count a resumed trip and would need
+/// isolate there is nothing to bank into. The cumulative *lifetime* total and
+/// the leaderboard submit happen once, in the UI, when the trip is finalised
+/// — doing it here would double-count a resumed trip and would need
 /// shared_preferences in an isolate that cannot reliably reach it.
-class _DiscardingDistanceStore implements TotalDistanceStore {
+///
+/// Returning the session's own distance unchanged (rather than 0) is what
+/// makes `onSessionEnded` hand [TripTaskHandler._bank] the kilometres this
+/// session measured.
+class _PassThroughDistanceStore implements TotalDistanceStore {
   @override
   Future<double> totalKm() async => 0;
 

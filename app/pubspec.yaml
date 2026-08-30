@@ -39,7 +39,13 @@ dependencies:
   crypto: ^3.0.0
   uuid: ^4.4.0
   flutter_foreground_task: ^11.0.1
-  permission_handler: ^13.0.1
+  # Pinned below 13.x: permission_handler_android 14.0.0 requires
+  # compileSdk 37, and AGP 9.0.1 (settings.gradle.kts) supports at most 36 —
+  # `:app:checkDebugAarMetadata` fails the build outright. 12.0.3 pulls
+  # permission_handler_android 13.x and has the identical Dart API surface
+  # this app uses (locationWhenInUse / locationAlways / activityRecognition
+  # / notification, PermissionStatus, openAppSettings).
+  permission_handler: ^12.0.3
 
 dev_dependencies:
   flutter_test:
