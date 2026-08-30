@@ -15,29 +15,36 @@ class RandomWalkApp extends StatelessWidget {
 }
 
 class HomeShell extends StatefulWidget {
-  const HomeShell({super.key});
+  const HomeShell({super.key, this.screensOverride});
+  final List<Widget>? screensOverride;
+
+  static final List<Widget> defaultScreens = <Widget>[
+    const MapScreen(),
+    const Center(child: Text('Session')),    // remplacé Task 9
+    const Center(child: Text('Classement')), // remplacé Task 10
+  ];
+
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
-  static final _screens = <Widget>[
-    const MapScreen(),
-    const Center(child: Text('Session')),    // remplacé Task 9
-    const Center(child: Text('Classement')), // remplacé Task 10
-  ];
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-        body: _screens[_tab],
-        bottomNavigationBar: NavigationBar(
-          selectedIndex: _tab,
-          onDestinationSelected: (i) => setState(() => _tab = i),
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.map), label: 'Carte'),
-            NavigationDestination(icon: Icon(Icons.directions_walk), label: 'Session'),
-            NavigationDestination(icon: Icon(Icons.emoji_events), label: 'Classement'),
-          ],
-        ),
-      );
+  Widget build(BuildContext context) {
+    final screens = widget.screensOverride ?? HomeShell.defaultScreens;
+    return Scaffold(
+      body: screens[_tab],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.map), label: 'Carte'),
+          NavigationDestination(icon: Icon(Icons.directions_walk), label: 'Session'),
+          NavigationDestination(icon: Icon(Icons.emoji_events), label: 'Classement'),
+        ],
+      ),
+    );
+  }
 }
