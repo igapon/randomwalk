@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' show Point;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'geocoding.dart';
 import 'latest_only.dart';
@@ -355,12 +357,19 @@ class MapScreenState extends ConsumerState<MapScreen> {
         _routeLine = newLine;
         _result = result;
       });
+      // RoutingException: no path found in an otherwise-covered area.
+      // SocketException/HttpException/ClientException: the coverage fetch
+      // failed offline with no warm cache (see CoverageRepository) — from
+      // the player's perspective that's the same outcome as an uncovered
+      // area, so it reads with the same message rather than crashing.
     } on RoutingException {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content:
-                Text('Itinéraire impossible ici — zone non couverte ?')));
-      }
+      _showRouteUnavailable();
+    } on SocketException {
+      _showRouteUnavailable();
+    } on HttpException {
+      _showRouteUnavailable();
+    } on http.ClientException {
+      _showRouteUnavailable();
     } finally {
       sink.onProgress = null;
       if (mounted) {
@@ -370,6 +379,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
         });
       }
     }
+  }
+
+  void _showRouteUnavailable() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Itinéraire impossible ici — zone non couverte ?')));
   }
 
   void _onSearchChanged(String query) {
