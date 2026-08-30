@@ -22,7 +22,9 @@ import java.util.concurrent.Executors
  *    `route(String): String`. It forwards the request to the native actor and returns Valhalla's
  *    raw trip JSON (or throws `ValhallaException.Internal` for the native error envelope).
  *  - `Valhalla` is `Closeable` and holds a native actor (incl. the mmapped tiles) for its whole
- *    lifetime; the previous instance is closed before a re-`init`.
+ *    lifetime; the previous instance is closed before a re-`init`, and [dispose] closes it (and
+ *    shuts down the worker thread) when the Flutter engine tears down — see
+ *    `MainActivity.cleanUpFlutterEngine`.
  */
 class ValhallaChannel(private val context: Context) {
     private var actor: Valhalla? = null
@@ -32,6 +34,9 @@ class ValhallaChannel(private val context: Context) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "randomwalk/valhalla")
             .setMethodCallHandler { call, result ->
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                // Argument extraction happens *inside* the executed block, not before dispatch:
+                // a missing/wrong-typed argument must reach the caller as a MethodChannel error,
+                // not throw on the platform thread before reply() ever gets a chance to catch it.
                 fun reply(block: () -> String) = executor.execute {
                     try {
                         val out = block()
@@ -43,26 +48,34 @@ class ValhallaChannel(private val context: Context) {
                     }
                 }
                 when (call.method) {
-                    "init" -> {
-                        val configJson = call.argument<String>("configJson")!!
-                        reply {
-                            actor?.close()
-                            val configFile =
-                                File(context.filesDir, "randomwalk_valhalla_config.json")
-                            configFile.writeText(configJson)
-                            actor = Valhalla(configFile.absolutePath)
-                            "ok"
-                        }
+                    "init" -> reply {
+                        val configJson = call.argument<String>("configJson")
+                            ?: throw IllegalArgumentException("init requires a configJson string")
+                        actor?.close()
+                        val configFile =
+                            File(context.filesDir, "randomwalk_valhalla_config.json")
+                        configFile.writeText(configJson)
+                        actor = Valhalla(configFile.absolutePath)
+                        "ok"
                     }
-                    "route" -> {
-                        val request = call.argument<String>("request")!!
-                        reply {
-                            actor?.routeRaw(request)
-                                ?: throw IllegalStateException("engine not initialized")
-                        }
+                    "route" -> reply {
+                        val request = call.argument<String>("request")
+                            ?: throw IllegalArgumentException("route requires a request string")
+                        actor?.routeRaw(request)
+                            ?: throw IllegalStateException("engine not initialized")
                     }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /**
+     * Releases the native actor (if any) and shuts down the worker thread. Call this from
+     * `cleanUpFlutterEngine` — nothing else frees the native handle or the mmapped tiles, and a
+     * leaked executor thread survives engine teardown otherwise.
+     */
+    fun dispose() {
+        executor.execute { actor?.close() }
+        executor.shutdown()
     }
 }

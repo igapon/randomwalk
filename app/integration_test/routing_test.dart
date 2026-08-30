@@ -1,53 +1,43 @@
 import 'dart:io';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:randomwalk/coverage/coverage_repository.dart';
 import 'package:randomwalk/valhalla/engine_channel.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
-// La fixture est copiée dans l'app au moment du test via les assets ? Non :
-// les .gph sont copiés depuis les assets déclarés ci-dessous vers un dossier
-// réel, car valhalla lit le filesystem. Déclarer dans pubspec.yaml :
-//   assets:
-//     - integration_test/fixtures/monaco_tiles/   (et sous-dossiers .gph)
-// puis lister via AssetManifest.
-
-Future<String> materializeFixture() async {
-  final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-  final tileAssets = manifest
-      .listAssets()
-      .where((a) =>
-          a.startsWith('integration_test/fixtures/monaco_tiles/') &&
-          a.endsWith('.gph'))
-      .toList();
-  expect(tileAssets, isNotEmpty, reason: 'fixture tiles must be bundled');
-  final dir = await getApplicationSupportDirectory();
-  final root = Directory('${dir.path}/fixture_tiles');
-  for (final a in tileAssets) {
-    // Asset names are flattened ("2_000_756_425.gph") -> valhalla tree paths.
-    final flat = a.substring('integration_test/fixtures/monaco_tiles/'.length);
-    final rel = flat.replaceAll('_', '/');
-    final f = File('${root.path}/$rel');
-    await f.create(recursive: true);
-    final data = await rootBundle.load(a);
-    await f.writeAsBytes(data.buffer.asUint8List(), flush: true);
-  }
-  return root.path;
-}
+// This exercises the real production path end to end rather than a bundled test
+// fixture: CoverageRepository downloads real tiles from the live manifest (same
+// path Task 9 wires up), then ChannelRoutingEngine routes through them. That
+// avoids shipping ~1.3MB of test-only .gph tiles in every release APK, and it
+// pre-validates that the deployed tile dataset's Valhalla version stays aligned
+// with the embedded valhalla-mobile AAR (both are 3.6.2 — see task-8-report.md).
+// Requires network; the emulator running this in CI has it.
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('pedestrian route across Monaco', (tester) async {
+  testWidgets('pedestrian route across Lausanne using production tiles',
+      (tester) async {
+    final supportDir = await getApplicationSupportDirectory();
+    final repo = CoverageRepository(
+        root: Directory('${supportDir.path}/coverage_tiles'),
+        client: http.Client());
+
+    // Lausanne, well within the ch-fr coverage area.
+    final coverage = await repo.ensureCoverage(46.52, 6.63);
+    expect(coverage.failed, 0, reason: 'no tile download should fail sha check');
+    expect(coverage.total, greaterThan(0), reason: 'ch-fr must cover this point');
+
     final engine = ChannelRoutingEngine();
-    await engine.init(await materializeFixture());
+    await engine.init(coverage.tileDirPath);
     final result = await engine.route(const RouteRequest(
-        fromLat: 43.7396, fromLon: 7.4263, // gare de Monaco
-        toLat: 43.7311, toLon: 7.4197, // vieille ville
+        fromLat: 46.5197, fromLon: 6.6323,
+        toLat: 46.5089, toLon: 6.6283,
         profile: RoutingProfile.walk));
-    expect(result.distanceKm, greaterThan(0.3));
-    expect(result.distanceKm, lessThan(5));
+    expect(result.distanceKm, greaterThan(0.5));
+    expect(result.distanceKm, lessThan(6));
     expect(result.shape.length, greaterThan(10));
     expect(result.maneuvers, isNotEmpty);
   });

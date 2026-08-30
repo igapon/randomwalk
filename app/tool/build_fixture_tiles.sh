@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Builds a small Monaco valhalla tile set for OPTIONAL local/hermetic testing only.
+# integration_test/routing_test.dart no longer bundles or needs this output: it now
+# downloads real production tiles from the live manifest via CoverageRepository, so
+# CI has no dependency on this script. Kept around for routing-logic experiments
+# without network, or for debugging against a known-small, reproducible tile set.
 set -euo pipefail
 WORK=/tmp/rw-fixture
 mkdir -p "$WORK/valhalla_tiles" && cd "$WORK"
