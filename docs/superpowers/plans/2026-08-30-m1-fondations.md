@@ -1973,3 +1973,39 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
 - [ ] Session de marche réelle → distance plausible → score visible dans le classement.
 - [ ] `flutter analyze` 0 issue, tous tests unitaires verts en CI, test d'intégration Monaco passé sur device/émulateur.
 - [ ] Hors couverture (ex. point aux USA) : erreur propre, pas de crash.
+
+---
+
+### Task 12: Identité visuelle « balisage » + démarrage de trajet en une action
+
+*(Ajout demandé par le propriétaire pendant l'exécution : « quitte à retarder la M1, fais une plus jolie interface. et il faut pouvoir démarrer un trajet facilement. »)*
+
+**Files:**
+- Create: `app/lib/theme/tokens.dart`, `app/lib/theme/theme.dart`
+- Create: `app/assets/fonts/` (Bricolage Grotesque, Schibsted Grotesk, IBM Plex Mono — TTF, licence OFL, téléchargées depuis les dépôts officiels Google Fonts)
+- Create: `app/lib/trip/trip_controller.dart`, `app/test/trip/trip_controller_test.dart`
+- Modify: `app/lib/main.dart`, `app/lib/map/map_screen.dart`, `app/lib/session/session_screen.dart`, `app/lib/leaderboard/leaderboard_screen.dart` (restylage), `app/pubspec.yaml` (fonts)
+
+**Interfaces:**
+- Consumes: RoutePlanner/routePlannerProvider (T9), SessionController (T10 fix), LeaderboardRepository (T11), MapScreenState.controller (T5).
+- Produces: `AppTheme.light`/`AppTheme.dark` (ThemeData complets, ColorScheme EXPLICITE — pas de seed) ; `TripController` (état: idle / routePlanned / recording{withRoute?}) avec `startTrip()` — si route planifiée: caméra-follow + enregistrement session liés à la route ; sinon: session libre (profil mémorisé) ; `stopTrip()` → clôture session (même chemin que T10/T11).
+
+**Direction visuelle contraignante (tokens exacts):**
+- Palette : papier `#F7F8F4`, encre `#1C2B25`, **jaune balisage `#F5B800`** (primaire ; texte TOUJOURS encre sur jaune, jamais de blanc), bleu hydrographie `#3D7A8C` (secondaire), erreur M3 par défaut. Sombre : fond `#12201A`, surfaces `#1C2B25`, jaune `#E6B800`, texte papier.
+- La carte MapLibre suit le thème : style `liberty` en clair, style sombre OpenFreeMap (`dark` ou `fiord`) en sombre (styleString réactif au brightness).
+- Typo (assets embarqués, PAS google_fonts runtime) : display Bricolage Grotesque (gros chiffres distance/durée, titres d'écrans), corps/UI Schibsted Grotesk, étiquettes/eyebrows IBM Plex Mono (petites capitales, lettres espacées — façon marges de carte topo).
+- Signature « losange de balisage » : marqueurs A (contour) / B (plein) en losange 45°, icône losange dans la pilule Démarrer ; ligne d'itinéraire = **jaune `#F5B800` 4.5px sur liseré encre 7px** (deux addLine superposées, casing dessous).
+- Formes : cartes radius 12, boutons stadium ; NavigationBar M3 thémée (indicator jaune pâle).
+
+**Flux « démarrer un trajet » (contraignant):**
+- Grande pilule **« Démarrer »** (jaune, encre, icône losange) ancrée en bas de la carte, AU-DESSUS des insets système (règle projet). Route planifiée → « Démarrer l'itinéraire » : lance TripController.startTrip (enregistrement + caméra-follow) ; sans route → bottom sheet minimal (Marche/Vélo, mémorisé via shared_preferences) puis démarrage immédiat.
+- Pendant un trajet : la pilule devient « Terminer » (encre, texte papier) + stats live compactes (distance enregistrée, durée — chiffres Bricolage) dans un bandeau inset-safe ; l'onglet Session affiche le trajet en cours en grand.
+- La fiche résultat d'itinéraire (T9) prend « Démarrer » comme action principale (à droite), « ✕ » secondaire.
+
+**Steps:**
+- [ ] **Step 1: TDD TripController** — test d'abord (`trip_controller_test.dart`) : idle→recording sans route (profil mémorisé), routePlanned→recording lié à la route, double start ignoré, stop clôture et repasse idle, callbacks de session branchés sur SessionController (fake injecté). RED → implémentation → GREEN.
+- [ ] **Step 2: Thème** — télécharger les 3 familles (TTF OFL) dans app/assets/fonts, déclarer dans pubspec, écrire tokens.dart + theme.dart (ColorScheme explicites clair/sombre, textTheme mappé aux 3 familles, shapes) ; brancher dans main.dart (themeMode system). Test de fumée : ThemeData se construit, couleurs clés exactes.
+- [ ] **Step 3: Restylage carte** — style MapLibre réactif au thème ; ligne route casing+jaune ; marqueurs losange ; pilule Démarrer/Terminer + bandeau stats live (insets !) ; fiche résultat avec Démarrer principal.
+- [ ] **Step 4: Restylage session + classement** — SessionScreen : trajet en cours en grand (Bricolage), historique visuel minimal ; LeaderboardScreen : rangs en Plex Mono, ligne « moi » surlignée jaune pâle, header display.
+- [ ] **Step 5: Vérifs** — flutter analyze 0 ; flutter test tout vert (tests existants adaptés si sélecteurs/labels changent) ; push ; CI 4 jobs verts. Vérif visuelle device différée (APK M1).
+- [ ] **Step 6: Commit** — `feat: waymark visual identity and one-tap trip start` (+ commit séparé pour les fonts si volumineux).
