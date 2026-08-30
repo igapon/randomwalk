@@ -7,11 +7,25 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'geocoding.dart';
 import 'latest_only.dart';
 import 'route_controller.dart';
+import '../theme/tokens.dart';
+import '../theme/waymark_glyph.dart';
+import '../trip/trip_controller.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/models.dart';
 
-const kMapStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
+const kMapStyleUrlLight = 'https://tiles.openfreemap.org/styles/liberty';
+// OpenFreeMap's dark style — see task-12 brief: the map follows the app's
+// brightness instead of always rendering the light "liberty" style.
+const kMapStyleUrlDark = 'https://tiles.openfreemap.org/styles/dark';
 const kMapAttribution = 'OpenFreeMap © OpenMapTiles, Data from OpenStreetMap';
+
+/// Image ids registered once via [MapLibreMapController.addImage] — see
+/// [_registerWaymarkIcons]. "A" (departure) is the contour variant, "B"
+/// (destination) the filled one, matching the brief's "losange de
+/// balisage" signature.
+const _kIconMarkerA = 'waymark-marker-a';
+const _kIconMarkerB = 'waymark-marker-b';
+const _kWaymarkIconSizePx = 44.0;
 
 const _kLocationDeniedMessage =
     'Localisation refusée — activez-la dans les réglages.';
@@ -26,17 +40,22 @@ class MapScreen extends ConsumerStatefulWidget {
 
 class MapScreenState extends ConsumerState<MapScreen> {
   MapLibreMapController? controller;
+  bool _iconsRegistered = false;
 
   // Departure defaults to the live GPS position; [_departureOverride] is set
   // only after the user explicitly picks a custom departure (see
   // [_armSetDeparture]).
   LatLng? _departureOverride;
-  Circle? _departureMarker;
+  Symbol? _departureMarker;
 
   LatLng? _destination;
-  Circle? _destinationMarker;
+  Symbol? _destinationMarker;
 
+  // Route line: a wide ink "casing" underneath a narrower yellow line on
+  // top (two addLine calls — casing added first so it sits below).
+  Line? _routeLineCasing;
   Line? _routeLine;
+
   RoutingProfile _profile = RoutingProfile.walk;
   RouteResult? _result;
   bool _planning = false;
@@ -54,11 +73,47 @@ class MapScreenState extends ConsumerState<MapScreen> {
   String? _searchError;
   bool _searching = false;
 
+  /// Refreshes the live stats banner (distance/duration) once a second
+  /// while a trip is recording. TripController only notifies listeners on
+  /// start/stop (see trip_controller.dart), not per GPS fix, so this is
+  /// the same lightweight polling pattern session_screen.dart already used.
+  Timer? _statsTicker;
+
+  @override
+  void initState() {
+    super.initState();
+    ref.read(tripControllerProvider).onCameraFollowChanged =
+        _onCameraFollowChanged;
+    _statsTicker =
+        Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+  }
+
   @override
   void dispose() {
+    _statsTicker?.cancel();
     _searchDebounce?.cancel();
     _searchController.dispose();
+    final trip = ref.read(tripControllerProvider);
+    if (trip.onCameraFollowChanged == _onCameraFollowChanged) {
+      trip.onCameraFollowChanged = null;
+    }
     super.dispose();
+  }
+
+  void _onCameraFollowChanged(bool follow) {
+    controller?.updateMyLocationTrackingMode(
+        follow ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none);
+  }
+
+  Future<void> _registerWaymarkIcons() async {
+    if (_iconsRegistered || controller == null) return;
+    _iconsRegistered = true;
+    final contour = await waymarkDiamondPng(
+        sizePx: _kWaymarkIconSizePx, color: AppColors.ink, filled: false, strokeWidth: 4);
+    final filled = await waymarkDiamondPng(
+        sizePx: _kWaymarkIconSizePx, color: AppColors.ink);
+    await controller?.addImage(_kIconMarkerA, contour);
+    await controller?.addImage(_kIconMarkerB, filled);
   }
 
   /// Resolves the live GPS position, or `null` if it isn't available for
@@ -113,14 +168,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _setDeparture(LatLng coords) async {
+    await _registerWaymarkIcons();
     final old = _departureMarker;
-    final marker = await controller?.addCircle(CircleOptions(
+    final marker = await controller?.addSymbol(SymbolOptions(
         geometry: coords,
-        circleRadius: 8,
-        circleColor: '#0D9488',
-        circleStrokeColor: '#FFFFFF',
-        circleStrokeWidth: 2));
-    if (old != null) await controller?.removeCircle(old);
+        iconImage: _kIconMarkerA,
+        iconSize: 1.0,
+        iconAnchor: 'center'));
+    if (old != null) await controller?.removeSymbol(old);
     if (!mounted) return;
     setState(() {
       _departureOverride = coords;
@@ -129,14 +184,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _setDestination(LatLng coords) async {
+    await _registerWaymarkIcons();
     final old = _destinationMarker;
-    final marker = await controller?.addCircle(CircleOptions(
+    final marker = await controller?.addSymbol(SymbolOptions(
         geometry: coords,
-        circleRadius: 8,
-        circleColor: '#DC2626',
-        circleStrokeColor: '#FFFFFF',
-        circleStrokeWidth: 2));
-    if (old != null) await controller?.removeCircle(old);
+        iconImage: _kIconMarkerB,
+        iconSize: 1.0,
+        iconAnchor: 'center'));
+    if (old != null) await controller?.removeSymbol(old);
     if (!mounted) return;
     setState(() {
       _destination = coords;
@@ -145,14 +200,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _clearRoute() async {
+    final casing = _routeLineCasing;
     final line = _routeLine;
     final departureMarker = _departureMarker;
     final destinationMarker = _destinationMarker;
     if (line != null) await controller?.removeLine(line);
-    if (departureMarker != null) await controller?.removeCircle(departureMarker);
-    if (destinationMarker != null) await controller?.removeCircle(destinationMarker);
+    if (casing != null) await controller?.removeLine(casing);
+    if (departureMarker != null) await controller?.removeSymbol(departureMarker);
+    if (destinationMarker != null) await controller?.removeSymbol(destinationMarker);
     if (!mounted) return;
     setState(() {
+      _routeLineCasing = null;
       _routeLine = null;
       _departureOverride = null;
       _departureMarker = null;
@@ -197,14 +255,22 @@ class MapScreenState extends ConsumerState<MapScreen> {
           toLat: destination.latitude,
           toLon: destination.longitude,
           profile: _profile));
+      final geometry = [for (final (lat, lon) in result.shape) LatLng(lat, lon)];
+      // Casing first (drawn below), then the yellow line on top.
+      final oldCasing = _routeLineCasing;
+      final newCasing = await controller?.addLine(LineOptions(
+          geometry: geometry,
+          lineColor: '#1C2B25',
+          lineWidth: 7,
+          lineOpacity: 1.0));
+      if (oldCasing != null) await controller?.removeLine(oldCasing);
       final oldLine = _routeLine;
       final newLine = await controller?.addLine(LineOptions(
-          geometry: [for (final (lat, lon) in result.shape) LatLng(lat, lon)],
-          lineColor: '#0D9488',
-          lineWidth: 5));
+          geometry: geometry, lineColor: '#F5B800', lineWidth: 4.5));
       if (oldLine != null) await controller?.removeLine(oldLine);
       if (!mounted) return;
       setState(() {
+        _routeLineCasing = newCasing;
         _routeLine = newLine;
         _result = result;
       });
@@ -295,20 +361,99 @@ class MapScreenState extends ConsumerState<MapScreen> {
     return '$km km · ~$min min';
   }
 
+  String _formatDuration(Duration d) {
+    final hours = d.inHours;
+    final minutes = d.inMinutes % 60;
+    final seconds = d.inSeconds % 60;
+    return hours > 0
+        ? '${hours}h ${minutes.toString().padLeft(2, '0')}m'
+        : '${minutes}m ${seconds.toString().padLeft(2, '0')}s';
+  }
+
+  /// Starts a trip bound to the currently planned route: camera-follow is
+  /// switched on by TripController via [_onCameraFollowChanged].
+  Future<void> _startRouteTrip() async {
+    final result = _result;
+    if (result == null) return;
+    final started = await ref.read(tripControllerProvider).startTrip(route: result);
+    if (!started && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text(_kPositionUnavailableMessage)));
+    }
+  }
+
+  /// One-tap start with no planned route: a minimal bottom sheet to pick
+  /// (and remember) Marche/Vélo, then starts immediately.
+  Future<void> _startFreeTrip() async {
+    final profile = await showModalBottomSheet<RoutingProfile>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.card))),
+      builder: (_) => const _ProfileSheet(),
+    );
+    if (profile == null || !mounted) return;
+    final started =
+        await ref.read(tripControllerProvider).startTrip(profile: profile);
+    if (!started && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text(_kPositionUnavailableMessage)));
+    }
+  }
+
+  Future<void> _stopTrip() async {
+    await ref.read(tripControllerProvider).stopTrip();
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
+    final trip = ref.watch(tripControllerProvider);
+    final brightness = Theme.of(context).brightness;
+    final styleUrl =
+        brightness == Brightness.dark ? kMapStyleUrlDark : kMapStyleUrlLight;
+
+    Widget? bottomBanner;
+    if (_planning) {
+      bottomBanner = _ProgressBanner(progress: _downloadProgress);
+    } else if (trip.isRecording) {
+      bottomBanner = _StatsBanner(
+        distanceKm: trip.sessionController.recorder?.distanceKm ?? 0,
+        elapsed: _formatDuration(trip.sessionController.elapsed),
+        onStop: _stopTrip,
+      );
+    } else if (_result != null) {
+      bottomBanner = _ResultBanner(
+        text: _formatResult(_result!),
+        onChangeDeparture: _armDepartureChange,
+        onClear: _clearRoute,
+        onStart: _startRouteTrip,
+      );
+    } else {
+      bottomBanner = _StartPill(onStart: _startFreeTrip);
+    }
+
     return Scaffold(
       body: Stack(
         children: [
           MapLibreMap(
-            styleString: kMapStyleUrl,
+            key: ValueKey(styleUrl),
+            styleString: styleUrl,
             initialCameraPosition:
                 const CameraPosition(target: LatLng(46.52, 6.63), zoom: 11),
             myLocationEnabled: true,
             myLocationTrackingMode: MyLocationTrackingMode.none,
             attributionButtonPosition: AttributionButtonPosition.bottomLeft,
-            onMapCreated: (c) => controller = c,
+            onMapCreated: (c) {
+              // A brightness flip remounts this widget under a new
+              // ValueKey(styleUrl) (MapLibre has no live style-swap in this
+              // version) — the native map instance is fresh, so its symbol
+              // icons need registering again too.
+              controller = c;
+              _iconsRegistered = false;
+            },
+            // addImage/addSymbol must wait for the style to finish loading
+            // (see maplibre_map.dart's onStyleLoadedCallback doc).
+            onStyleLoadedCallback: _registerWaymarkIcons,
             onMapLongClick: _onMapLongClick,
           ),
           Positioned(
@@ -346,47 +491,38 @@ class MapScreenState extends ConsumerState<MapScreen> {
                             icon: Icon(Icons.directions_bike)),
                       ],
                       selected: {_profile},
-                      onSelectionChanged: (s) {
-                        setState(() => _profile = s.first);
-                        if (_destination != null) _planRoute();
-                      },
+                      onSelectionChanged: trip.isRecording
+                          ? null
+                          : (s) {
+                              setState(() => _profile = s.first);
+                              if (_destination != null) _planRoute();
+                            },
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          if (_planning)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Padding(
-                padding: EdgeInsets.only(
-                    left: 16, right: 16, bottom: bottomInset + 16),
-                child: _ProgressBanner(progress: _downloadProgress),
-              ),
-            )
-          else if (_result != null)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Padding(
-                padding: EdgeInsets.only(
-                    left: 16, right: 16, bottom: bottomInset + 16),
-                child: _ResultBanner(
-                  text: _formatResult(_result!),
-                  onChangeDeparture: _armDepartureChange,
-                  onClear: _clearRoute,
-                ),
-              ),
+          // Anchored above the system nav insets (project rule), gesture
+          // and 3-button navigation alike.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Padding(
+              padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16),
+              child: bottomBanner,
             ),
+          ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _centerOnUser,
-        child: const Icon(Icons.my_location),
+      floatingActionButton: Padding(
+        // Lifted clear of the bottom banner/pill.
+        padding: const EdgeInsets.only(bottom: 88),
+        child: FloatingActionButton(
+          onPressed: _centerOnUser,
+          child: const Icon(Icons.my_location),
+        ),
       ),
     );
   }
@@ -400,7 +536,7 @@ class _SearchBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
         elevation: 2,
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(AppRadii.stadium),
         child: TextField(
           controller: controller,
           onChanged: onChanged,
@@ -418,7 +554,7 @@ class _SearchBar extends StatelessWidget {
                   ),
             filled: true,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(28),
+              borderRadius: BorderRadius.circular(AppRadii.stadium),
               borderSide: BorderSide.none,
             ),
             contentPadding:
@@ -448,7 +584,7 @@ class _SearchResultsPanel extends StatelessWidget {
         constraints: BoxConstraints(maxHeight: maxHeight),
         child: Material(
           elevation: 2,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppRadii.card),
           child: searching
               ? const Padding(
                   padding: EdgeInsets.all(16),
@@ -486,9 +622,7 @@ class _ProgressBanner extends StatelessWidget {
     final label = (p != null && p.total > 0)
         ? 'Téléchargement des cartes… ${p.done}/${p.total}'
         : 'Téléchargement des cartes…';
-    return Material(
-      elevation: 3,
-      borderRadius: BorderRadius.circular(12),
+    return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Row(
@@ -498,7 +632,7 @@ class _ProgressBanner extends StatelessWidget {
                 height: 18,
                 child: CircularProgressIndicator(strokeWidth: 2)),
             const SizedBox(width: 12),
-            Expanded(child: Text(label)),
+            Expanded(child: Text(label, style: Theme.of(context).textTheme.bodyMedium)),
           ],
         ),
       ),
@@ -506,39 +640,170 @@ class _ProgressBanner extends StatelessWidget {
   }
 }
 
+/// Route result card (T9): the primary action is the yellow "Démarrer
+/// l'itinéraire" pill (right), "✕" (clear) is secondary.
 class _ResultBanner extends StatelessWidget {
   const _ResultBanner({
     required this.text,
     required this.onChangeDeparture,
     required this.onClear,
+    required this.onStart,
   });
   final String text;
   final VoidCallback onChangeDeparture;
   final VoidCallback onClear;
+  final VoidCallback onStart;
 
   @override
-  Widget build(BuildContext context) => Material(
-        elevation: 3,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          child: Row(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(text,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(text, style: theme.textTheme.titleMedium),
                 ),
+                TextButton(
+                  onPressed: onChangeDeparture,
+                  child: const Text('Modifier le départ'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: onClear,
+                  tooltip: 'Effacer l\'itinéraire',
+                ),
+                const SizedBox(width: 4),
+                ElevatedButton.icon(
+                  onPressed: onStart,
+                  icon: const WaymarkDiamond(size: 12, color: Color(0xFF1C2B25)),
+                  label: const Text('Démarrer l\'itinéraire'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Idle, no route planned: the plain one-tap "Démarrer" pill.
+class _StartPill extends StatelessWidget {
+  const _StartPill({required this.onStart});
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: onStart,
+          icon: const WaymarkDiamond(size: 14, color: Color(0xFF1C2B25)),
+          label: const Text('Démarrer'),
+        ),
+      );
+}
+
+/// Recording: pill becomes "Terminer" (ink, paper text) alongside compact
+/// live stats (distance / duration, Bricolage Grotesque numerals).
+class _StatsBanner extends StatelessWidget {
+  const _StatsBanner({
+    required this.distanceKm,
+    required this.elapsed,
+    required this.onStop,
+  });
+  final double distanceKm;
+  final String elapsed;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Row(
+                children: [
+                  _Stat(value: '${distanceKm.toStringAsFixed(2)} km', theme: theme),
+                  const SizedBox(width: 20),
+                  _Stat(value: elapsed, theme: theme),
+                ],
               ),
-              TextButton(
-                onPressed: onChangeDeparture,
-                child: const Text('Modifier le départ'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: theme.colorScheme.onSurface,
+                foregroundColor: theme.colorScheme.surface,
               ),
-              IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: onClear,
-                tooltip: 'Effacer l\'itinéraire',
+              onPressed: onStop,
+              child: const Text('Terminer'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Stat extends StatelessWidget {
+  const _Stat({required this.value, required this.theme});
+  final String value;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) =>
+      Text(value, style: theme.textTheme.headlineSmall);
+}
+
+/// Minimal profile picker for a route-less ("free") trip start — tapping
+/// either option starts immediately (one-tap), no further confirmation.
+class _ProfileSheet extends StatelessWidget {
+  const _ProfileSheet();
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Démarrer un trajet', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () =>
+                          Navigator.of(context).pop(RoutingProfile.walk),
+                      icon: const Icon(Icons.directions_walk),
+                      label: const Text('Marche'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () =>
+                          Navigator.of(context).pop(RoutingProfile.bike),
+                      icon: const Icon(Icons.directions_bike),
+                      label: const Text('Vélo'),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../session/recorder.dart';
 import 'identity.dart';
 
 /// Player settings: editable pseudo, plus read-only identity and local
 /// stats. Reached via the settings icon in the app's top bar.
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
-  final _identityStore = IdentityStore();
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _totalStore = TotalDistanceStore();
   final _formKey = GlobalKey<FormState>();
   final _pseudoController = TextEditingController();
@@ -26,7 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<({PlayerIdentity identity, double totalKm})> _load() async {
-    final identity = await _identityStore.get();
+    final identity = await ref.read(identityStoreProvider).get();
     final totalKm = await _totalStore.totalKm();
     _pseudoController.text = identity.pseudo;
     return (identity: identity, totalKm: totalKm);
@@ -47,7 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    await _identityStore.setPseudo(_pseudoController.text.trim());
+    await ref.read(identityStoreProvider).setPseudo(_pseudoController.text.trim());
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('Pseudo enregistré.')));

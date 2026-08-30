@@ -4,12 +4,34 @@ import '../session/recorder.dart';
 import '../settings/identity.dart';
 import 'repository.dart';
 
-const _kOfflineMessage = 'Classement indisponible hors ligne';
+/// Distinguishes "no network" from "backend responded but not with a 200":
+/// the two failure modes read very differently to a player, so the copy
+/// shouldn't claim "offline" when the server was in fact reachable.
+enum _LeaderboardErrorKind {
+  /// No response at all (no connectivity, DNS failure, timeout, ...).
+  offline('Classement indisponible hors ligne.'),
+
+  /// The backend responded with a non-200 status ([LeaderboardException]).
+  server('Classement momentanément indisponible.');
+
+  const _LeaderboardErrorKind(this.message);
+  final String message;
+}
+
+_LeaderboardErrorKind _classifyError(Object error) =>
+    error is LeaderboardException
+        ? _LeaderboardErrorKind.server
+        : _LeaderboardErrorKind.offline;
 
 /// Displays the top-50 leaderboard and the player's own rank. Best-effort
 /// submits the local total km on open (and on pull-to-refresh) so the
 /// backend stays in sync even if the last session's submit failed; the
 /// local [TotalDistanceStore] total always remains the source of truth.
+///
+/// Keeps the last-known-good list visible across a refresh — only the very
+/// first load (before any data has ever arrived) shows a full-screen
+/// spinner; afterwards [RefreshIndicator] provides its own, without the
+/// list being replaced underneath it.
 class LeaderboardScreen extends ConsumerStatefulWidget {
   const LeaderboardScreen({super.key});
 
@@ -18,18 +40,19 @@ class LeaderboardScreen extends ConsumerStatefulWidget {
 }
 
 class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
-  final _identityStore = IdentityStore();
   final _totalStore = TotalDistanceStore();
-  late Future<LeaderboardData> _future;
+  LeaderboardData? _data;
+  _LeaderboardErrorKind? _error;
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
-    _future = _submitAndFetch();
+    _load();
   }
 
   Future<LeaderboardData> _submitAndFetch() async {
-    final identity = await _identityStore.get();
+    final identity = await ref.read(identityStoreProvider).get();
     final repo = ref.read(leaderboardRepositoryProvider);
     try {
       final totalKm = await _totalStore.totalKm();
@@ -42,31 +65,81 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
     return repo.fetch(identity.userId);
   }
 
+  Future<void> _load() async {
+    try {
+      final data = await _submitAndFetch();
+      if (!mounted) return;
+      setState(() {
+        _data = data;
+        _error = null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = _classifyError(e);
+        _loading = false;
+      });
+    }
+  }
+
+  /// Pull-to-refresh: deliberately never touches `_loading` / clears `_data`
+  /// up front, so the previously-loaded list stays on screen the whole
+  /// time — [RefreshIndicator] already shows its own progress affordance.
   Future<void> _refresh() async {
-    final next = _submitAndFetch();
-    setState(() => _future = next);
-    await next.catchError((_) => const LeaderboardData(top: [], me: null));
+    try {
+      final data = await _submitAndFetch();
+      if (!mounted) return;
+      setState(() {
+        _data = data;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      final kind = _classifyError(e);
+      if (_data == null) {
+        // Nothing to keep showing — surface the error state itself.
+        setState(() => _error = kind);
+      } else {
+        // Keep the existing list; just let the player know the refresh
+        // failed instead of silently discarding their pulled gesture.
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(kind.message)));
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final Widget body;
+    if (_loading) {
+      body = const Center(child: CircularProgressIndicator());
+    } else if (_data == null) {
+      body = _buildError(_error!);
+    } else {
+      body = _buildList(_data!);
+    }
     return Scaffold(
-      body: FutureBuilder<LeaderboardData>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return _buildError();
-          }
-          return _buildList(snapshot.data!);
-        },
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Classement',
+                    style: Theme.of(context).textTheme.headlineSmall),
+              ),
+            ),
+            Expanded(child: body),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildError() {
+  Widget _buildError(_LeaderboardErrorKind kind) {
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView(
@@ -82,7 +155,7 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
                   children: [
                     const Icon(Icons.cloud_off, size: 48),
                     const SizedBox(height: 12),
-                    const Text(_kOfflineMessage, textAlign: TextAlign.center),
+                    Text(kind.message, textAlign: TextAlign.center),
                     const SizedBox(height: 16),
                     ElevatedButton(
                       onPressed: _refresh,
@@ -137,12 +210,20 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   }
 
   Widget _entryTile(LeaderboardEntry e, bool isMe) {
+    final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
     return ListTile(
-      tileColor: isMe ? Theme.of(context).colorScheme.primaryContainer : null,
-      title: Text(
-        '${e.rank}. ${e.pseudo} — ${e.totalKm.toStringAsFixed(1)} km',
-        style: isMe ? const TextStyle(fontWeight: FontWeight.bold) : null,
-      ),
+      // Me-row highlight: one of the few spots allowed to spend the
+      // saturated accent (as a pale tint) — see task-12 brief. Reads from
+      // the theme (not a raw token) so it stays correct in dark mode too.
+      tileColor: isMe ? theme.colorScheme.primaryContainer : null,
+      leading: Text('${e.rank}', style: textTheme.labelLarge),
+      title: Text(e.pseudo,
+          style: isMe
+              ? textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w700)
+              : textTheme.bodyLarge),
+      trailing: Text('${e.totalKm.toStringAsFixed(1)} km',
+          style: textTheme.labelLarge),
     );
   }
 }

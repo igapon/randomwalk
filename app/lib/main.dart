@@ -6,6 +6,8 @@ import 'package:randomwalk/map/map_screen.dart';
 import 'package:randomwalk/session/session_screen.dart';
 import 'package:randomwalk/settings/identity.dart';
 import 'package:randomwalk/settings/settings_screen.dart';
+import 'package:randomwalk/theme/theme.dart';
+import 'package:randomwalk/trip/trip_controller.dart';
 
 void main() => runApp(const ProviderScope(child: RandomWalkApp()));
 
@@ -14,7 +16,9 @@ class RandomWalkApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
         title: 'RandomWalk',
-        theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+        theme: AppTheme.light,
+        darkTheme: AppTheme.dark,
+        themeMode: ThemeMode.system,
         home: const HomeShell(),
       );
 }
@@ -35,7 +39,18 @@ class HomeShell extends ConsumerStatefulWidget {
 
 class _HomeShellState extends ConsumerState<HomeShell> {
   int _tab = 0;
-  final _identityStore = IdentityStore();
+
+  @override
+  void initState() {
+    super.initState();
+    // The shared SessionController (see trip_controller.dart) outlives
+    // every screen — MapScreen and SessionScreen both start/stop trips
+    // through it, but only HomeShell's Scaffold is always mounted, so its
+    // callbacks are wired here once instead of per-screen.
+    final session = ref.read(sessionControllerProvider);
+    session.onSessionEnded = _onSessionEnded;
+    session.onSessionError = _onSessionError;
+  }
 
   /// Best-effort submit of the newly-updated cumulative total after a
   /// session ends. `totalKm` here is already the cumulative total from
@@ -46,7 +61,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Future<void> _onSessionEnded(double totalKm) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final identity = await _identityStore.get();
+      final identity = await ref.read(identityStoreProvider).get();
       await ref.read(leaderboardRepositoryProvider).submit(identity, totalKm);
     } catch (_) {
       if (mounted) {
@@ -57,14 +72,16 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     }
   }
 
+  Future<void> _onSessionError(String? errorMessage) async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Signal GPS perdu — session enregistrée.')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final screens = widget.screensOverride ??
-        <Widget>[
-          HomeShell.defaultScreens[0],
-          SessionScreen(onSessionEnded: _onSessionEnded),
-          HomeShell.defaultScreens[2],
-        ];
+    final screens = widget.screensOverride ?? HomeShell.defaultScreens;
     return Scaffold(
       appBar: AppBar(
         title: const Text('RandomWalk'),
