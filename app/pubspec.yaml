@@ -71,22 +71,22 @@ flutter:
     - assets/valhalla_config.json
 
   fonts:
+    # Bricolage Grotesque and Schibsted Grotesk are variable fonts: a single
+    # asset declaration covers every weight (the app selects the actual
+    # weight at render time via TextStyle.fontVariations — see theme.dart).
+    # Declaring the same asset multiple times under different `weight:`
+    # values does NOT make Flutter render distinct weights — it only ever
+    # renders the font's default instance — so per-weight entries here were
+    # actively misleading and are intentionally not repeated.
     - family: Bricolage Grotesque
       fonts:
         - asset: assets/fonts/BricolageGrotesque/BricolageGrotesque[opsz,wdth,wght].ttf
-          weight: 400
-        - asset: assets/fonts/BricolageGrotesque/BricolageGrotesque[opsz,wdth,wght].ttf
-          weight: 600
-        - asset: assets/fonts/BricolageGrotesque/BricolageGrotesque[opsz,wdth,wght].ttf
-          weight: 700
     - family: Schibsted Grotesk
       fonts:
         - asset: assets/fonts/SchibstedGrotesk/SchibstedGrotesk[wght].ttf
-          weight: 400
-        - asset: assets/fonts/SchibstedGrotesk/SchibstedGrotesk[wght].ttf
-          weight: 500
-        - asset: assets/fonts/SchibstedGrotesk/SchibstedGrotesk[wght].ttf
-          weight: 700
+    # IBM Plex Mono ships as separate static TTFs, one per weight — unlike
+    # the two variable fonts above, per-weight entries are correct here, but
+    # only for the weights actually shipped (Regular/Medium).
     - family: IBM Plex Mono
       fonts:
         - asset: assets/fonts/IBMPlexMono/IBMPlexMono-Regular.ttf

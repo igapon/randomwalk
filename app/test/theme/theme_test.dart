@@ -71,4 +71,31 @@ void main() {
     expect(AppTheme.dark.progressIndicatorTheme.color, isNot(const Color(0xFFE6B800)));
     expect(AppTheme.dark.progressIndicatorTheme.color, AppColors.paper);
   });
+
+  test('bold display/body styles carry a wght FontVariation (variable fonts need it to render bold)', () {
+    final textTheme = AppTheme.light.textTheme;
+    // w700 display style.
+    expect(textTheme.displayLarge?.fontVariations,
+        contains(const FontVariation('wght', 700)));
+    // w600 display style.
+    expect(textTheme.headlineSmall?.fontVariations,
+        contains(const FontVariation('wght', 600)));
+    // w600 body style.
+    expect(textTheme.titleMedium?.fontVariations,
+        contains(const FontVariation('wght', 600)));
+    // w400 body style still carries a matching variation (harmless, and
+    // keeps the axis explicit rather than left to the font's own default).
+    expect(textTheme.bodyMedium?.fontVariations,
+        contains(const FontVariation('wght', 400)));
+  });
+
+  test('IBM Plex Mono only uses weights the shipped statics provide (no FontVariation)', () {
+    final textTheme = AppTheme.light.textTheme;
+    expect(textTheme.labelSmall?.fontWeight, FontWeight.w500);
+    expect(textTheme.labelSmall?.fontVariations, isNull);
+
+    final navLabel = AppTheme.light.navigationBarTheme.labelTextStyle
+        ?.resolve(const {WidgetState.selected});
+    expect(navLabel?.fontWeight, FontWeight.w500);
+  });
 }

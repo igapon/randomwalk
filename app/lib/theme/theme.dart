@@ -60,16 +60,32 @@ class AppTheme {
   /// the darker background).
   static ThemeData _build(ColorScheme scheme, Color background) {
     final onSurface = scheme.onSurface;
+    // Bricolage Grotesque and Schibsted Grotesk ship as single variable-font
+    // assets (see pubspec.yaml) spanning the weights used here. `fontWeight`
+    // alone only selects among *declared* per-weight font assets — with one
+    // variable asset registered, Flutter renders it at its default instance
+    // regardless of the requested weight, so anything above w400 came out
+    // visually flat instead of bold. `FontVariation('wght', ...)` drives the
+    // font's own weight axis; `fontWeight` is kept alongside it so a
+    // fallback/synthesis path (e.g. if the asset were ever swapped for a
+    // static font) still lands on a sane weight.
+    List<FontVariation> wght(FontWeight weight) =>
+        [FontVariation('wght', weight.value.toDouble())];
     TextStyle display(double size, FontWeight weight) => TextStyle(
         fontFamily: AppFonts.display,
         fontWeight: weight,
+        fontVariations: wght(weight),
         fontSize: size,
         color: onSurface);
     TextStyle body(double size, FontWeight weight) => TextStyle(
         fontFamily: AppFonts.body,
         fontWeight: weight,
+        fontVariations: wght(weight),
         fontSize: size,
         color: onSurface);
+    // IBM Plex Mono ships as separate static TTFs (Regular/Medium only, see
+    // pubspec.yaml) — no variable-font axis, so no FontVariation here. Only
+    // request weights the shipped statics actually provide.
     TextStyle mono(double size, FontWeight weight, double tracking) =>
         TextStyle(
             fontFamily: AppFonts.mono,
@@ -152,12 +168,11 @@ class AppTheme {
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: scheme.surface,
         indicatorColor: scheme.primaryContainer,
-        labelTextStyle: WidgetStateProperty.resolveWith((states) => mono(
-            11,
-            states.contains(WidgetState.selected)
-                ? FontWeight.w600
-                : FontWeight.w500,
-            0.8)),
+        // Both states use w500: IBM Plex Mono only ships Regular/Medium
+        // statics (see pubspec.yaml), so w600 isn't available — selection is
+        // still conveyed by the indicator pill, not by a heavier weight.
+        labelTextStyle:
+            WidgetStateProperty.resolveWith((states) => mono(11, FontWeight.w500, 0.8)),
       ),
       appBarTheme: base.appBarTheme.copyWith(
         backgroundColor: scheme.surface,
