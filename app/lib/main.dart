@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:randomwalk/map/map_screen.dart';
+import 'package:randomwalk/session/session_screen.dart';
 
 void main() => runApp(const ProviderScope(child: RandomWalkApp()));
 
@@ -20,8 +21,8 @@ class HomeShell extends StatefulWidget {
 
   static final List<Widget> defaultScreens = <Widget>[
     const MapScreen(),
-    const Center(child: Text('Session')),    // remplacé Task 9
-    const Center(child: Text('Classement')), // remplacé Task 10
+    const SessionScreen(),
+    const Center(child: Text('Classement')),
   ];
 
   @override
