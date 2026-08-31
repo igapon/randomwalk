@@ -1268,6 +1268,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
         isRecording: trip.isRecording, hasCandidates: candidateResult != null)) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _clearCandidates());
     }
+    // Fix-round-2: the other half of the same window — a `_proposeCandidates`
+    // request still in flight (no `candidateResult` yet, so the check above
+    // does not see it) when a recording starts must be cancelled too, or it
+    // can land afterwards and resurrect the stale-candidates bug one frame
+    // late. Bumping the generation via `_cancelCandidatePlanning` is exactly
+    // what the spinner's own ✕ already does.
+    if (shouldCancelCandidatePlanningForRecording(
+        isRecording: trip.isRecording, candidatePlanning: _candidatePlanning)) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _cancelCandidatePlanning());
+    }
 
     Widget? bottomBanner;
     if (_planning) {
@@ -1446,7 +1457,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
       // selection == the same ✕ the chip row/spinner already offer, and
       // only a real "no candidates, nothing planning" state actually pops
       // the route (or exits the app).
-      canPop: candidateResult == null && !_candidatePlanning,
+      //
+      // Fix-round-2: driven through [shouldInterceptBackForCandidates]
+      // rather than these two flags raw — a recording that starts while
+      // either is still true must free `canPop` in this very same frame,
+      // not one frame later once the post-frame cancel/clear effects above
+      // have actually run, or back reads as silently swallowed by a plan
+      // the walker can no longer see behind the recording pill.
+      canPop: !shouldInterceptBackForCandidates(
+          hasCandidates: candidateResult != null,
+          candidatePlanning: _candidatePlanning,
+          isRecording: trip.isRecording),
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_candidatePlanning) {

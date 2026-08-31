@@ -285,6 +285,39 @@ bool shouldShowCandidateChips({
   required bool isRecording,
 }) => hasCandidates && !isRecording;
 
+/// Fix-round-2: the companion to [shouldClearCandidatesForRecording] for the
+/// other half of the same window — a `_proposeCandidates` request still
+/// *in flight* (`candidatePlanning` true, before `_candidateResult` itself
+/// exists) when a recording starts elsewhere (Session tab, `MapScreen` still
+/// mounted). Left uncancelled, that request can still land afterwards and
+/// resurrect exactly the stale-candidates bug
+/// [shouldClearCandidatesForRecording] fixes — one frame late, and via a
+/// route that check alone cannot see (`hasCandidates` is still false while
+/// planning). `map_screen.dart`'s `build()` cancels it (bumping the
+/// generation via `_cancelCandidatePlanning`) the instant this is true.
+bool shouldCancelCandidatePlanningForRecording({
+  required bool isRecording,
+  required bool candidatePlanning,
+}) => isRecording && candidatePlanning;
+
+/// Fix-round-2: whether Android back should be intercepted to leave
+/// candidate selection (`PopScope.canPop == false`) rather than popping the
+/// route or exiting the app. Recording-aware, unlike a raw check of
+/// `hasCandidates`/`candidatePlanning` alone: a recording that starts while
+/// candidates are shown, or a proposal is still in flight, must not leave
+/// back silently swallowed by a plan the walker can no longer see behind the
+/// recording pill (the gap the fix-round-1 re-review found — `canPop` used
+/// to read those two flags raw, one frame ahead of the post-frame effects
+/// above that actually clear/cancel them). True the instant a recording
+/// starts, in the very same frame [shouldShowCandidateChips] already stops
+/// showing the chip row in — not deferred to the next frame the way the
+/// post-frame cleanup above necessarily is.
+bool shouldInterceptBackForCandidates({
+  required bool hasCandidates,
+  required bool candidatePlanning,
+  required bool isRecording,
+}) => !isRecording && (hasCandidates || candidatePlanning);
+
 /// « Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ » — the plan-target panel's
 /// collapsed line (task-8 brief point 2). Uses the renamed « Distance »
 /// label (point 3) even though [PlanMode.loop] is the underlying identifier

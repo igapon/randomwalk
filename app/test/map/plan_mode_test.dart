@@ -577,6 +577,90 @@ void main() {
     });
   });
 
+  group('shouldCancelCandidatePlanningForRecording (fix-round-2: the '
+      'in-flight-proposal half of the recording-vs-candidates window)', () {
+    test('cancels an in-flight proposal the instant a recording starts', () {
+      expect(
+        shouldCancelCandidatePlanningForRecording(
+            isRecording: true, candidatePlanning: true),
+        isTrue,
+      );
+    });
+
+    test('nothing planning — nothing to cancel even while recording', () {
+      expect(
+        shouldCancelCandidatePlanningForRecording(
+            isRecording: true, candidatePlanning: false),
+        isFalse,
+      );
+    });
+
+    test('a planning request with no recording is left alone', () {
+      expect(
+        shouldCancelCandidatePlanningForRecording(
+            isRecording: false, candidatePlanning: true),
+        isFalse,
+      );
+    });
+  });
+
+  group('shouldInterceptBackForCandidates (fix-round-2: recording-aware '
+      'canPop)', () {
+    test('intercepted with candidates shown, no recording', () {
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: true, candidatePlanning: false, isRecording: false),
+        isTrue,
+      );
+    });
+
+    test('intercepted with a proposal still in flight, no recording', () {
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: false, candidatePlanning: true, isRecording: false),
+        isTrue,
+      );
+    });
+
+    test(
+        'freed the instant a recording starts, even with candidates and/or '
+        'planning still true this frame — the re-review gap: canPop must '
+        'not lag the post-frame cleanup by a frame', () {
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: true, candidatePlanning: false, isRecording: true),
+        isFalse,
+      );
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: false, candidatePlanning: true, isRecording: true),
+        isFalse,
+      );
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: true, candidatePlanning: true, isRecording: true),
+        isFalse,
+      );
+    });
+
+    test('not intercepted with nothing to back out of', () {
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: false,
+            candidatePlanning: false,
+            isRecording: false),
+        isFalse,
+      );
+      expect(
+        shouldInterceptBackForCandidates(
+            hasCandidates: false,
+            candidatePlanning: false,
+            isRecording: true),
+        isFalse,
+      );
+    });
+  });
+
   group('loopTargetFloorForDestination (fix-round-1, point 3: far-pin '
       'distance floor)', () {
     test('current target already covers the direct distance — untouched',
