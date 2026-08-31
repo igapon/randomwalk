@@ -18,6 +18,7 @@
 - Région M1 : **Suisse + France frontalière** — fusion `osmium merge` des extraits Geofabrik `europe/switzerland`, `europe/france/rhone-alpes`, `europe/france/franche-comte`, `europe/france/alsace`, découpée au bbox `4.8,45.0 → 11.0,48.2` (Suisse + ~50 km), puis UN SEUL build Valhalla (jamais de tuiles issues de builds séparés). Nom de région : `ch-fr`.
 - Git : identité `iaro <iaro@ik.me>` (déjà configurée), messages Conventional Commits. Dépôt app : `igapon/randomwalk` (privé). Dépôt tuiles : `igapon/randomwalk-tiles` (public — requis pour les téléchargements de Releases sans auth).
 - UI en français ; code, commentaires et messages de commit en anglais.
+- **Insets Android obligatoires** : tout écran/overlay gère la barre système du bas (SafeArea / MediaQuery.viewPadding) — FAB, bandeaux bas, boutons flottants jamais masqués par la barre de navigation (erreur récurrente signalée par le propriétaire du projet ; vérifier en gestuel et en 3-boutons).
 - SSH serveur : `ssh dev.lmqc.fr` (alias configuré → ubuntu@51.77.231.190). Réseau Traefik : `frappe_docker_default`, certresolver `main-resolver`, entrypoint `websecure`.
 - TDD : chaque comportement non trivial naît d'un test qui échoue d'abord.
 
@@ -1972,3 +1973,57 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
 - [ ] Session de marche réelle → distance plausible → score visible dans le classement.
 - [ ] `flutter analyze` 0 issue, tous tests unitaires verts en CI, test d'intégration Monaco passé sur device/émulateur.
 - [ ] Hors couverture (ex. point aux USA) : erreur propre, pas de crash.
+
+---
+
+### Task 12: Identité visuelle « balisage » + démarrage de trajet en une action
+
+*(Ajout demandé par le propriétaire pendant l'exécution : « quitte à retarder la M1, fais une plus jolie interface. et il faut pouvoir démarrer un trajet facilement. »)*
+
+**Files:**
+- Create: `app/lib/theme/tokens.dart`, `app/lib/theme/theme.dart`
+- Create: `app/assets/fonts/` (Bricolage Grotesque, Schibsted Grotesk, IBM Plex Mono — TTF, licence OFL, téléchargées depuis les dépôts officiels Google Fonts)
+- Create: `app/lib/trip/trip_controller.dart`, `app/test/trip/trip_controller_test.dart`
+- Modify: `app/lib/main.dart`, `app/lib/map/map_screen.dart`, `app/lib/session/session_screen.dart`, `app/lib/leaderboard/leaderboard_screen.dart` (restylage), `app/pubspec.yaml` (fonts)
+
+**Interfaces:**
+- Consumes: RoutePlanner/routePlannerProvider (T9), SessionController (T10 fix), LeaderboardRepository (T11), MapScreenState.controller (T5).
+- Produces: `AppTheme.light`/`AppTheme.dark` (ThemeData complets, ColorScheme EXPLICITE — pas de seed) ; `TripController` (état: idle / routePlanned / recording{withRoute?}) avec `startTrip()` — si route planifiée: caméra-follow + enregistrement session liés à la route ; sinon: session libre (profil mémorisé) ; `stopTrip()` → clôture session (même chemin que T10/T11).
+
+**Direction visuelle contraignante (tokens exacts):**
+- Palette : papier `#F7F8F4`, encre `#1C2B25`, **jaune balisage `#F5B800`** (primaire ; texte TOUJOURS encre sur jaune, jamais de blanc), bleu hydrographie `#3D7A8C` (secondaire), erreur M3 par défaut. Sombre : fond `#12201A`, surfaces `#1C2B25`, jaune `#E6B800`, texte papier.
+- La carte MapLibre suit le thème : style `liberty` en clair, style sombre OpenFreeMap (`dark` ou `fiord`) en sombre (styleString réactif au brightness).
+- Typo (assets embarqués, PAS google_fonts runtime) : display Bricolage Grotesque (gros chiffres distance/durée, titres d'écrans), corps/UI Schibsted Grotesk, étiquettes/eyebrows IBM Plex Mono (petites capitales, lettres espacées — façon marges de carte topo).
+- Signature « losange de balisage » : marqueurs A (contour) / B (plein) en losange 45°, icône losange dans la pilule Démarrer ; ligne d'itinéraire = **jaune `#F5B800` 4.5px sur liseré encre 7px** (deux addLine superposées, casing dessous).
+- Formes : cartes radius 12, boutons stadium ; NavigationBar M3 thémée (indicator jaune pâle).
+
+**Flux « démarrer un trajet » (contraignant):**
+- Grande pilule **« Démarrer »** (jaune, encre, icône losange) ancrée en bas de la carte, AU-DESSUS des insets système (règle projet). Route planifiée → « Démarrer l'itinéraire » : lance TripController.startTrip (enregistrement + caméra-follow) ; sans route → bottom sheet minimal (Marche/Vélo, mémorisé via shared_preferences) puis démarrage immédiat.
+- Pendant un trajet : la pilule devient « Terminer » (encre, texte papier) + stats live compactes (distance enregistrée, durée — chiffres Bricolage) dans un bandeau inset-safe ; l'onglet Session affiche le trajet en cours en grand.
+- La fiche résultat d'itinéraire (T9) prend « Démarrer » comme action principale (à droite), « ✕ » secondaire.
+
+**Steps:**
+- [ ] **Step 1: TDD TripController** — test d'abord (`trip_controller_test.dart`) : idle→recording sans route (profil mémorisé), routePlanned→recording lié à la route, double start ignoré, stop clôture et repasse idle, callbacks de session branchés sur SessionController (fake injecté). RED → implémentation → GREEN.
+- [ ] **Step 2: Thème** — télécharger les 3 familles (TTF OFL) dans app/assets/fonts, déclarer dans pubspec, écrire tokens.dart + theme.dart (ColorScheme explicites clair/sombre, textTheme mappé aux 3 familles, shapes) ; brancher dans main.dart (themeMode system). Test de fumée : ThemeData se construit, couleurs clés exactes.
+- [ ] **Step 3: Restylage carte** — style MapLibre réactif au thème ; ligne route casing+jaune ; marqueurs losange ; pilule Démarrer/Terminer + bandeau stats live (insets !) ; fiche résultat avec Démarrer principal.
+- [ ] **Step 4: Restylage session + classement** — SessionScreen : trajet en cours en grand (Bricolage), historique visuel minimal ; LeaderboardScreen : rangs en Plex Mono, ligne « moi » surlignée jaune pâle, header display.
+- [ ] **Step 5: Vérifs** — flutter analyze 0 ; flutter test tout vert (tests existants adaptés si sélecteurs/labels changent) ; push ; CI 4 jobs verts. Vérif visuelle device différée (APK M1).
+- [ ] **Step 6: Commit** — `feat: waymark visual identity and one-tap trip start` (+ commit séparé pour les fonts si volumineux).
+
+---
+
+### Task 13: Trajet robuste — état persistant, tracking arrière-plan, permissions complètes
+
+*(Exigences propriétaire pendant QA device : « je commence l'itinéraire, puis je fais autre chose, et le chemin disparaît » ; « je veux vraiment pouvoir fermer l'application, ou éteindre l'écran, et que ça marche encore » ; « demande la permission d'avoir le GPS tout le temps » ; « demande la permission du health pour ce qui est des pas, pour s'assurer que la personne est active ». Avance le cœur background de M2.)*
+
+**Files:**
+- Create: `app/lib/trip/active_route_store.dart` (+ tests), `app/lib/tracking/tracking_service.dart` (+ handler natif/isolate), `app/lib/tracking/steps.dart`
+- Modify: `app/lib/main.dart` (IndexedStack, restauration au démarrage), `app/lib/map/map_screen.dart` (rendu depuis l'état applicatif), `app/lib/trip/trip_controller.dart`, `app/lib/session/session_controller.dart`, `app/lib/session/session_screen.dart`, `app/android/**` (permissions, service), `app/pubspec.yaml`
+
+**Exigences (contraignantes):**
+1. **État applicatif du trajet** : itinéraire planifié (RouteResult+destination+profil) et trajet en cours vivent dans des providers/état applicatif, PAS dans l'état des écrans ; MapScreen se redessine depuis cet état à chaque (re)création (réutiliser _redrawAfterRemount). HomeShell passe en IndexedStack.
+2. **Persistance disque continue** : route active + progression de session (distance, pas, départ, profil) écrites en continu (throttlé) ; au démarrage à froid : restauration + bannière « Trajet interrompu — Reprendre / Terminer » (Reprendre conserve distance/pas accumulés).
+3. **Foreground service** (flutter_foreground_task ou équivalent maintenu — vérifier l'API actuelle sur pub.dev/context7) : l'enregistrement GPS + pas tourne dans le service ; survit écran éteint ET app balayée des récents ; notification persistante sobre (distance · durée) thème « balisage » ; l'UI lit l'état du service (IPC/storage partagé). Arrêt du trajet → service stoppé proprement.
+4. **Permissions** (flux UX en français, demandées au bon moment, jamais en rafale au premier lancement) : localisation précise → « Autoriser tout le temps » (ACCESS_BACKGROUND_LOCATION, redirection réglages Android 11+ avec écran explicatif), ACTIVITY_RECOGNITION (pas), POST_NOTIFICATIONS (Android 13+). Refus → dégradation gracieuse documentée (tracking premier plan seulement) avec bandeau explicatif.
+5. **Pas** : package pedometer (capteur TYPE_STEP_COUNTER), delta de pas par session, affiché dans les stats de session et persisté ; plausibilité marche (des km sans pas ⇒ marquer la session « à vérifier » localement — exploitation serveur en M5). Health Connect = M4.
+6. Tests : unités pour ActiveRouteStore (persist/restore), reprise de session (distance+pas conservés), machine à états service (fake handler) ; CI 4 jobs verts ; QA device par le propriétaire (écran éteint, app fermée, reprise).
