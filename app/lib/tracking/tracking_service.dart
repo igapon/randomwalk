@@ -7,6 +7,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../exploration/track_sampler.dart';
 import '../nav/alert_policy.dart';
 import '../nav/nav_fields.dart';
 import '../nav/navigation_runtime.dart';
@@ -105,6 +106,16 @@ const _kNavSeedKey = 'randomwalk_nav_seed';
 const _kGpsErrorKey = 'gpsError';
 const _kTtsEnabledKey = 'randomwalk_tts_enabled';
 const _kHapticsEnabledKey = 'randomwalk_haptics_enabled';
+
+/// M4 exploration: the currently-recording trip's sampled GPS track, one
+/// `{"lat":..,"lon":..}` JSON object per kept point (see [TrackSampler]).
+/// Named as a sibling of the snapshot file rather than resolved via
+/// `path_provider` — this isolate has neither `path_provider` nor any other
+/// way to learn the app support directory (see `ChannelRoutingEngine`'s own
+/// doc comment on the same constraint) — so it lives right next to whatever
+/// path [_kSnapshotPathKey] named. `ExplorationRecorder` (running in the UI
+/// isolate, post-trip) reads and deletes this file once the trip ends.
+const _kTrackFileName = 'active_track.jsonl';
 
 /// The maneuver-alert notification channel — distinct from [_kChannelId]'s
 /// silent, sticky trip notification: this one is meant to be noticed with
@@ -467,6 +478,19 @@ class TripTaskHandler extends TaskHandler {
   /// what the guidance *says* costs nothing (see [_publish]).
   String? _lastNotificationText;
 
+  /// M4 exploration: bounded, distance-thinned accumulator for this trip's
+  /// raw GPS track (see [TrackSampler] and [_kTrackFileName]). Null until
+  /// [onStart] has resolved the snapshot path.
+  TrackSampler? _trackSampler;
+
+  /// Where [_trackSampler]'s kept points are appended, one JSON object per
+  /// line. Opened fresh (append mode) on each [_sampleTrack] call rather
+  /// than held open for the life of the trip — a kept point is rare enough
+  /// (every [kTrackMinStepM] meters) that this costs nothing worth avoiding,
+  /// and it means nothing here needs an explicit close on every teardown
+  /// path (`onDestroy`, an app being swiped away mid-write, ...).
+  File? _trackFile;
+
   /// Whether the recorder actually started. Exposed for tests only — asserts
   /// that a hung TTS init ([speakerFactory]) never blocks [onStart] from
   /// getting the GPS subscription going.
@@ -480,7 +504,8 @@ class TripTaskHandler extends TaskHandler {
     if (path == null) return;
 
     final store = FileTripSnapshotStore(File(path));
-    final resumed = await _resumePoint(store);
+    final resumePointResult = await _resumePoint(store);
+    final resumed = resumePointResult.snapshot;
     if (resumed == null) return;
     // Distance and steps carry over from a killed incarnation; guidance does
     // not (see [withoutNavigation]).
@@ -488,6 +513,7 @@ class TripTaskHandler extends TaskHandler {
     _seed = seed;
     _steps = seed.steps;
     _writer = ThrottledSnapshotWriter(store);
+    await _initTrackSampler(File(path), isRestart: resumePointResult.isRestart);
 
     // Note that an Android-restarted service (allowAutoRestart) rebuilds the
     // follower from the *planned* route, not from a route a previous
@@ -526,8 +552,12 @@ class TripTaskHandler extends TaskHandler {
       onSessionError: (message) async => FlutterForegroundTask.sendDataToMain(
           jsonEncode({_kGpsErrorKey: message})),
       // Guidance rides the recording's own GPS subscription: a second one
-      // would double the fix rate the OS bills a screen-off trip for.
-      onFix: _nav == null ? null : _onNavFix,
+      // would double the fix rate the OS bills a screen-off trip for. Always
+      // wired now (M4 exploration) rather than only for route-bound trips —
+      // [_onFix] samples the track for every trip, free ones included
+      // (exploration's main use case), and defers to [_onNavFix] only when
+      // guidance actually exists.
+      onFix: _onFix,
       locationSettings: AndroidSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 3,
@@ -596,6 +626,37 @@ class TripTaskHandler extends TaskHandler {
     return fields == null
         ? tripNotificationText(snapshot, now)
         : navNotificationText(fields);
+  }
+
+  /// One accepted GPS fix — the single entry point [SessionController] calls
+  /// for every trip, route-bound or free. Samples the trip's raw track for
+  /// M4 exploration first (cheap, and needed regardless of guidance), then
+  /// defers to [_onNavFix] for turn-by-turn navigation, which no-ops on a
+  /// free trip (`_nav == null`) exactly as it always has.
+  Future<void> _onFix(GpsSample sample) async {
+    await _sampleTrack(sample);
+    await _onNavFix(sample);
+  }
+
+  /// M4 exploration (best-effort): appends [sample] to the trip's on-disk
+  /// track — thinned by [TrackSampler] — for `ExplorationRecorder` to
+  /// map-match once the trip ends. Never worth failing, or even slowing,
+  /// the recording trip over: a lost point just means a slightly coarser
+  /// fog reveal for this trip, not a broken one.
+  Future<void> _sampleTrack(GpsSample sample) async {
+    final sampler = _trackSampler;
+    final file = _trackFile;
+    if (sampler == null || file == null) return;
+    if (!sampler.add(sample.lat, sample.lon)) return;
+    try {
+      await file.writeAsString(
+        '${jsonEncode({'lat': sample.lat, 'lon': sample.lon})}\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    } catch (_) {
+      // Best-effort; see the doc comment above.
+    }
   }
 
   /// One accepted GPS fix, run through turn-by-turn navigation.
@@ -851,14 +912,71 @@ class TripTaskHandler extends TaskHandler {
     }
   }
 
-  Future<TripSnapshot?> _resumePoint(TripSnapshotStore store) async {
+  /// Resolves where this incarnation picks the trip up from, plus whether
+  /// doing so is a genuine restart of an already-recording trip (Android's
+  /// `allowAutoRestart` bringing a killed service back) as opposed to a
+  /// brand-new trip start. [_initTrackSampler] needs exactly that
+  /// distinction: a restart should pick the on-disk track back up where it
+  /// left off, a fresh start should not risk inheriting a stale leftover
+  /// track from whatever trip last used this instance's files.
+  Future<({TripSnapshot? snapshot, bool isRestart})> _resumePoint(
+      TripSnapshotStore store) async {
+    final persisted = await store.read();
     final raw = await FlutterForegroundTask.getData<String>(key: _kSeedKey);
-    return resumePoint(
-      await store.read(),
-      raw == null
-          ? null
-          : TripSnapshot.fromJson(jsonDecode(raw) as Map<String, dynamic>),
+    final seed = raw == null
+        ? null
+        : TripSnapshot.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    return (
+      snapshot: resumePoint(persisted, seed),
+      isRestart: persisted != null && persisted.isRecording,
     );
+  }
+
+  /// M4 exploration: sets up [_trackSampler]/[_trackFile] for this
+  /// incarnation. On a genuine restart ([isRestart]), the existing track
+  /// file (if any) is read back into the sampler — via [TrackSampler.seed],
+  /// which skips the distance filter for points already accepted once — so
+  /// a killed-and-relaunched service resumes thinning from where it left
+  /// off instead of restarting the distance filter from nothing (which would
+  /// accept a point right next to the last pre-restart one). On a fresh
+  /// start, any leftover file from an earlier trip that never got read by
+  /// `ExplorationRecorder` is discarded rather than silently prefixing a new
+  /// trip's track with old ground.
+  ///
+  /// Best-effort throughout: any failure here still leaves [_trackSampler]
+  /// set to a usable (if empty) sampler, and [_trackFile] pointed at the
+  /// right path, rather than stopping trip recording.
+  Future<void> _initTrackSampler(File snapshotFile,
+      {required bool isRestart}) async {
+    final trackFile =
+        File('${snapshotFile.parent.path}/$_kTrackFileName');
+    final sampler = TrackSampler();
+    if (isRestart) {
+      try {
+        if (await trackFile.exists()) {
+          for (final line in await trackFile.readAsLines()) {
+            if (line.trim().isEmpty) continue;
+            try {
+              final j = jsonDecode(line) as Map<String, dynamic>;
+              sampler.seed(
+                  (j['lat'] as num).toDouble(), (j['lon'] as num).toDouble());
+            } catch (_) {
+              // One corrupt line costs one point, not the whole track.
+            }
+          }
+        }
+      } catch (_) {
+        // Best-effort; see the doc comment above.
+      }
+    } else {
+      try {
+        if (await trackFile.exists()) await trackFile.delete();
+      } catch (_) {
+        // Best-effort; see the doc comment above.
+      }
+    }
+    _trackSampler = sampler;
+    _trackFile = trackFile;
   }
 
   TripSnapshot? _snapshotAt(DateTime now) {

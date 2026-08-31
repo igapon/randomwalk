@@ -328,4 +328,86 @@ void main() {
       expect(handler.debugIsRecording, isTrue);
     });
   });
+
+  group('TripTaskHandler.onStart — M4 track sampling', () {
+    late Directory tempDir;
+
+    setUpAll(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_track_onstart_test');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+    });
+
+    Future<void> seedPrefs(String snapshotPath) async {
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
+        '$_prefsPrefix' 'randomwalk_snapshot_path': snapshotPath,
+        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
+        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+      });
+    }
+
+    test('a fresh (non-restart) start discards a leftover track file left '
+        'by an earlier, already-finalised trip', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final trackPath = '${tempDir.path}/active_track.jsonl';
+      await File(trackPath).writeAsString(
+          '${jsonEncode({'lat': 1.0, 'lon': 2.0})}\n');
+      await seedPrefs(snapshotPath); // no on-disk snapshot -> not a restart.
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+
+      expect(await File(trackPath).exists(), isFalse);
+    });
+
+    test('a genuine restart (an already-recording on-disk snapshot) keeps '
+        'the existing track file\'s content rather than wiping it',
+        () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final trackPath = '${tempDir.path}/active_track.jsonl';
+      final onDiskSnapshot = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.0,
+        steps: 10,
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        updatedAt: DateTime.utc(2026, 8, 31, 9, 5),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      await File(snapshotPath)
+          .writeAsString(jsonEncode(onDiskSnapshot.toJson()));
+      final trackLine = '${jsonEncode({'lat': 46.5, 'lon': 6.6})}\n';
+      await File(trackPath).writeAsString(trackLine);
+      await seedPrefs(snapshotPath);
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9, 10), TaskStarter.developer);
+
+      expect(await File(trackPath).readAsString(), trackLine);
+    });
+
+    test('no leftover track file at all is not an error — onStart still '
+        'reaches recording', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      await seedPrefs(snapshotPath);
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+      expect(handler.debugIsRecording, isTrue);
+    });
+  });
 }
