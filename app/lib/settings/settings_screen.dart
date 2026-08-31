@@ -33,6 +33,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   /// mid-session.
   late Future<bool> _ttsAvailable;
 
+  /// The probe's own [NativeTtsSpeaker] instance — kept only long enough to
+  /// [NativeTtsSpeaker.shutdown] it once [_ttsAvailable] has answered (see
+  /// [_probeTts]). This is purely an availability check, not guidance being
+  /// spoken, so there is no reason for the native `TextToSpeech` engine
+  /// `init()` built to stay allocated for the rest of the screen's lifetime
+  /// (task-7 item 3).
+  final _ttsProbe = NativeTtsSpeaker();
+
   /// Probed once, same reasoning as [_ttsAvailable]: the device manufacturer
   /// cannot change mid-session, so this is asked once rather than on every
   /// [_load] — see `isAggressiveBatteryOem`.
@@ -42,8 +50,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void initState() {
     super.initState();
     _future = _load();
-    _ttsAvailable = NativeTtsSpeaker().init();
+    _ttsAvailable = _probeTts();
     _manufacturer = const DeviceChannel().manufacturer();
+  }
+
+  /// Asks the native side whether French TTS is usable, then immediately
+  /// releases the engine that answer required — see [_ttsProbe]'s doc
+  /// comment. `shutdown()` runs regardless of the answer (including a
+  /// probe that came back unavailable) so a real engine never leaks either
+  /// way.
+  Future<bool> _probeTts() async {
+    final available = await _ttsProbe.init();
+    await _ttsProbe.shutdown();
+    return available;
   }
 
   Future<({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>
