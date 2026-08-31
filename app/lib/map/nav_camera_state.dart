@@ -21,3 +21,22 @@ bool shouldShowRecenterButton({
   required bool trackingReleased,
 }) =>
     isNavigating && trackingReleased;
+
+/// Whether a map remount (`_redrawAfterRemount` — a theme flip mid-trip is
+/// the practical trigger, since that rebuilds `MapLibreMap` under a fresh
+/// `ValueKey`) should re-engage camera-follow.
+///
+/// Fix-round finding: the remount path used to re-engage tracking whenever
+/// `isRecording && isRouteBound`, ignoring [trackingReleased] entirely —
+/// silently overriding a release the walker's last gesture asked for, and
+/// leaving the "recentrer" button visible (per [shouldShowRecenterButton])
+/// pointing at a camera that was already tracking, so tapping it was a
+/// no-op. This mirrors [shouldShowRecenterButton]'s own inputs so the two
+/// rules cannot drift apart: a remount must respect exactly the same
+/// release state the button's visibility already reflects.
+bool shouldReengageTrackingOnRemount({
+  required bool isRecording,
+  required bool isRouteBound,
+  required bool trackingReleased,
+}) =>
+    isRecording && isRouteBound && !trackingReleased;

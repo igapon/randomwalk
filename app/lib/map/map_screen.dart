@@ -187,10 +187,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (_trackingReleased && mounted) setState(() => _trackingReleased = false);
   }
 
-  /// `MapLibreMap.onCameraTrackingDismissed` — fired by any user gesture
-  /// (pan/zoom) that takes the camera out of `MyLocationTrackingMode`.
-  /// Device-QA addendum, point 3: navigation itself is untouched by this —
-  /// only whether the map keeps re-centring on the walker.
+  /// `MapLibreMap.onCameraTrackingDismissed` — fired by maplibre-android's
+  /// `LocationComponent` whenever the camera moves in a way it did not
+  /// itself drive: a user gesture (pan/zoom), *and* — fix-round correction
+  /// of this comment's earlier, narrower claim, confirmed by reading
+  /// `MapLibreMapController.java`'s `onCameraTrackingDismissed` — an
+  /// app-initiated `animateCamera`/`moveCamera` call too, since those bypass
+  /// the location component's own tracking API just as a gesture does. That
+  /// means `_centerOnUser`'s `animateCamera` also releases tracking during
+  /// navigation; see its doc comment. Device-QA addendum, point 3:
+  /// navigation itself is untouched by any of this — only whether the map
+  /// keeps re-centring on the walker.
   void _onCameraTrackingDismissed() {
     if (!mounted) return;
     setState(() => _trackingReleased = true);
@@ -239,11 +246,18 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   /// Re-adds whatever route/markers/camera-follow the app state says are
   /// active, against this (possibly brand new) native map instance.
+  ///
+  /// Must not re-engage tracking over a release the walker's last gesture
+  /// asked for (fix-round finding) — see
+  /// [shouldReengageTrackingOnRemount]'s doc comment.
   Future<void> _redrawAfterRemount() async {
     await _syncOverlays();
     await _maybeSyncReplannedRoute();
     final trip = ref.read(tripControllerProvider);
-    if (trip.isRecording && trip.isRouteBound) {
+    if (shouldReengageTrackingOnRemount(
+        isRecording: trip.isRecording,
+        isRouteBound: trip.isRouteBound,
+        trackingReleased: _trackingReleased)) {
       controller?.updateMyLocationTrackingMode(MyLocationTrackingMode.tracking);
     }
   }
@@ -414,6 +428,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
+  /// The plain "my location" FAB. Note this releases camera-follow the same
+  /// way a pan/zoom gesture does if it fires mid-navigation:
+  /// `animateCamera` moves the camera outside the location component's own
+  /// tracking API, so maplibre-android treats it as a dismissal just like a
+  /// gesture (see `_onCameraTrackingDismissed`'s doc comment) — intended,
+  /// not a bug: the walker asked to jump the view somewhere, so the
+  /// "recentrer" button appearing afterwards to re-engage tracking is the
+  /// correct outcome, not a stray side effect.
   Future<void> _centerOnUser() async {
     final pos = await _currentPositionOrNull();
     if (pos == null) {
@@ -700,7 +722,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (_planning) {
       bottomBanner = _ProgressBanner(progress: _downloadProgress);
     } else if (trip.isRecording) {
-      bottomBanner = _StatsBanner(
+      bottomBanner = StatsBanner(
         distanceKm: trip.distanceKm,
         elapsed: _formatDuration(trip.elapsed),
         remaining: _navRemainingLabel(trip),
@@ -724,7 +746,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     Widget topOverlay;
     if (trip.isRouteBound && snapshot != null) {
       if (snapshot.navArrived) {
-        topOverlay = const _NavArrivedCard();
+        topOverlay = const NavArrivedCard();
       } else if (snapshot.navOffRoute) {
         topOverlay = const _NavRecalculatingCard();
       } else if (snapshot.navInstruction != null &&
@@ -826,12 +848,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (showRecenter) ...[
-              FloatingActionButton(
-                heroTag: 'recenter',
-                onPressed: _recenterOnTrack,
-                tooltip: 'Recentrer',
-                child: const WaymarkDiamond(size: 16, color: AppColors.ink),
-              ),
+              RecenterButton(onPressed: _recenterOnTrack),
               const SizedBox(height: 12),
             ],
             FloatingActionButton(
@@ -1059,10 +1076,18 @@ class _NavRecalculatingCard extends StatelessWidget {
 /// The walker has reached the destination — review ruling: this wins over
 /// `navOffRoute` (standing at the destination needs no invitation to get
 /// back on a route that is, itself, now moot). The bottom banner's Terminer
-/// button is put forward separately (see [_StatsBanner]'s `arrived`) —
+/// button is put forward separately (see [StatsBanner]'s `arrived`) —
 /// this card is purely the "you're here" announcement.
-class _NavArrivedCard extends StatelessWidget {
-  const _NavArrivedCard();
+///
+/// Public (not `_`-prefixed) so it is reachable from a widget test —
+/// fix-round finding: [AppColors.ink] is byte-identical to the dark
+/// [ColorScheme.surface] this card sits on (both `#1C2B25`), which made the
+/// glyph disappear entirely in dark mode. Every color here is theme-resolved
+/// ([ColorScheme.onSurface]) rather than a raw [AppColors] constant, and
+/// `test/map/map_screen_widgets_test.dart` pumps this card in both
+/// brightnesses to keep it that way.
+class NavArrivedCard extends StatelessWidget {
+  const NavArrivedCard({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -1072,7 +1097,7 @@ class _NavArrivedCard extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Row(
           children: [
-            const WaymarkDiamond(size: 20, color: AppColors.ink),
+            WaymarkDiamond(size: 20, color: onSurface),
             const SizedBox(width: 12),
             Text(
               kNavArrivedLabel,
@@ -1089,6 +1114,37 @@ class _NavArrivedCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The "recentrer" FAB — device-QA addendum point 3 — shown only while
+/// [shouldShowRecenterButton] says a navigating trip's camera has been
+/// released by a user gesture.
+///
+/// Public (not `_`-prefixed), and its glyph color theme-resolved
+/// ([ColorScheme.onPrimaryContainer], matching the default Material 3
+/// [FloatingActionButton] background of [ColorScheme.primaryContainer] —
+/// this app never overrides `floatingActionButtonTheme`) rather than a raw
+/// [AppColors.ink] constant — fix-round finding: in dark mode, ink-on-
+/// `primaryContainer` (`yellowPaleDark`) reads at roughly 1.5:1, the same
+/// family of contrast bug [NavArrivedCard] had. `onPrimaryContainer` is
+/// exactly what the sibling "my location" FAB's plain [Icon] already gets
+/// for free from the FAB's own [IconTheme] — this widget just has to ask
+/// for it explicitly, since [WaymarkDiamond] takes a color parameter rather
+/// than reading the ambient icon theme.
+class RecenterButton extends StatelessWidget {
+  const RecenterButton({super.key, required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => FloatingActionButton(
+        heroTag: 'recenter',
+        onPressed: onPressed,
+        tooltip: 'Recentrer',
+        child: WaymarkDiamond(
+          size: 16,
+          color: Theme.of(context).colorScheme.onPrimaryContainer,
+        ),
+      );
 }
 
 /// Route result card (T9): the primary action is the yellow "Démarrer
@@ -1175,8 +1231,20 @@ class _StartPill extends StatelessWidget {
 /// Terminer forward as the primary (yellow) action instead of the plain
 /// ink/paper one recording otherwise uses, per the brief's « bouton
 /// Terminer mis en avant » at arrival.
-class _StatsBanner extends StatelessWidget {
-  const _StatsBanner({
+///
+/// Public (not `_`-prefixed) so it is reachable from a widget test —
+/// fix-round finding: on a 360-411 dp phone, three `headlineSmall` stats
+/// side by side plus Terminer overflowed the Row (`RenderFlex` overflow)
+/// once `remaining` shipped. Distance/duration now share a
+/// `Flexible`+`FittedBox` pair that scales down rather than overflows under
+/// width pressure; `remaining` — the widest of the three, and the one most
+/// likely to run long (a two-digit ETA) — moved to its own line below
+/// instead of competing with the other two for the same row.
+/// `test/map/map_screen_widgets_test.dart` pumps this at a 360 dp width
+/// with long values to keep it that way.
+class StatsBanner extends StatelessWidget {
+  const StatsBanner({
+    super.key,
     required this.distanceKm,
     required this.elapsed,
     this.remaining,
@@ -1193,35 +1261,48 @@ class _StatsBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final remainingLabel = remaining;
+    Widget shrinkable(String value) => Flexible(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: _Stat(value: value, theme: theme),
+          ),
+        );
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: Row(
-                children: [
-                  _Stat(value: '${distanceKm.toStringAsFixed(2)} km', theme: theme),
-                  const SizedBox(width: 20),
-                  _Stat(value: elapsed, theme: theme),
-                  if (remainingLabel != null) ...[
-                    const SizedBox(width: 20),
-                    _Stat(value: remainingLabel, theme: theme),
-                  ],
-                ],
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Row(
+                    children: [
+                      shrinkable('${distanceKm.toStringAsFixed(2)} km'),
+                      const SizedBox(width: 20),
+                      shrinkable(elapsed),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: arrived
+                      ? null // the theme's default primary (yellow) button.
+                      : ElevatedButton.styleFrom(
+                          backgroundColor: theme.colorScheme.onSurface,
+                          foregroundColor: theme.colorScheme.surface,
+                        ),
+                  onPressed: onStop,
+                  child: const Text('Terminer'),
+                ),
+              ],
             ),
-            const SizedBox(width: 8),
-            ElevatedButton(
-              style: arrived
-                  ? null // the theme's default primary (yellow) button.
-                  : ElevatedButton.styleFrom(
-                      backgroundColor: theme.colorScheme.onSurface,
-                      foregroundColor: theme.colorScheme.surface,
-                    ),
-              onPressed: onStop,
-              child: const Text('Terminer'),
-            ),
+            if (remainingLabel != null) ...[
+              const SizedBox(height: 4),
+              _Stat(value: remainingLabel, theme: theme),
+            ],
           ],
         ),
       ),

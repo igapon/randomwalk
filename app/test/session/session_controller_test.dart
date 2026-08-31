@@ -345,6 +345,53 @@ void main() {
           const LocationSettings(distanceFilter: 12));
       expect(callCount, 0);
     });
+
+    test(
+        'a stop() racing the awaited cancel does not reopen a stream on a '
+        'finished session', () async {
+      // Fix-round finding: updateLocationSettings awaits cancelling the
+      // current subscription before resubscribing. A concurrent stop() —
+      // which also awaits cancelling that same subscription — can finish
+      // the session in that gap; without a re-check, updateLocationSettings
+      // would still resubscribe underneath the now-stopped session.
+      final store = FakeStore();
+      final cancelGate = Completer<void>();
+      var subscribeCount = 0;
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        subscribeCount++;
+        // onCancel doesn't resolve until the test releases cancelGate, so
+        // both updateLocationSettings' and stop()'s cancel() calls on this
+        // same subscription stay pending until then.
+        return StreamController<Position>(onCancel: () => cancelGate.future)
+            .stream;
+      }
+
+      final controller = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+      );
+
+      await controller.start();
+      expect(subscribeCount, 1);
+
+      final updateFuture = controller.updateLocationSettings(
+          const LocationSettings(distanceFilter: 12));
+      // stop() runs synchronously up to its own first await (which sets
+      // _isRecording = false before it ever reaches cancel()), so this is
+      // true immediately — updateLocationSettings is still suspended inside
+      // its own await above, having not yet resumed to check it.
+      final stopFuture = controller.stop();
+      expect(controller.isRecording, false);
+
+      cancelGate.complete();
+      await Future.wait([updateFuture, stopFuture]);
+
+      // The resubscribe must not have happened.
+      expect(subscribeCount, 1);
+      expect(controller.isRecording, false);
+    });
   });
 }
 

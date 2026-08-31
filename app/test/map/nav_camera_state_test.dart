@@ -32,4 +32,49 @@ void main() {
       );
     });
   });
+
+  group('shouldReengageTrackingOnRemount', () {
+    test('idle: never re-engages', () {
+      expect(
+        shouldReengageTrackingOnRemount(
+            isRecording: false, isRouteBound: false, trackingReleased: false),
+        isFalse,
+      );
+    });
+
+    test('recording a free (not route-bound) trip: never re-engages', () {
+      expect(
+        shouldReengageTrackingOnRemount(
+            isRecording: true, isRouteBound: false, trackingReleased: false),
+        isFalse,
+      );
+    });
+
+    test('navigating, tracking never released: re-engages', () {
+      expect(
+        shouldReengageTrackingOnRemount(
+            isRecording: true, isRouteBound: true, trackingReleased: false),
+        isTrue,
+      );
+    });
+
+    test(
+        'navigating, tracking released by a gesture: does NOT re-engage — '
+        'the fix-round regression this guards against', () {
+      expect(
+        shouldReengageTrackingOnRemount(
+            isRecording: true, isRouteBound: true, trackingReleased: true),
+        isFalse,
+      );
+    });
+
+    test('tracking released but no longer navigating: stays false either way',
+        () {
+      expect(
+        shouldReengageTrackingOnRemount(
+            isRecording: false, isRouteBound: true, trackingReleased: true),
+        isFalse,
+      );
+    });
+  });
 }

@@ -151,9 +151,16 @@ class SessionController {
   /// already decided, via `AdaptiveGpsRateLimiter`, that this is worth the
   /// churn of tearing down and reopening the platform's location provider —
   /// this method does not itself rate-limit anything.
+  ///
+  /// Re-checks [_isRecording] after the awaited `cancel()` (fix-round
+  /// finding): `stop()` can race in during that gap — it also awaits
+  /// cancelling the very same subscription — and without the re-check, a
+  /// session `stop()` already ended in the meantime would still get a fresh
+  /// stream reopened underneath it.
   Future<void> updateLocationSettings(LocationSettings settings) async {
     if (!_isRecording) return;
     await _positionStream?.cancel();
+    if (!_isRecording) return;
     _locationSettings = settings;
     _subscribe();
   }
