@@ -107,6 +107,21 @@ object RandomwalkTaskLifecycleListener : FlutterForegroundTaskLifecycleListener 
         // actually runs on *this* engine, deferred or not, and correctly does nothing for an
         // engine that never gets destroyed at all.
         engine.addEngineLifecycleListener(object : FlutterEngine.EngineLifecycleListener {
+            // Task-7 backlog item, judged rather than left silently unexamined:
+            // `onPreEngineRestart` fires from `FlutterEngine.restart()`, which
+            // Flutter's own embedding uses to reset the *Dart* isolate (a fresh
+            // `main()`) while deliberately keeping the engine — and everything
+            // registered on it, this plugin included — alive. That is the whole
+            // point of the hook existing separately from `onEngineWillDestroy`:
+            // the platform side is not supposed to redo any teardown/registration
+            // work here, only the Dart side restarts. `engine.restart()` is also
+            // reachable only through the Dart VM service (a debug/profile-build
+            // hot restart initiated from the Flutter tool), never from a release
+            // build's AOT-compiled engine, so this path cannot fire in production
+            // at all. Kept a no-op on purpose, not an oversight — there is nothing
+            // native-side to do differently for a Dart-only restart, and remains
+            // symmetric with `onTaskStart`/`onTaskRepeatEvent`/`onTaskDestroy`
+            // above, all no-ops for the same "nothing native-side to do" reason.
             override fun onPreEngineRestart() = Unit
 
             override fun onEngineWillDestroy() {
