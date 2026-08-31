@@ -80,10 +80,20 @@ class ValhallaChannel(private val context: Context) {
                 "init" -> reply {
                     val configJson = call.argument<String>("configJson")
                         ?: throw IllegalArgumentException("init requires a configJson string")
+                    // Close and clear the old actor *before* trying to build the new one, and
+                    // only assign the field once the replacement actually exists. Assigning
+                    // straight into `actor` (old code: `actor = Valhalla(...)`) would leave it
+                    // pointing at the just-closed handle for the rest of this block if
+                    // `writeText` or the `Valhalla` constructor threw — every `route()` call
+                    // after that reads a closed native actor, which is a crash, not a Dart-
+                    // visible error. Building into a local first means a failure here leaves
+                    // `actor` cleanly null instead.
                     actor?.close()
+                    actor = null
                     val configFile = File(context.filesDir, configFileName)
                     configFile.writeText(configJson)
-                    actor = Valhalla(configFile.absolutePath)
+                    val fresh = Valhalla(configFile.absolutePath)
+                    actor = fresh
                     "ok"
                 }
                 "route" -> reply {
