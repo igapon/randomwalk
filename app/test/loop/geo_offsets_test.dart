@@ -42,6 +42,14 @@ void main() {
       expect(lat, closeTo(startLat, 1e-9));
       expect(lon, closeTo(startLon, 1e-9));
     });
+
+    test('wraps longitude to [-180, 180] crossing the antimeridian', () {
+      final (lat, lon) = destinationPoint(0, 179.9, 90, 50000);
+      expect(lon, inInclusiveRange(-180.0, 180.0));
+      // Heading east past 180 should wrap to a small negative longitude.
+      expect(lon, lessThan(0));
+      expect(lat, closeTo(0, 0.5));
+    });
   });
 
   group('circleWaypoints', () {
@@ -84,7 +92,11 @@ void main() {
           lat: startLat, lon: startLon, radiusM: 400, count: 4, startBearingDeg: 45);
       final bearingA0 = _bearingBetween(startLat, startLon, a[0].$1, a[0].$2);
       final bearingB0 = _bearingBetween(startLat, startLon, b[0].$1, b[0].$2);
-      expect(bearingB0 - bearingA0, closeTo(45, 0.5));
+      // Normalize to (-180, 180] so this is robust to bearingA0 landing on
+      // the 0/360 wraparound boundary (e.g. -1e-13 -> 359.999... after the
+      // %360 normalization inside _bearingBetween).
+      final diff = (bearingB0 - bearingA0 + 540) % 360 - 180;
+      expect(diff, closeTo(45, 0.5));
     });
   });
 
@@ -153,6 +165,38 @@ void main() {
       for (final p in pts) {
         expect(metersBetween(p.$1, p.$2, a.$1, a.$2), greaterThan(1));
         expect(metersBetween(p.$1, p.$2, b.$1, b.$2), greaterThan(1));
+      }
+    });
+
+    test('total path length a->points->b grows monotonically with detourM',
+        () {
+      double totalPathLength(double detourM) {
+        final pts = ellipseWaypoints(
+          a: a,
+          b: b,
+          detourM: detourM,
+          count: 4,
+          mirrored: false,
+        );
+        final chain = [a, ...pts, b];
+        var total = 0.0;
+        for (var i = 0; i < chain.length - 1; i++) {
+          total += metersBetween(
+            chain[i].$1,
+            chain[i].$2,
+            chain[i + 1].$1,
+            chain[i + 1].$2,
+          );
+        }
+        return total;
+      }
+
+      const detours = [200.0, 500.0, 1000.0, 2000.0];
+      final lengths = detours.map(totalPathLength).toList();
+      for (var i = 1; i < lengths.length; i++) {
+        expect(lengths[i], greaterThan(lengths[i - 1]),
+            reason:
+                'path length at detour=${detours[i]} should exceed detour=${detours[i - 1]}');
       }
     });
 

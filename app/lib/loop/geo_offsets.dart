@@ -16,6 +16,14 @@ double _radToDeg(double rad) => rad * 180 / math.pi;
 /// ([lat], [lon]) along initial bearing [bearingDeg] (degrees clockwise
 /// from true north), using the standard spherical "destination point given
 /// distance and bearing" formula.
+///
+/// Domain note: the app only ever calls this with Swiss-latitude inputs and
+/// sub-city-scale distances, so pole crossings and antimeridian wraparound
+/// never occur in practice. The formula is still defensive here — the
+/// `asin` argument is clamped to [-1, 1] to guard against floating-point
+/// overshoot at extreme angular distances, and the resulting longitude is
+/// normalized to [-180, 180] — so the function behaves sanely even if
+/// called with unexpected inputs (e.g. near-antimeridian starting points).
 (double lat, double lon) destinationPoint(
     double lat, double lon, double bearingDeg, double distanceM) {
   final phi1 = _degToRad(lat);
@@ -23,15 +31,20 @@ double _radToDeg(double rad) => rad * 180 / math.pi;
   final theta = _degToRad(bearingDeg);
   final delta = distanceM / _earthRadiusM; // angular distance
 
-  final phi2 = math.asin(math.sin(phi1) * math.cos(delta) +
-      math.cos(phi1) * math.sin(delta) * math.cos(theta));
+  final sinPhi2 = math.sin(phi1) * math.cos(delta) +
+      math.cos(phi1) * math.sin(delta) * math.cos(theta);
+  final phi2 = math.asin(sinPhi2.clamp(-1.0, 1.0));
   final lambda2 = lambda1 +
       math.atan2(
         math.sin(theta) * math.sin(delta) * math.cos(phi1),
         math.cos(delta) - math.sin(phi1) * math.sin(phi2),
       );
 
-  return (_radToDeg(phi2), _radToDeg(lambda2));
+  // Normalize longitude to [-180, 180] (atan2 above can push lambda2
+  // outside that range once lambda1 is added back in).
+  final lonDeg = (_radToDeg(lambda2) + 540) % 360 - 180;
+
+  return (_radToDeg(phi2), lonDeg);
 }
 
 /// Initial bearing (degrees, 0-360) from (lat1,lon1) to (lat2,lon2) along
