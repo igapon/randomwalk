@@ -44,19 +44,29 @@ class NoopTtsSpeaker implements TtsSpeaker {
 ///
 /// [init] must be called, and awaited, before [speak] does anything — it
 /// asks the native side to construct (or reuse) its `TextToSpeech` engine
-/// and select fr-FR, and reports whether that actually worked. Call it once
-/// per instance; a second call is wasted work, not a correctness problem
-/// (the native side answers a repeat `init` from its already-built engine
-/// rather than constructing a second one). A device with no French voice
-/// data installed — or no TTS engine at all — answers `false`, and this
-/// class then behaves exactly like [NoopTtsSpeaker] for every [speak] that
-/// follows, rather than throwing: "no TTS here" is this facade's expected
-/// unhappy path, not a caller-visible error.
+/// and select fr-FR, and reports whether that actually worked. A device
+/// with no French voice data installed — or no TTS engine at all — answers
+/// `false`, and this class then behaves exactly like [NoopTtsSpeaker] for
+/// every [speak] that follows, rather than throwing: "no TTS here" is this
+/// facade's expected unhappy path, not a caller-visible error.
+///
+/// `TripTaskHandler` constructs a *fresh* [NativeTtsSpeaker] every time
+/// "Guidage vocal" turns on (at trip start, and again if the setting flips
+/// on mid-trip), so two [init] calls arriving close enough together to
+/// overlap is a real scenario, not a hypothetical: two settings pushes
+/// before the first `init` has resolved would otherwise fire two concurrent
+/// platform `init` calls. [_pendingInit] is deliberately `static` — shared
+/// across every instance, not per-instance — so the second caller awaits
+/// the *same* underlying platform call instead of starting a second one:
+/// whoever asks first is the only one who actually reaches
+/// `TtsChannel.init` on the native side.
 class NativeTtsSpeaker implements TtsSpeaker {
   /// Exposed for tests, which mock this exact channel via
   /// `TestDefaultBinaryMessengerBinding` rather than injecting a fake —
   /// there is nothing behind a `MethodChannel` worth faking separately.
   static const channel = MethodChannel('randomwalk/tts');
+
+  static Future<bool>? _pendingInit;
 
   bool _initialized = false;
   bool _available = false;
@@ -67,15 +77,31 @@ class NativeTtsSpeaker implements TtsSpeaker {
 
   /// Asks the native side to build (or reuse) its engine and select fr-FR.
   /// Never throws — a platform-channel failure is treated the same as the
-  /// native side honestly answering "unavailable".
+  /// native side honestly answering "unavailable". Safe to call from any
+  /// number of instances at once (see the class doc comment): all of them
+  /// resolve to the one true answer, and the platform channel sees exactly
+  /// one `init` call for the whole overlapping group.
   Future<bool> init() async {
-    try {
-      _available = await channel.invokeMethod<bool>('init') ?? false;
-    } catch (_) {
-      _available = false;
-    }
+    final inFlight = _pendingInit;
+    final future = inFlight ?? _startInit();
+    _pendingInit = future;
+    _available = await future;
     _initialized = true;
     return _available;
+  }
+
+  static Future<bool> _startInit() async {
+    try {
+      return await channel.invokeMethod<bool>('init') ?? false;
+    } catch (_) {
+      return false;
+    } finally {
+      // Cleared once this call settles — a *later*, non-overlapping init()
+      // (a fresh trip, say) must reach the channel again rather than reuse
+      // a resolved Future forever; only genuinely concurrent callers should
+      // ever share one.
+      _pendingInit = null;
+    }
   }
 
   @override

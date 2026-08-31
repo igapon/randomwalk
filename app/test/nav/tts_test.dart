@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/nav/tts.dart';
@@ -78,6 +80,46 @@ void main() {
       final speaker = NativeTtsSpeaker();
       await speaker.speak('Tournez à gauche');
       expect(calls, isEmpty);
+    });
+
+    test(
+        'two overlapping init() calls collapse into a single platform call — '
+        'the production trigger is two settings pushes before the first '
+        'resolves, each building its own NativeTtsSpeaker', () async {
+      final reply = Completer<bool>();
+      var initCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(NativeTtsSpeaker.channel, (call) async {
+        if (call.method == 'init') {
+          initCalls++;
+          return reply.future;
+        }
+        return null;
+      });
+
+      // Two separate instances — matching TripTaskHandler's own pattern of
+      // building a fresh NativeTtsSpeaker per settings push — both call
+      // init() before the (still delayed) platform reply arrives.
+      final first = NativeTtsSpeaker().init();
+      final second = NativeTtsSpeaker().init();
+
+      reply.complete(true);
+
+      expect(await first, isTrue);
+      expect(await second, isTrue);
+      expect(initCalls, 1,
+          reason: 'the second caller must await the first call, not start '
+              'its own');
+    });
+
+    test('a later, non-overlapping init() reaches the channel again',
+        () async {
+      await NativeTtsSpeaker().init();
+      calls.clear();
+
+      await NativeTtsSpeaker().init();
+
+      expect(calls.map((c) => c.method), ['init']);
     });
 
     test('a channel error during init is treated as unavailable, not thrown',
