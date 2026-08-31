@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../nav/tts.dart';
 import '../session/recorder.dart';
+import '../tracking/device_channel.dart';
+import '../tracking/permissions.dart';
 import '../trip/trip_controller.dart';
 import 'alert_settings.dart';
+import 'battery_optimization.dart';
 import 'identity.dart';
 
 /// Player settings: editable pseudo, plus read-only identity and local
@@ -30,11 +33,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   /// mid-session.
   late Future<bool> _ttsAvailable;
 
+  /// Probed once, same reasoning as [_ttsAvailable]: the device manufacturer
+  /// cannot change mid-session, so this is asked once rather than on every
+  /// [_load] — see `isAggressiveBatteryOem`.
+  late Future<String?> _manufacturer;
+
   @override
   void initState() {
     super.initState();
     _future = _load();
     _ttsAvailable = NativeTtsSpeaker().init();
+    _manufacturer = const DeviceChannel().manufacturer();
   }
 
   Future<({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>
@@ -157,6 +166,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       value: hapticsEnabled,
                       onChanged: _setHapticsEnabled,
                     ),
+                    FutureBuilder<String?>(
+                      future: _manufacturer,
+                      builder: (context, manufacturerSnapshot) {
+                        if (!isAggressiveBatteryOem(manufacturerSnapshot.data)) {
+                          return const SizedBox.shrink();
+                        }
+                        return const _BatteryReliabilityTile();
+                      },
+                    ),
+                    const Divider(height: 32),
+                    const AboutDataTile(),
                   ],
                 ),
               ),
@@ -166,4 +186,77 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ),
     );
   }
+}
+
+/// Shown only on OEMs known to kill background location aggressively beyond
+/// stock Android (see `isAggressiveBatteryOem`) — task-8 brief point 9.
+/// `ACTION_APPLICATION_DETAILS_SETTINGS` (via `permission_handler`'s
+/// `openAppSettings`, already used by the main-screen banners for the same
+/// purpose) is used deliberately instead of the
+/// `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` intent: the latter needs
+/// the `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission, which Play's
+/// policy restricts to apps whose *core* function requires it — a walking
+/// tracker's occasional background fix does not clearly qualify, and
+/// mis-declaring it risks a listing rejection. The app details page lets
+/// the user reach the OEM's own battery/autostart controls in two taps
+/// instead of one, at zero policy risk.
+class _BatteryReliabilityTile extends StatelessWidget {
+  const _BatteryReliabilityTile();
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.battery_alert_outlined),
+        title: const Text('Suivi fiable en arrière-plan'),
+        subtitle: const Text(
+          "Ce téléphone peut interrompre le suivi en arrière-plan. "
+          "Ouvrez les réglages de l'app et autorisez-la à fonctionner "
+          "sans restriction de batterie (démarrage automatique / sans "
+          'contrainte).',
+        ),
+        onTap: () => PluginPermissionService().openSettings(),
+      );
+}
+
+/// Settings tile disclosing the map/routing data sources — required
+/// alongside the map's own small on-screen credit (see `_MapAttribution` in
+/// `map_screen.dart`) by OpenStreetMap's and OpenFreeMap's usage terms, and
+/// a natural place to also credit the routing engine.
+class AboutDataTile extends StatelessWidget {
+  const AboutDataTile({super.key});
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.info_outline),
+        title: const Text('À propos des données'),
+        subtitle: const Text('Sources des cartes et du calcul d\'itinéraire'),
+        onTap: () => showDialog<void>(
+          context: context,
+          builder: (context) => const _AboutDataDialog(),
+        ),
+      );
+}
+
+class _AboutDataDialog extends StatelessWidget {
+  const _AboutDataDialog();
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('À propos des données'),
+        content: const Text(
+          '• Cartes : © les contributeurs d\'OpenStreetMap, sous licence '
+          'ODbL.\n'
+          '• Tuiles cartographiques : OpenFreeMap (openfreemap.org), à '
+          'partir des mêmes données OpenStreetMap.\n'
+          '• Calcul d\'itinéraire : moteur de routage Valhalla, hors ligne '
+          'à partir de données OpenStreetMap traitées par ce projet.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Fermer'),
+          ),
+        ],
+      );
 }

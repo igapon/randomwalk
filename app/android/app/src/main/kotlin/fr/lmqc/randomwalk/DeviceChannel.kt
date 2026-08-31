@@ -10,8 +10,12 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * Two small platform facts over the `randomwalk/device` MethodChannel, in the same shape as
+ * Small platform facts over the `randomwalk/device` MethodChannel, in the same shape as
  * [ValhallaChannel].
+ *
+ *  - `manufacturer`: `Build.MANUFACTURER`, used by Settings to decide whether to show the
+ *    "Suivi fiable en arrière-plan" tile for OEMs known to kill background location aggressively
+ *    (see `battery_optimization.dart`'s `isAggressiveBatteryOem`).
  *
  *  - `sdkInt`: the running API level, so the Dart permission flow can skip prompts that do not
  *    exist on the device (POST_NOTIFICATIONS is Android 13+, ACTIVITY_RECOGNITION Android 10+).
@@ -56,6 +60,9 @@ class DeviceChannel(private val context: Context) {
         channel = methodChannel
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
+                // Settings' "Suivi fiable en arrière-plan" tile — see
+                // battery_optimization.dart's isAggressiveBatteryOem.
+                "manufacturer" -> result.success(Build.MANUFACTURER)
                 "sdkInt" -> result.success(Build.VERSION.SDK_INT)
                 "startStepCounter" -> result.success(startStepCounter())
                 // Int, not Long: the MethodChannel codec maps Kotlin Long to Dart int too,

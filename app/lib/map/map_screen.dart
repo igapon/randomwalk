@@ -11,6 +11,7 @@ import 'initial_camera.dart';
 import 'latest_only.dart';
 import 'nav_camera_state.dart';
 import 'route_controller.dart';
+import '../coverage/manifest.dart' show DatasetVersionMismatch;
 import '../nav/guidance_text.dart';
 import '../nav/nav_fields.dart' show formatDistance;
 import '../theme/tokens.dart';
@@ -68,6 +69,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   bool _planning = false;
   ({int done, int total})? _downloadProgress;
+
+  /// Set once the "Couverture incomplète" banner has been shown, so it
+  /// surfaces at most once per planning session (task-8 brief point 2)
+  /// instead of on every replan for the rest of the screen's lifetime.
+  bool _coverageWarningShown = false;
 
   /// Resolved once at startup — see [_resolveInitialCamera] — before the
   /// map is built at all: last-known position when there is one, else
@@ -509,11 +515,21 @@ class MapScreenState extends ConsumerState<MapScreen> {
       // was working, and the freshly computed route belongs to whatever
       // the plan says *now*, not to the snapshot taken above.
       await trip.saveActiveRoute(_plan(trip).copyWith(route: result));
+      if (planner.lastVersionMismatch) _showUpdateRequired();
+      if (planner.lastCoverageFailed > 0 && !_coverageWarningShown) {
+        _coverageWarningShown = true;
+        _showCoverageIncomplete();
+      }
       // RoutingException: no path found in an otherwise-covered area.
       // SocketException/HttpException/ClientException: the coverage fetch
       // failed offline with no warm cache (see CoverageRepository) — from
       // the player's perspective that's the same outcome as an uncovered
       // area, so it reads with the same message rather than crashing.
+    } on DatasetVersionMismatch {
+      // No cached manifest to fall back on at all (see CoverageRepository)
+      // — coverage could not be established this run, but the message is
+      // specific: an app update is what fixes it, not retrying.
+      _showUpdateRequired();
     } on RoutingException {
       _showRouteUnavailable();
     } on SocketException {
@@ -537,6 +553,27 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Itinéraire impossible ici — zone non couverte ?')));
+  }
+
+  /// The tile server published a dataset for a Valhalla engine version this
+  /// app build does not ship (`DatasetVersionMismatch`) — task-8 brief
+  /// point 1. Shown every time it recurs, not just once per session: unlike
+  /// the coverage-incomplete banner below, this is not "some areas may be
+  /// missing" background noise — it means the app itself needs updating
+  /// before *any* new coverage can be fetched.
+  void _showUpdateRequired() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+        'Mise à jour de l\'app requise pour les nouvelles cartes')));
+  }
+
+  /// `CoverageResult.failed > 0` for this plan — some of the tiles this
+  /// route needed could not be downloaded, so parts of the covered area may
+  /// be missing. Task-8 brief point 2.
+  void _showCoverageIncomplete() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+        'Couverture incomplète — certaines zones peuvent manquer')));
   }
 
   void _onSearchChanged(String query) {
@@ -836,7 +873,18 @@ class MapScreenState extends ConsumerState<MapScreen> {
             bottom: 0,
             child: Padding(
               padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16),
-              child: bottomBanner,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // A row of its own above the bottom banner (not
+                  // overlapping it, e.g. the full-width "Démarrer" pill) —
+                  // see task-8 brief point 7.
+                  const MapAttribution(),
+                  const SizedBox(height: 6),
+                  bottomBanner,
+                ],
+              ),
             ),
           ),
         ],
@@ -1204,6 +1252,30 @@ class _ResultBanner extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Small, semi-transparent data-source credit — required by both
+/// OpenFreeMap's and OpenStreetMap's usage terms. Sits in its own row above
+/// the bottom banner (see the `Column` in [MapScreenState.build]) rather
+/// than literally overlapping it, so it never collides with the full-width
+/// "Démarrer" pill. The fuller "OpenStreetMap © contributors (ODbL) ·
+/// OpenFreeMap · Valhalla" explanation lives in Settings → "À propos des
+/// données" (see `AboutDataTile`), reachable independently of the map.
+/// Public (not `_`-prefixed) so it can be pumped in isolation — see
+/// `map_screen_widgets_test.dart`.
+class MapAttribution extends StatelessWidget {
+  const MapAttribution({super.key});
+
+  @override
+  Widget build(BuildContext context) => Text(
+        kMapAttribution,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Theme.of(context)
+                  .colorScheme
+                  .onSurface
+                  .withValues(alpha: 0.55),
+            ),
+      );
 }
 
 /// Idle, no route planned: the plain one-tap "Démarrer" pill.
