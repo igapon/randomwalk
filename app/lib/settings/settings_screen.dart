@@ -124,8 +124,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Guidage vocal'),
+                      // No French TTS ships yet — see NoopTtsSpeaker's doc
+                      // comment (nav/tts.dart) for the upstream blocker —
+                      // but the setting itself is real and forward-facing,
+                      // so it should not claim an effect it does not have.
                       subtitle: const Text(
-                          'Instructions de navigation lues à voix haute'),
+                          'Instructions lues à voix haute (bientôt disponible)'),
                       value: ttsEnabled,
                       onChanged: _setTtsEnabled,
                     ),

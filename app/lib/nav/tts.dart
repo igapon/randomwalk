@@ -1,48 +1,44 @@
-import 'package:flutter_tts/flutter_tts.dart';
-
 /// Speaks a piece of guidance text aloud. The seam between the tracking
-/// handler's alert wiring and flutter_tts, so that wiring is testable
-/// without a real text-to-speech engine, and so "Guidage vocal" being off is
-/// just a different object rather than a branch scattered through the
-/// caller.
+/// handler's alert wiring and whatever text-to-speech engine actually does
+/// it, so that wiring is testable without a real one, and so "Guidage vocal"
+/// being off (or unavailable) is just a different object rather than a
+/// branch scattered through the caller.
+///
+/// No implementation ships yet — see [NoopTtsSpeaker]'s doc comment for why
+/// — but the rest of the maneuver-alert path (`AlertPolicy`, the settings
+/// toggle, the seed/live-refresh plumbing in `TripTaskHandler`) is built
+/// against this interface exactly as if one did, so wiring a real one back
+/// in later is a one-class change.
 abstract class TtsSpeaker {
   Future<void> speak(String text);
 }
 
-/// « Guidage vocal » off (or unavailable): does nothing. The default a
-/// caller should hold until it has a reason to build the real thing.
+/// Does nothing. The only [TtsSpeaker] this app currently ships.
+///
+/// `flutter_tts` (the obvious implementation) was tried for this task and
+/// pulled back out: its Android module unconditionally applies the
+/// `kotlin-android` Gradle plugin (`flutter_tts-4.2.5/android/build.gradle`),
+/// which Android Gradle Plugin 9's built-in Kotlin support (enabled here via
+/// `android.builtInKotlin=true` in `android/gradle.properties`, itself
+/// required by `maplibre_gl`) refuses outright: "the 'org.jetbrains.
+/// kotlin.android' plugin is no longer required ... since AGP 9.0" —
+/// confirmed as a currently open, unresolved upstream issue
+/// (github.com/dlutton/flutter_tts issue #647). Flipping
+/// `android.builtInKotlin` back to `false` would fix `flutter_tts` but
+/// breaks `maplibre_gl` the same way in the other direction (documented in
+/// `gradle.properties`) — the two plugins disagree about which side of the
+/// AGP 9 migration they are on, and nothing short of forking one of them or
+/// downgrading the whole app off AGP 9 resolves that. Out of scope for a
+/// single task.
+///
+/// "Guidage vocal" therefore persists and reaches the service (see
+/// `AlertSettingsStore`, `TripTaskHandler`) but has no audible effect right
+/// now — the sound/vibration alert (`AndroidNotificationDetails` in
+/// `tracking_service.dart`) is what the brief calls "la voie garantie écran
+/// éteint", and is unaffected by any of this.
 class NoopTtsSpeaker implements TtsSpeaker {
   const NoopTtsSpeaker();
 
   @override
   Future<void> speak(String text) async {}
-}
-
-/// French voice guidance via flutter_tts.
-///
-/// Configured for fr-FR lazily, on the first [speak] call rather than at
-/// construction — the plugin's own Android side already spins up a
-/// `TextToSpeech` engine the instant it is attached to a Flutter engine
-/// (verified in `flutter_tts`'s `FlutterTtsPlugin.onAttachedToEngine`, which
-/// is unconditional and outside this class's control), so this is not what
-/// keeps that cost out of a trip that never speaks — it only keeps this
-/// class's own Dart-side setup (language, speech rate) from running before
-/// it is ever needed.
-class FlutterTtsSpeaker implements TtsSpeaker {
-  final FlutterTts _tts;
-  bool _configured = false;
-
-  FlutterTtsSpeaker([FlutterTts? tts]) : _tts = tts ?? FlutterTts();
-
-  @override
-  Future<void> speak(String text) async {
-    if (!_configured) {
-      await _tts.setLanguage('fr-FR');
-      // Guidance read at a measured pace — 1.0 is flutter_tts's "normal"
-      // speed, and a walker glancing at a locked screen has time to listen.
-      await _tts.setSpeechRate(0.5);
-      _configured = true;
-    }
-    await _tts.speak(text);
-  }
 }

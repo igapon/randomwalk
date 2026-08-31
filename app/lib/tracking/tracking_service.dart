@@ -381,9 +381,11 @@ class TripTaskHandler extends TaskHandler {
   bool _hapticsEnabled = true;
   bool _ttsEnabled = true;
 
-  /// A no-op until « Guidage vocal » is actually on, so a trip that never
-  /// enables it never touches flutter_tts's Dart-side setup at all.
-  TtsSpeaker _speaker = const NoopTtsSpeaker();
+  /// [NoopTtsSpeaker] is the only [TtsSpeaker] this app currently ships —
+  /// see its doc comment for why a real one is out for now. `_ttsEnabled`
+  /// still flows all the way here so the moment a working implementation
+  /// exists, plugging it in above is the only change [_maybeAlert] needs.
+  final TtsSpeaker _speaker = const NoopTtsSpeaker();
 
   FlutterLocalNotificationsPlugin? _notifications;
   bool _notificationsReady = false;
@@ -443,9 +445,7 @@ class TripTaskHandler extends TaskHandler {
         await FlutterForegroundTask.getData<bool>(key: _kHapticsEnabledKey) ??
             true;
     _ttsEnabled =
-        await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ??
-            true;
-    if (_ttsEnabled) _speaker = FlutterTtsSpeaker();
+        await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ?? true;
 
     final session = SessionController(
       store: _PassThroughDistanceStore(),
@@ -645,14 +645,7 @@ class TripTaskHandler extends TaskHandler {
     if (data['hapticsEnabled'] is bool) {
       _hapticsEnabled = data['hapticsEnabled'] as bool;
     }
-    if (data['ttsEnabled'] is bool) {
-      final enabled = data['ttsEnabled'] as bool;
-      _ttsEnabled = enabled;
-      // Swap in the real speaker the moment it is turned on; turning it off
-      // just stops it being asked to speak (see [_maybeAlert]) rather than
-      // tearing down an engine mid-trip.
-      if (enabled && _speaker is NoopTtsSpeaker) _speaker = FlutterTtsSpeaker();
-    }
+    if (data['ttsEnabled'] is bool) _ttsEnabled = data['ttsEnabled'] as bool;
   }
 
   @override

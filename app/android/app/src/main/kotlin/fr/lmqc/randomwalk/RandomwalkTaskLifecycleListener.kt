@@ -38,16 +38,15 @@ import io.flutter.plugins.GeneratedPluginRegistrant
  *    for why *detaching* uses a different, engine-scoped hook instead of this method.
  *
  * Task 6 (maneuver alerts) is what forced the second half of this: `flutter_local_notifications`
- * and `flutter_tts` are ordinary pub plugins, so without also calling
- * `GeneratedPluginRegistrant.registerWith(engine)` here, their Dart-side method channels have no
- * handler on this engine and every call from inside the service isolate throws
- * `MissingPluginException` — the exact failure mode `RandomwalkPlugin` was built to avoid for the
- * app's own channels. Read from the *generated* `GeneratedPluginRegistrant.java` (not just the
- * package docs) to confirm two things before wiring this in: it wraps every single plugin's
- * registration in its own `try`/`catch (Exception e)` and merely logs a failure, so one
+ * is an ordinary pub plugin, so without also calling `GeneratedPluginRegistrant.registerWith(engine)`
+ * here, its Dart-side method channel has no handler on this engine and every call from inside the
+ * service isolate throws `MissingPluginException` — the exact failure mode `RandomwalkPlugin` was
+ * built to avoid for the app's own channels. Read from the *generated* `GeneratedPluginRegistrant.java`
+ * (not just the package docs) to confirm two things before wiring this in: it wraps every single
+ * plugin's registration in its own `try`/`catch (Exception e)` and merely logs a failure, so one
  * misbehaving plugin cannot take the others — or the service — down with it; and every plugin this
- * app actually depends on (`flutter_local_notifications`, `flutter_tts`, `geolocator`,
- * `shared_preferences`, `permission_handler`, `maplibre_gl`, ...) implements only `FlutterPlugin`'s
+ * app actually depends on (`flutter_local_notifications`, `geolocator`, `shared_preferences`,
+ * `permission_handler`, `maplibre_gl`, ...) implements only `FlutterPlugin`'s
  * `onAttachedToEngine`/`onDetachedFromEngine` there — no `ActivityAware` method is required to
  * construct any of their platform state, so attaching them to an engine with no Activity (this
  * one) is exactly the supported, documented shape of a `FlutterPlugin`, not a workaround. This
@@ -55,15 +54,13 @@ import io.flutter.plugins.GeneratedPluginRegistrant
  * the service isolate for the first time — both were already relied on there (Task 5) without
  * this call ever having run, unverified until now.
  *
- * One accepted cost: `flutter_tts`'s Android plugin (`FlutterTtsPlugin.onAttachedToEngine`)
- * unconditionally constructs an Android `TextToSpeech` engine the instant it attaches — not
- * lazily, and not gated on "Guidage vocal" being on — so every service start now pays that cost
- * once, even for a free trip or a route-bound one with alerts turned off. `TtsSpeaker`'s own
- * laziness (`nav/tts.dart`) only avoids this class's *Dart-side* setup; it cannot reach into the
- * plugin's `onAttachedToEngine`. Judged acceptable: constructing `TextToSpeech` is comparatively
- * cheap (it does not load voice data until `speak()` is actually called), and gating registration
- * itself on a setting would mean re-deriving, in Kotlin, exactly the Dart-side settings-read this
- * task already does once in `TripTaskHandler`.
+ * `flutter_tts` was tried for Task 6's optional spoken guidance and pulled back out — not a
+ * registration problem at all, but a build one: its `android/build.gradle` unconditionally applies
+ * the legacy `kotlin-android` Gradle plugin, which AGP 9's built-in Kotlin support (this app runs
+ * with `android.builtInKotlin=true`, required by `maplibre_gl` — see `android/gradle.properties`)
+ * refuses to coexist with. Flipping that flag back to `false` trades one break for the other. See
+ * `nav/tts.dart`'s `NoopTtsSpeaker` doc comment for the full account; nothing here needed to change
+ * for it.
  *
  * Registered once, from [RandomwalkApplication.onCreate] — not from `MainActivity` — because the
  * service can (re)create its engine without any Activity ever running (e.g. `RestartReceiver`
@@ -135,8 +132,8 @@ object RandomwalkTaskLifecycleListener : FlutterForegroundTaskLifecycleListener 
     // `remove()`d in the per-engine listener; the rest are cleaned up when (and only when) the
     // eventual `flutterEngine.destroy()` -> `pluginRegistry.destroy()` actually runs. Accepted
     // asymmetrically on purpose — `RandomwalkPlugin` owns the native Valhalla actor and its worker
-    // thread, the one resource here worth guaranteeing an early detach for; `flutter_tts`'s
-    // `TextToSpeech` engine, the notification channel handle, and the rest are comparatively cheap
-    // to leak in the same already-rare "isolate never dies" scenario.
+    // thread, the one resource here worth guaranteeing an early detach for; `flutter_local_notifications`'s
+    // notification channel handle and the rest are comparatively cheap to leak in the same
+    // already-rare "isolate never dies" scenario.
     override fun onEngineWillDestroy() = Unit
 }
