@@ -275,6 +275,20 @@ Duration estimatedDuration(double distanceKm, double speedKmh) {
   return Duration(seconds: (hours * 3600).round());
 }
 
+/// « 2,4 km · ~32 min » for the A→B result banner — [speedKmh]'s personal
+/// pace when it is known (same [estimatedDuration] the candidate cards
+/// already use), or [RouteResult.duration] — Valhalla's generic profile
+/// estimate — as the fallback while `SpeedHistoryStore`'s async load is
+/// still in flight (owner-requested micro-feature, task 8: "il faut que la
+/// durée affichée soit la vôtre, pas celle de Valhalla").
+String formatRouteResultLabel(RouteResult r, double? speedKmh) {
+  final km = r.distanceKm.toStringAsFixed(1).replaceAll('.', ',');
+  final duration =
+      speedKmh == null ? r.duration : estimatedDuration(r.distanceKm, speedKmh);
+  final min = (duration.inSeconds / 60).round();
+  return '$km km · ~$min min';
+}
+
 /// Whether [candidate] itself is within the planner's own tolerance of the
 /// target — [LoopPlanner.targetTolerance], the same bound the planner checks
 /// against `candidates.first` for `LoopPlanResult.targetMet` — applied

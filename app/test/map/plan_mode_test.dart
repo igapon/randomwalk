@@ -548,6 +548,35 @@ void main() {
     });
   });
 
+  group('formatRouteResultLabel (owner micro-feature: personal-pace A→B '
+      'duration)', () {
+    const route = RouteResult(
+      shape: [(0, 0), (0, 1)],
+      distanceKm: 4.5,
+      duration: Duration(minutes: 40), // Valhalla's generic estimate
+      maneuvers: [],
+    );
+
+    test('uses the walker\'s own pace when it is known', () {
+      // 4.5 km at 4.5 km/h — the walker's learned pace — is exactly 1 h,
+      // not Valhalla's 40-minute generic estimate.
+      expect(formatRouteResultLabel(route, 4.5), '4,5 km · ~60 min');
+    });
+
+    test('matches estimatedDuration exactly — same source as the candidate '
+        'cards', () {
+      final expectedMinutes =
+          (estimatedDuration(route.distanceKm, 6.0).inSeconds / 60).round();
+      expect(formatRouteResultLabel(route, 6.0),
+          '4,5 km · ~$expectedMinutes min');
+    });
+
+    test('falls back to Valhalla\'s own estimate while the pace history is '
+        'still loading (speedKmh null)', () {
+      expect(formatRouteResultLabel(route, null), '4,5 km · ~40 min');
+    });
+  });
+
   group('PlanModeStore', () {
     setUp(() => SharedPreferences.setMockInitialValues({}));
 

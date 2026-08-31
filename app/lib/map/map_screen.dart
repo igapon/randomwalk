@@ -124,9 +124,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Duration _durationTarget = kDurationTargetDefault;
 
   /// The walker's own learned pace for the current profile — drives both the
-  /// Durée conversion label and every candidate card's "durée estimée".
-  /// Null until the first async load resolves; recomputed whenever the
-  /// profile changes.
+  /// Durée conversion label and every candidate card's "durée estimée", and
+  /// (task 8, owner micro-feature) the A→B result banner's duration, in
+  /// place of Valhalla's generic per-profile estimate. Null until the first
+  /// async load resolves — [_formatResult] falls back to the route's own
+  /// estimate for that gap — and recomputed whenever the profile changes.
   double? _speedKmh;
 
   /// Whether the plan-target panel's slider is expanded, or collapsed to a
@@ -752,11 +754,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  String _formatResult(RouteResult r) {
-    final km = r.distanceKm.toStringAsFixed(1).replaceAll('.', ',');
-    final min = (r.duration.inSeconds / 60).round();
-    return '$km km · ~$min min';
-  }
+  /// Owner micro-feature (task 8): the walker's own learned pace, same
+  /// [_speedKmh] the candidate cards already read — see
+  /// [formatRouteResultLabel]'s doc comment for the fallback while it is
+  /// still loading.
+  String _formatResult(RouteResult r) => formatRouteResultLabel(r, _speedKmh);
 
   String _formatDuration(Duration d) {
     final hours = d.inHours;
