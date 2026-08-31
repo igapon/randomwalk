@@ -31,8 +31,10 @@ import io.flutter.embedding.engine.FlutterEngine
  *    `FlutterForegroundTaskLifecycleListener` (see that file's doc comments) plus the static
  *    `FlutterForegroundTaskPlugin.addTaskLifecycleListener` / `removeTaskLifecycleListener`
  *    registration functions. `onEngineCreate(engine)` fires right after the background engine is
- *    constructed and before the task's Dart callback runs; `onEngineWillDestroy()` fires right
- *    before `flutterEngine.destroy()` tears it down. This listener is the robust path.
+ *    constructed and before the task's Dart callback runs; `onEngineWillDestroy()` — this
+ *    package's own, with no engine parameter — fires right before `flutterEngine.destroy()` is
+ *    normally about to tear it down. This listener is the robust path for *attaching*; see below
+ *    for why *detaching* uses a different, engine-scoped hook instead of this method.
  *
  * Registered once, from [RandomwalkApplication.onCreate] — not from `MainActivity` — because the
  * service can (re)create its engine without any Activity ever running (e.g. `RestartReceiver`
@@ -40,31 +42,47 @@ import io.flutter.embedding.engine.FlutterEngine
  * time that happens.
  */
 object RandomwalkTaskLifecycleListener : FlutterForegroundTaskLifecycleListener {
-    // FIFO of engines attached but not yet explicitly detached. `ForegroundTask.destroy()` can
-    // defer its `flutterEngine.destroy()` behind a reply from the task's own Dart isolate (see
-    // ForegroundTask.kt: when a callback handle is set, `onDestroy` is `invokeMethod`'d and the
-    // engine is only destroyed inside that call's completion callback), while
-    // `ForegroundService.createForegroundTask` constructs the replacement `ForegroundTask` (and
-    // its engine) immediately afterwards. So `onEngineCreate` for a new engine can fire before
-    // `onEngineWillDestroy` for the previous one arrives — or, if the old isolate is wedged and
-    // never replies, before it arrives at all. `onEngineWillDestroy()` carries no engine
-    // reference (an interface constraint of FlutterForegroundTaskLifecycleListener), so a single
-    // "last engine" field would risk detaching the plugin from the wrong — still live — engine
-    // during that overlap. A FIFO queue instead pairs each `onEngineWillDestroy` with whichever
-    // attached engine has been waiting longest, which is exactly the one flutter_foreground_task
-    // is (or would be, if the isolate weren't wedged) about to destroy: engine lifecycles here
-    // are created and torn down in strict chronological order, never reordered, even though they
-    // can overlap.
-    //
-    // All of this runs on the service process's main thread — Android component callbacks and
-    // FlutterEngine lifecycle calls are never concurrent with each other — so no locking is
-    // needed around the queue.
-    private val attachedEngines = ArrayDeque<FlutterEngine>()
-
     override fun onEngineCreate(flutterEngine: FlutterEngine?) {
-        flutterEngine ?: return
-        flutterEngine.plugins.add(RandomwalkPlugin())
-        attachedEngines.addLast(flutterEngine)
+        val engine = flutterEngine ?: return
+        engine.plugins.add(RandomwalkPlugin())
+
+        // Detach by pairing with THIS specific engine, not with flutter_foreground_task's
+        // engine-less onEngineWillDestroy() below. Two reasons, both found by reading
+        // ForegroundTask.kt / ForegroundService.kt in the installed
+        // flutter_foreground_task:11.0.1 sources:
+        //
+        //  1. `ForegroundTask.destroy()` can defer its own `flutterEngine.destroy()` behind a
+        //     reply from the task's own Dart isolate (when a callback handle is set, `onDestroy`
+        //     is `invokeMethod`'d and the engine is only destroyed inside that call's completion
+        //     callback) — a wedged isolate never replies, so relying on that destroy() to trigger
+        //     cleanup can leak the native Valhalla actor and its worker thread indefinitely.
+        //  2. `ForegroundService.createForegroundTask` can construct a replacement `ForegroundTask`
+        //     (and engine) before the previous one's deferred destroy() completes, so two engines
+        //     can be transiently alive at once. flutter_foreground_task's own
+        //     `onEngineWillDestroy()` carries no engine reference (an interface constraint), so
+        //     there is no way to tell, from that callback alone, WHICH of possibly several
+        //     attached engines it refers to — an earlier fix here queued attached engines FIFO to
+        //     guess, but a permanently-wedged engine that never actually gets destroyed poisons
+        //     that queue forever: every later `onEngineWillDestroy` would keep removing the queue
+        //     head (the wedged, still-running engine) instead of the engine actually being
+        //     destroyed, misaligning every subsequent pairing.
+        //
+        // `FlutterEngine.addEngineLifecycleListener` sidesteps both problems: it is Flutter's own
+        // per-engine hook (`io.flutter.embedding.engine.FlutterEngine.EngineLifecycleListener`,
+        // verified against the installed embedding sources), the closure below captures exactly
+        // the [engine] it was registered on, and `FlutterEngine.destroy()` calls it before
+        // `pluginRegistry.destroy()` — so it fires precisely when (and only when) destroy()
+        // actually runs on *this* engine, deferred or not, and correctly does nothing for an
+        // engine that never gets destroyed at all.
+        engine.addEngineLifecycleListener(object : FlutterEngine.EngineLifecycleListener {
+            override fun onPreEngineRestart() = Unit
+
+            override fun onEngineWillDestroy() {
+                // Idempotent: pluginRegistry.destroy() -> removeAll(), called right after this by
+                // the same FlutterEngine.destroy(), is a no-op for a plugin already removed.
+                engine.plugins.remove(RandomwalkPlugin::class.java)
+            }
+        })
     }
 
     override fun onTaskStart(starter: FlutterForegroundTaskStarter) = Unit
@@ -73,17 +91,13 @@ object RandomwalkTaskLifecycleListener : FlutterForegroundTaskLifecycleListener 
 
     override fun onTaskDestroy() = Unit
 
-    override fun onEngineWillDestroy() {
-        // Detach explicitly and synchronously here, rather than relying on the later
-        // `flutterEngine.destroy()` to do it: that `destroy()` call can be wedged behind the very
-        // same unresponsive Dart isolate this teardown is for (see the class doc above), in which
-        // case it may be delayed indefinitely or never happen at all — leaving the native
-        // Valhalla actor and its worker thread leaked for as long as the process lives.
-        // `PluginRegistry.remove(Class)` is a plain map lookup-and-detach and a no-op if nothing
-        // is registered under that class anymore, so it is harmless to also let the eventual
-        // (possibly never-arriving) `flutterEngine.destroy()` call it a second time.
-        if (attachedEngines.isNotEmpty()) {
-            attachedEngines.removeFirst().plugins.remove(RandomwalkPlugin::class.java)
-        }
-    }
+    // No-op by design: detach is owned by the per-engine EngineLifecycleListener registered in
+    // onEngineCreate above, which is the only hook that can be reliably paired with the specific
+    // engine being destroyed. A residual is accepted and not solvable from here: if an engine's
+    // Dart isolate is wedged badly enough that `flutterEngine.destroy()` is never called for it at
+    // all (not even eventually), its RandomwalkPlugin instance — and the native actor/worker
+    // thread it owns — is never detached/disposed either. Bounding that would need an explicit
+    // timeout independent of flutter_foreground_task's own teardown path, which is out of scope
+    // here; flagged in the Task 4 report for Task 5 device QA to watch for.
+    override fun onEngineWillDestroy() = Unit
 }
