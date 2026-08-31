@@ -61,6 +61,52 @@ void main() {
     });
   });
 
+  group('trace()', () {
+    test('a null native reply raises RoutingException("empty engine reply")',
+        () async {
+      setHandler((call) async => null);
+      final engine = ChannelRoutingEngine();
+      await expectLater(
+          engine.trace('{"shape":[]}'),
+          throwsA(isA<RoutingException>().having(
+              (e) => e.message, 'message', 'empty engine reply')));
+    });
+
+    test('a PlatformException is wrapped as RoutingException', () async {
+      setHandler((call) async =>
+          throw PlatformException(code: 'VALHALLA', message: 'no match'));
+      final engine = ChannelRoutingEngine();
+      await expectLater(
+          engine.trace('{"shape":[]}'),
+          throwsA(isA<RoutingException>()
+              .having((e) => e.message, 'message', 'no match')));
+    });
+
+    test('MissingPluginException (no native engine registered) is wrapped as '
+        'RoutingException instead of crashing', () async {
+      // No handler registered at all -> MissingPluginException.
+      final engine = ChannelRoutingEngine();
+      await expectLater(
+          engine.trace('{"shape":[]}'), throwsA(isA<RoutingException>()));
+    });
+
+    test('the raw request is forwarded to the "trace" method verbatim and '
+        'the raw reply is returned unparsed', () async {
+      String? method;
+      Object? sentRequest;
+      setHandler((call) async {
+        method = call.method;
+        sentRequest = call.arguments['request'];
+        return '{"edges":[{"way_id":1,"length":0.1}]}';
+      });
+      final engine = ChannelRoutingEngine();
+      final result = await engine.trace('{"shape":[{"lat":1,"lon":2}]}');
+      expect(method, 'trace');
+      expect(sentRequest, '{"shape":[{"lat":1,"lon":2}]}');
+      expect(result, '{"edges":[{"way_id":1,"length":0.1}]}');
+    });
+  });
+
   group('init()', () {
     test('MissingPluginException on init is wrapped as RoutingException',
         () async {

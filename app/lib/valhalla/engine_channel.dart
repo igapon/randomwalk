@@ -103,4 +103,20 @@ class ChannelRoutingEngine implements RoutingEngine {
       throw RoutingException('route failed: no native engine registered');
     }
   }
+
+  @override
+  Future<String> trace(String requestJson) async {
+    try {
+      final resp = await _channel
+          .invokeMethod<String>('trace', {'request': requestJson});
+      if (resp == null) {
+        throw RoutingException('empty engine reply');
+      }
+      return resp;
+    } on PlatformException catch (e) {
+      throw RoutingException(e.message ?? 'trace failed');
+    } on MissingPluginException {
+      throw RoutingException('trace failed: no native engine registered');
+    }
+  }
 }

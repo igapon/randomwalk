@@ -47,6 +47,10 @@ class FakeEngine implements RoutingEngine {
         duration: Duration(minutes: 40),
         maneuvers: []);
   }
+
+  @override
+  Future<String> trace(String requestJson) async =>
+      throw UnimplementedError('not exercised by this test');
 }
 
 void main() {
