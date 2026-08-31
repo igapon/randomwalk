@@ -187,6 +187,96 @@ void main() {
     });
   });
 
+  group('published maneuverIndex is monotonic despite GPS wobble', () {
+    test('a backward wobble right after passing a maneuver does not revert the instruction', () {
+      // Départ / Tournez / Continuez tout droit / Arrivée, so there is a
+      // non-final maneuver transition to wobble across.
+      final shape = <(double, double)>[
+        for (var i = 0; i <= 10; i++) (46.5200 + i * 0.001, 6.6300),
+      ];
+      final route = syntheticRoute(shape,
+          [(0, 'Départ'), (4, 'Tournez'), (6, 'Continuez tout droit'), (9, 'Arrivée')]);
+      final follower = RouteFollower(route);
+      var t = DateTime(2026, 1, 1);
+
+      // Past maneuver "Tournez" (index 4), before "Continuez tout droit"'s
+      // own position (index 6): the active maneuver is "Continuez tout
+      // droit".
+      final u1 = follower.update(shape[5].$1, shape[5].$2, t);
+      expect(u1.instruction, 'Continuez tout droit');
+
+      // GPS wobble drops the fix back near index 3, within the follower's
+      // -2 segment search tolerance. alongKm is allowed to wobble backward
+      // by design...
+      t = t.add(const Duration(seconds: 1));
+      final u2 = follower.update(shape[3].$1, shape[3].$2, t);
+      expect(u2.alongKm, lessThan(u1.alongKm));
+
+      // ...but the *published* maneuverIndex/instruction must not revert to
+      // the maneuver we already passed.
+      expect(u2.maneuverIndex, u1.maneuverIndex);
+      expect(u2.instruction, 'Continuez tout droit');
+    });
+  });
+
+  group('ETA safety', () {
+    test('eta goes null after the estimator decays to a near-stationary speed', () {
+      final shape = <(double, double)>[
+        for (var i = 0; i <= 5; i++) (46.5200 + i * 0.001, 6.6300),
+      ];
+      final route = syntheticRoute(shape, [(0, 'Départ'), (5, 'Arrivée')]);
+      final follower = RouteFollower(route);
+      var t = DateTime(2026, 1, 1);
+
+      // Establish a brisk ~11 m/s speed estimate (3 samples).
+      follower.update(shape[0].$1, shape[0].$2, t);
+      t = t.add(const Duration(seconds: 10));
+      follower.update(shape[1].$1, shape[1].$2, t);
+      t = t.add(const Duration(seconds: 10));
+      follower.update(shape[2].$1, shape[2].$2, t);
+      t = t.add(const Duration(seconds: 10));
+      final moving = follower.update(shape[3].$1, shape[3].$2, t);
+      expect(moving.eta, isNotNull);
+
+      // Now stop moving (a coffee break): repeated fixes at the same spot,
+      // 60 s apart, decay the EMA toward zero.
+      Duration? lastEta;
+      for (var i = 0; i < 4; i++) {
+        t = t.add(const Duration(seconds: 60));
+        final stationary = follower.update(shape[3].$1, shape[3].$2, t);
+        lastEta = stationary.eta;
+      }
+
+      expect(lastEta, isNull);
+    });
+
+    test('eta is capped at 24h and never negative for a long remaining distance at low speed', () {
+      final base = (46.5200, 6.6300);
+      // A single ~44 km segment, far longer than is reachable in 24h at the
+      // very slow speed established below.
+      final shape = <(double, double)>[base, (46.9200, 6.6300)];
+      final route = syntheticRoute(shape, [(0, 'Départ'), (1, 'Arrivée')]);
+      final follower = RouteFollower(route);
+      var t = DateTime(2026, 1, 1);
+
+      // 0.35 m/s, constant, so the EMA settles exactly there after 3 samples.
+      follower.update(base.$1, base.$2, t);
+      t = t.add(const Duration(seconds: 10));
+      final p1 = offsetMeters(base, 0, 3.5);
+      follower.update(p1.$1, p1.$2, t);
+      t = t.add(const Duration(seconds: 10));
+      final p2 = offsetMeters(base, 0, 7.0);
+      follower.update(p2.$1, p2.$2, t);
+      t = t.add(const Duration(seconds: 10));
+      final p3 = offsetMeters(base, 0, 10.5);
+      final u = follower.update(p3.$1, p3.$2, t);
+
+      expect(u.eta, isNotNull);
+      expect(u.eta!.isNegative, isFalse);
+      expect(u.eta, const Duration(hours: 24));
+    });
+  });
+
   group('behavior 5: a single aberrant fix is reported but does not move progress', () {
     test('crossTrack > 200 m on one fix freezes alongKm/maneuverIndex, recovers after', () {
       final shape = <(double, double)>[

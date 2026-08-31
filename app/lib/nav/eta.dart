@@ -20,11 +20,18 @@ class SpeedEstimator {
     final previousTime = _lastSampleTime;
     if (previous == null || previousTime == null) {
       _speedMps = speedMps;
-    } else {
-      final dtSeconds = time.difference(previousTime).inMicroseconds / 1e6;
-      final f = dtSeconds <= 0 ? 1.0 : math.exp(-dtSeconds / halfLife);
-      _speedMps = previous * f + speedMps * (1 - f);
+      _lastSampleTime = time;
+      _sampleCount++;
+      return;
     }
+    final dtSeconds = time.difference(previousTime).inMicroseconds / 1e6;
+    if (dtSeconds <= 0) {
+      // A non-advancing or out-of-order timestamp contributes nothing: it
+      // neither moves the average nor counts toward the 3-sample minimum.
+      return;
+    }
+    final f = math.exp(-dtSeconds / halfLife);
+    _speedMps = previous * f + speedMps * (1 - f);
     _lastSampleTime = time;
     _sampleCount++;
   }

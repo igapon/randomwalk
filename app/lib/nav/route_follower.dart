@@ -9,6 +9,16 @@ import 'polyline_math.dart';
 /// allowed to move progress backward.
 const _aberrantCrossTrackM = 200.0;
 
+/// Below this speed the EMA is noise-dominated (e.g. stationary GPS jitter),
+/// not a usable pace: no ETA is reported rather than an ever-growing one.
+const _minEtaSpeedMps = 0.3;
+
+/// Upper bound on a reported ETA. A stopped walker's decaying EMA never
+/// reaches exactly zero, so remaining/speed would otherwise grow without
+/// bound (and, left uncapped, the resulting Duration could overflow into a
+/// bogus negative value).
+const _maxEtaSeconds = 24 * 60 * 60;
+
 /// One turn-by-turn navigation tick, derived from a raw GPS fix by
 /// [RouteFollower.update].
 class NavUpdate {
@@ -39,11 +49,15 @@ class NavUpdate {
 /// Tracks a walker's/rider's progress along a planned [RouteResult],
 /// turning raw GPS fixes into [NavUpdate]s.
 ///
-/// Progress never regresses by more than 2 segments (absorbing projection
-/// wobble while resisting real backward snaps on self-crossing routes), a
-/// single wildly-off fix (cross-track > 200 m) is reported but frozen rather
-/// than applied, off-route/arrival state is latched sensibly, and an ETA is
-/// derived from an EMA of recent speed once enough samples exist.
+/// Progress never regresses by more than 2 segments per update (absorbing
+/// projection wobble while resisting real backward snaps on self-crossing
+/// routes), a single wildly-off fix (cross-track > 200 m) is reported but
+/// frozen rather than applied, off-route/arrival state is latched sensibly,
+/// and an ETA is derived from an EMA of recent speed once enough samples
+/// exist. `alongKm` itself stays non-monotonic by design (it can wobble
+/// backward within that 2-segment tolerance); only the *published*
+/// `maneuverIndex` (and the instruction/distance derived from it) is floored
+/// so a brief wobble right after passing a maneuver never un-announces it.
 class RouteFollower {
   final RouteResult route;
   final double offRouteThresholdM;
@@ -59,6 +73,7 @@ class RouteFollower {
   double _lastSnappedLat;
   double _lastSnappedLon;
   late int _lastManeuverIndex;
+  late int _publishedManeuverIndex;
 
   DateTime? _offRouteSince;
   bool _offRoute = false;
@@ -82,6 +97,7 @@ class RouteFollower {
         _geometry.cumulativeKm[m.beginShapeIndex.clamp(0, route.shape.length - 1)],
     ];
     _lastManeuverIndex = _maneuverIndexFor(0);
+    _publishedManeuverIndex = _lastManeuverIndex;
   }
 
   /// First maneuver whose position is strictly ahead of [alongKm]; if none
@@ -126,6 +142,11 @@ class RouteFollower {
       _lastSampleAlongKm = _lastAlongKm;
     }
 
+    // The internal, recomputed maneuverIndex may decrease (e.g. GPS wobble
+    // dropping alongKm back below a maneuver we already passed), but the
+    // index/instruction we publish never un-announces a maneuver.
+    _publishedManeuverIndex = math.max(_publishedManeuverIndex, _lastManeuverIndex);
+
     // Off-route timing is based on every fix's cross-track reading —
     // including aberrant ones, which are themselves evidence of being off
     // route — and only on the timestamps passed to update().
@@ -138,11 +159,11 @@ class RouteFollower {
     }
 
     final isLastManeuver = route.maneuvers.isEmpty ||
-        _lastManeuverIndex == route.maneuvers.length - 1;
+        _publishedManeuverIndex == route.maneuvers.length - 1;
     final remainingKm = _geometry.totalKm - _lastAlongKm;
     final distanceToManeuverM = isLastManeuver
         ? remainingKm * 1000
-        : (_maneuverAlongKm[_lastManeuverIndex] - _lastAlongKm) * 1000;
+        : (_maneuverAlongKm[_publishedManeuverIndex] - _lastAlongKm) * 1000;
 
     final lastPoint = route.shape.last;
     final distanceToEndM = metersBetween(lat, lon, lastPoint.$1, lastPoint.$2);
@@ -151,9 +172,12 @@ class RouteFollower {
     }
 
     final currentSpeed = speed.speedMps;
-    final eta = (currentSpeed != null && currentSpeed > 0)
-        ? Duration(seconds: (remainingKm * 1000 / currentSpeed).round())
-        : null;
+    Duration? eta;
+    if (currentSpeed != null && currentSpeed >= _minEtaSpeedMps) {
+      final rawSeconds = remainingKm * 1000 / currentSpeed;
+      final cappedSeconds = math.min(rawSeconds, _maxEtaSeconds.toDouble());
+      eta = Duration(seconds: cappedSeconds.round());
+    }
 
     return NavUpdate(
       snappedLat: _lastSnappedLat,
@@ -161,9 +185,10 @@ class RouteFollower {
       alongKm: _lastAlongKm,
       remainingKm: remainingKm,
       crossTrackM: projection.crossTrackM,
-      maneuverIndex: _lastManeuverIndex,
-      instruction:
-          route.maneuvers.isEmpty ? '' : route.maneuvers[_lastManeuverIndex].instruction,
+      maneuverIndex: _publishedManeuverIndex,
+      instruction: route.maneuvers.isEmpty
+          ? ''
+          : route.maneuvers[_publishedManeuverIndex].instruction,
       distanceToManeuverM: distanceToManeuverM,
       offRoute: _offRoute,
       arrived: _arrived,
