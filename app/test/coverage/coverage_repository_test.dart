@@ -194,15 +194,18 @@ void main() {
       'purge-by-count never deletes the active version dir, even when this run had failures',
       () async {
     final root = await Directory.systemTemp.createTemp('cov');
-    // Two previously-downloaded, fully-usable old versions — purge-by-count
-    // keeps the active dir *plus* the single most recent of these, so both
-    // survive here (only 2 siblings exist, which is within the keep count).
+    // One previously-downloaded, fully-usable old version — purge-by-count
+    // keeps the active dir plus this single other one (only 2 siblings
+    // exist total, which is within the 2-dir keep count), so it survives
+    // here regardless of relative recency. (A second old sibling is
+    // deliberately not added: with 2 *other* siblings competing for the 1
+    // remaining slot, which one survives depends on sub-millisecond mtime
+    // ordering that is not reliably comparable across filesystems/OSes —
+    // see the dedicated, explicit-mtime purge-by-count tests above for
+    // that behaviour instead.)
     final old1 = Directory('${root.path}/OLD-1');
-    final old2 = Directory('${root.path}/OLD-2');
-    for (final dir in [old1, old2]) {
-      await File('${dir.path}/${knownPaths.first}').create(recursive: true);
-      await File('${dir.path}/${knownPaths.first}').writeAsBytes(tileBytes);
-    }
+    await File('${old1.path}/${knownPaths.first}').create(recursive: true);
+    await File('${old1.path}/${knownPaths.first}').writeAsBytes(tileBytes);
 
     final c = MockClient((req) async {
       if (req.url.path.endsWith('manifest.json')) {
