@@ -331,4 +331,63 @@ void _lastFixAtTests() {
       expect(controller.lastFixAt, isNull);
     });
   });
+
+  /// [SessionController.onFix] is how turn-by-turn navigation is driven
+  /// inside the tracking service — off the recording's own subscription,
+  /// rather than a second one.
+  group('onFix', () {
+    late StreamController<Position> positions;
+    late List<GpsSample> seen;
+    late SessionController controller;
+
+    setUp(() {
+      positions = StreamController<Position>.broadcast();
+      seen = [];
+      controller = SessionController(
+        store: FakeStore(),
+        getPositionStream: (_) => positions.stream,
+        checkPermissions: () async => true,
+        getClock: () => DateTime.utc(2026, 8, 30, 10, 0),
+        onFix: seen.add,
+      );
+    });
+
+    tearDown(() async => positions.close());
+
+    test('every accepted fix reaches the navigation hook', () async {
+      await controller.start();
+      positions.add(position());
+      await pumpEventQueue();
+
+      expect(seen, hasLength(1));
+      expect(seen.single.lat, closeTo(46.5, 1e-9));
+      expect(seen.single.lon, closeTo(6.6, 1e-9));
+      expect(seen.single.time, DateTime.utc(2000));
+    });
+
+    test('a fix too vague to measure with is too vague to navigate on',
+        () async {
+      // The alternative is announcing a turn from a position the distance
+      // maths has just refused to believe.
+      await controller.start();
+      positions.add(position(accuracy: 500));
+      await pumpEventQueue();
+
+      expect(seen, isEmpty);
+    });
+
+    test('a free trip passes no hook and nothing changes', () async {
+      final free = SessionController(
+        store: FakeStore(),
+        getPositionStream: (_) => positions.stream,
+        checkPermissions: () async => true,
+      );
+      await free.start();
+      positions.add(position());
+      await pumpEventQueue();
+
+      expect(free.recorder, isNotNull);
+      expect(seen, isEmpty);
+    });
+  });
 }
