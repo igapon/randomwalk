@@ -336,22 +336,37 @@ class TripController extends ChangeNotifier {
   /// « Terminer » on the interrupted-trip banner: banks what was recorded
   /// through exactly the same path a normal stop takes, so the leaderboard
   /// submit happens once and identically.
+  ///
+  /// Shares [_stopping] with [stopTrip] — same double-bank window (the
+  /// `_state != interrupted` guard alone lets two close-together taps both
+  /// through before the first call's first `await` ever suspends it), same
+  /// fix, and the shared flag means the two banners can never race each
+  /// other into a double bank either (unlikely in the UI, since only one of
+  /// « Terminer »/the interrupted banner is ever shown at once, but the
+  /// guard is free either way once it is shared).
   Future<double> finishInterrupted() async {
     final snapshot = _snapshot;
-    if (_state != TripState.interrupted || snapshot == null) return 0;
-    // The service is *probably* dead — that is what put us in this state —
-    // but `allowAutoRestart` means Android may have brought it back before
-    // the user answered the banner. Banking without stopping would leave it
-    // recording, notification and all, over a trip that has been finished.
-    // Tolerant of failure: when the service really is gone there is nothing
-    // to stop, and that must not block the user's « Terminer ».
-    TripSnapshot? persisted;
-    try {
-      persisted = await tracker.stop();
-    } catch (_) {
-      persisted = null;
+    if (_state != TripState.interrupted || snapshot == null || _stopping) {
+      return 0;
     }
-    return _finalise(_freshest(persisted, snapshot));
+    _stopping = true;
+    try {
+      // The service is *probably* dead — that is what put us in this state —
+      // but `allowAutoRestart` means Android may have brought it back before
+      // the user answered the banner. Banking without stopping would leave
+      // it recording, notification and all, over a trip that has been
+      // finished. Tolerant of failure: when the service really is gone
+      // there is nothing to stop, and that must not block « Terminer ».
+      TripSnapshot? persisted;
+      try {
+        persisted = await tracker.stop();
+      } catch (_) {
+        persisted = null;
+      }
+      return await _finalise(_freshest(persisted, snapshot));
+    } finally {
+      _stopping = false;
+    }
   }
 
   Future<bool> _launch(TripSnapshot seed, {NavSeed? nav}) async {
@@ -401,8 +416,12 @@ class TripController extends ChangeNotifier {
     _stepsAvailable = await counter.start();
   }
 
-  /// True from the moment [stopTrip] commits to stopping until it (or the
-  /// call it raced) has finished banking — see [stopTrip]'s doc comment.
+  /// True from the moment [stopTrip] or [finishInterrupted] commits to
+  /// stopping until it (or the call it raced — either of itself, or the
+  /// other of the pair) has finished banking. Shared between the two: both
+  /// bank through [_finalise] and both have the identical double-tap
+  /// window (their own `_state` guard alone is not enough — see either
+  /// method's doc comment).
   bool _stopping = false;
 
   /// Stops the trip and banks it. Returns the distance recorded by this
