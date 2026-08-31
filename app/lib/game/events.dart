@@ -19,6 +19,12 @@ class GameEventTypes {
   static const xpEarned = 'xp_earned';
   static const badgeUnlocked = 'badge_unlocked';
   static const streakUpdated = 'streak_updated';
+
+  /// A planned loop was completed end-to-end. Empty payload (`{}`) — the
+  /// reducer only counts occurrences (`GameState.loopsCompleted`); it also
+  /// drives the `premiere_boucle` derived badge (see `GameBadges` in
+  /// reducers.dart).
+  static const loopCompleted = 'loop_completed';
 }
 
 /// A single fact appended to the game's event journal.
@@ -81,15 +87,36 @@ class GameJournal {
 
   /// Appends [event] as one JSON-object-per-line write, terminated by `\n`.
   ///
-  /// The encoded line is written and flushed in a single `writeAsString`
-  /// call opened in append mode, so a concurrent reader never observes a
-  /// half-written line — the write either lands whole or (on a crash
-  /// beforehand) not at all.
+  /// The write is a single `writeAsString` call opened in append mode with
+  /// `flush: true`. That does not by itself guarantee atomicity against a
+  /// crash mid-write (the OS/filesystem can still land a partial line) —
+  /// the real durability guarantee is on the read side: [readAll] treats
+  /// any line it cannot parse (including a truncated one) as corrupt and
+  /// skips it rather than failing the whole replay, so a torn write can
+  /// only ever cost that one event, never the journal.
   Future<void> append(GameEvent event) async {
     await dir.create(recursive: true);
     final line = '${jsonEncode(event.toJson())}\n';
     await File(_path).writeAsString(
       line,
+      mode: FileMode.append,
+      flush: true,
+    );
+  }
+
+  /// Appends every event in [events] as a single write+flush (one line per
+  /// event, in list order) instead of one `append` call per event. Same
+  /// durability characteristics as [append] — see its doc comment. A no-op
+  /// for an empty list (does not even touch/create [dir]).
+  Future<void> appendAll(List<GameEvent> events) async {
+    if (events.isEmpty) return;
+    await dir.create(recursive: true);
+    final buffer = StringBuffer();
+    for (final event in events) {
+      buffer.writeln(jsonEncode(event.toJson()));
+    }
+    await File(_path).writeAsString(
+      buffer.toString(),
       mode: FileMode.append,
       flush: true,
     );

@@ -44,6 +44,14 @@ void main() {
       ]);
       expect(s.coins, 18);
     });
+
+    test('coins_spent clamps at 0 on overdraw (reducer as last line of defence)', () {
+      final s = reduceAll([
+        ev(GameEventTypes.coinsEarned, t0, {'amount': 10}),
+        ev(GameEventTypes.coinsSpent, t0, {'amount': 999}),
+      ]);
+      expect(s.coins, 0);
+    });
   });
 
   group('energy_changed', () {
@@ -129,7 +137,7 @@ void main() {
     });
   });
 
-  group('landmark_visited: energy (restaurant/cafe) cooldown', () {
+  group('landmark_visited: energy (restaurant/cafe/fast_food) cooldown', () {
     GameEvent visit(DateTime ts, String subkind, {String poiId = 'cafe-1'}) =>
         ev(GameEventTypes.landmarkVisited, ts,
             {'poiId': poiId, 'kind': 'energy', 'subkind': subkind});
@@ -146,6 +154,14 @@ void main() {
       final s = reduceAll([
         ev(GameEventTypes.energyChanged, t0, {'delta': -50}),
         visit(t0, 'cafe'),
+      ]);
+      expect(s.energy, 75);
+    });
+
+    test('fast_food restores +25 energy, same as cafe', () {
+      final s = reduceAll([
+        ev(GameEventTypes.energyChanged, t0, {'delta': -50}),
+        visit(t0, 'fast_food'),
       ]);
       expect(s.energy, 75);
     });
@@ -174,6 +190,35 @@ void main() {
         visit(t0.add(const Duration(hours: 6)), 'cafe'), // 70
       ]);
       expect(s.energy, 70);
+    });
+
+    test('an unknown subkind restores nothing AND does not write the cooldown', () {
+      final s = reduceAll([
+        ev(GameEventTypes.energyChanged, t0, {'delta': -80}), // 20
+        visit(t0, 'kiosk'), // unknown subkind: no-op
+        // Immediately after, at the SAME instant, a real cafe visit must
+        // still be rewarded — proving the unknown-subkind visit above never
+        // touched the cooldown map.
+        visit(t0, 'cafe'),
+      ]);
+      expect(s.energy, 45); // 20 + 25, not blocked
+    });
+
+    test('cooldown is tracked independently for coins vs energy on the same poiId', () {
+      // A single OSM node can carry more than one game tag (e.g.
+      // historic+bank). Two landmark_visited events sharing a poiId but
+      // differing in kind must not share a cooldown/yield bucket: the cafe
+      // reward below must land in full even though a coins visit at the
+      // exact same instant, on the exact same poiId, just happened.
+      const sharedId = 'node-42';
+      final s = reduceAll([
+        ev(GameEventTypes.energyChanged, t0, {'delta': -50}), // energy 50
+        ev(GameEventTypes.landmarkVisited, t0, {'poiId': sharedId, 'kind': 'coins'}),
+        ev(GameEventTypes.landmarkVisited, t0,
+            {'poiId': sharedId, 'kind': 'energy', 'subkind': 'cafe'}),
+      ]);
+      expect(s.coins, 100); // coins reward, unaffected by the energy visit
+      expect(s.energy, 75); // 50 + 25 cafe reward, unaffected by the coins visit
     });
   });
 
@@ -208,10 +253,13 @@ void main() {
   });
 
   group('xp_earned: energy multiplier', () {
-    GameEvent xp(double amount, {bool? multiplied}) => ev(
+    GameEvent xp(double amount, {bool? preMultiplied}) => ev(
           GameEventTypes.xpEarned,
           t0,
-          {'amount': amount, if (multiplied != null) 'multiplied': multiplied},
+          {
+            'amount': amount,
+            if (preMultiplied != null) 'preMultiplied': preMultiplied,
+          },
         );
 
     test('energy >= 60 applies x1.5', () {
@@ -262,10 +310,10 @@ void main() {
       expect(s.xp, 8);
     });
 
-    test('multiplied:true bypasses the energy multiplier entirely', () {
+    test('preMultiplied:true bypasses the energy multiplier entirely', () {
       final s = reduceAll([
         ev(GameEventTypes.energyChanged, t0, {'delta': -90}), // 10 -> would be x0.5
-        xp(10, multiplied: true),
+        xp(10, preMultiplied: true),
       ]);
       expect(s.xp, 10); // not halved
     });
@@ -278,11 +326,31 @@ void main() {
       ]);
       expect(s.xp, 20);
     });
+
+    group('ordering contract: xp_earned must be appended before the trip\'s energy drain', () {
+      test('xp before drain: multiplier reflects the energy walked in with (x1.5)', () {
+        final s = reduceAll([
+          xp(10), // energy still 100 going in -> x1.5 -> +15
+          ev(GameEventTypes.energyChanged, t0, {'delta': -90}), // drain after
+        ]);
+        expect(s.xp, 15);
+        expect(s.energy, 10);
+      });
+
+      test('drain before xp (wrong order): multiplier wrongly reflects the drained energy (x0.5)', () {
+        final s = reduceAll([
+          ev(GameEventTypes.energyChanged, t0, {'delta': -90}), // drain first
+          xp(10), // energy already 10 -> x0.5 -> +5
+        ]);
+        expect(s.xp, 5);
+        expect(s.energy, 10);
+      });
+    });
   });
 
   group('level thresholds (100 * n^1.5 cumulative XP)', () {
     GameEvent xpFlat(int amount) =>
-        ev(GameEventTypes.xpEarned, t0, {'amount': amount, 'multiplied': true});
+        ev(GameEventTypes.xpEarned, t0, {'amount': amount, 'preMultiplied': true});
 
     test('0 xp is level 0', () {
       expect(reduceAll([xpFlat(0)]).level, 0);
@@ -313,7 +381,7 @@ void main() {
     });
   });
 
-  group('badge_unlocked', () {
+  group('badge_unlocked (explicit event)', () {
     test('adds a badge', () {
       final s = reduceAll([ev(GameEventTypes.badgeUnlocked, t0, {'badge': 'first_trip'})]);
       expect(s.badges, {'first_trip'});
@@ -334,9 +402,116 @@ void main() {
       ]);
       expect(s.badges, {'first_trip', 'first_loop'});
     });
+
+    test('Task 2 can still unlock quartier_25 explicitly (reducer never derives it itself)', () {
+      final s = reduceAll([
+        ev(GameEventTypes.badgeUnlocked, t0, {'badge': GameBadges.quartier25}),
+      ]);
+      expect(s.badges, {GameBadges.quartier25});
+    });
   });
 
-  group('streak_updated: consecutive-day logic', () {
+  group('derived badges (auto-unlocked from state, not from badge_unlocked events)', () {
+    test('premier_trajet unlocks on the first edge_covered_batch with km > 0', () {
+      final before = reduceAll(const []);
+      expect(before.badges.contains(GameBadges.firstTrip), isFalse);
+      final after = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 1.2})]);
+      expect(after.badges.contains(GameBadges.firstTrip), isTrue);
+    });
+
+    test('premier_trajet does not unlock on a zero-km batch', () {
+      final s = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 0})]);
+      expect(s.badges.contains(GameBadges.firstTrip), isFalse);
+    });
+
+    test('premiere_boucle unlocks on the first loop_completed', () {
+      final s = reduceAll([ev(GameEventTypes.loopCompleted, t0, const {})]);
+      expect(s.badges.contains(GameBadges.firstLoop), isTrue);
+      expect(s.loopsCompleted, 1);
+    });
+
+    test('premiere_boucle unlocks exactly once even after several loops', () {
+      final s = reduceAll(
+        List.generate(3, (_) => ev(GameEventTypes.loopCompleted, t0, const {})),
+      );
+      expect(s.loopsCompleted, 3);
+      // A Set cannot hold a duplicate, but the intent here is that the
+      // badge transitions from absent to present exactly once across the
+      // fold — confirmed indirectly by it simply being present post-fold.
+      expect(s.badges.where((b) => b == GameBadges.firstLoop).length, 1);
+    });
+
+    test('km_10 / km_50 / km_100 unlock at their respective totalKm thresholds', () {
+      final at9 = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 9})]);
+      expect(at9.badges.contains(GameBadges.km10), isFalse);
+
+      final at10 = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 10})]);
+      expect(at10.badges.contains(GameBadges.km10), isTrue);
+      expect(at10.badges.contains(GameBadges.km50), isFalse);
+
+      final at50 = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 50})]);
+      expect(at50.badges.contains(GameBadges.km10), isTrue);
+      expect(at50.badges.contains(GameBadges.km50), isTrue);
+      expect(at50.badges.contains(GameBadges.km100), isFalse);
+
+      final at100 = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 100})]);
+      expect(at100.badges, containsAll([GameBadges.km10, GameBadges.km50, GameBadges.km100]));
+    });
+
+    test('a single large batch crossing all three km thresholds unlocks all three at once', () {
+      final s = reduceAll([ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 120})]);
+      expect(s.badges, containsAll([GameBadges.km10, GameBadges.km50, GameBadges.km100]));
+    });
+
+    test('landmarks_10 unlocks on the 10th distinct place visited', () {
+      final events = List.generate(
+        9,
+        (i) => ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'poi-$i', 'kind': 'reveal'}),
+      );
+      final at9 = reduceAll(events);
+      expect(at9.badges.contains(GameBadges.landmarks10), isFalse);
+
+      final tenth = ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'poi-9', 'kind': 'reveal'});
+      final at10 = reduceAll([...events, tenth]);
+      expect(at10.badges.contains(GameBadges.landmarks10), isTrue);
+    });
+
+    test('streak_7 unlocks on the 7th consecutive day', () {
+      final days = List.generate(6, (i) => '2026-01-0${i + 1}');
+      final before = reduceAll(
+        days.map((d) => ev(GameEventTypes.streakUpdated, t0, {'day': d})),
+      );
+      expect(before.badges.contains(GameBadges.streak7), isFalse);
+
+      final withSeventh = reduceAll(
+        [...days, '2026-01-07'].map((d) => ev(GameEventTypes.streakUpdated, t0, {'day': d})),
+      );
+      expect(withSeventh.badges.contains(GameBadges.streak7), isTrue);
+    });
+
+    test('streak_7, once unlocked, is never revoked by a later gap', () {
+      final events = [
+        ...List.generate(7, (i) => '2026-01-0${i + 1}'),
+        '2026-02-01', // big gap: streakDays resets to 1
+      ].map((d) => ev(GameEventTypes.streakUpdated, t0, {'day': d}));
+      final s = reduceAll(events);
+      expect(s.streakDays, 1);
+      expect(s.badges.contains(GameBadges.streak7), isTrue);
+    });
+
+    test('quartier_25 is never auto-derived by this reducer', () {
+      // Even with huge cell-reveal activity, this reducer has no notion of
+      // quartiers, so it must never invent the badge on its own.
+      final s = reduceAll([
+        ev(GameEventTypes.cellRevealed, t0, {
+          'cells': List.generate(1000, (i) => 'cell-$i'),
+        }),
+      ]);
+      expect(s.badges.contains(GameBadges.quartier25), isFalse);
+    });
+  });
+
+  group('streak_updated: reorder-invariant, set-based consecutive-day logic', () {
     GameEvent streak(String isoDay) =>
         ev(GameEventTypes.streakUpdated, t0, {'day': isoDay});
 
@@ -393,30 +568,162 @@ void main() {
       expect(s.streakDays, 2);
       expect(s.coins, 5);
     });
+
+    test('out-of-order delivery yields the same result as in-order delivery', () {
+      final inOrder = reduceAll(
+        ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04']
+            .map(streak),
+      );
+      final scrambled = reduceAll(
+        ['2026-01-03', '2026-01-01', '2026-01-04', '2026-01-02']
+            .map(streak),
+      );
+      expect(scrambled.streakDays, inOrder.streakDays);
+      expect(scrambled.streakDays, 4);
+      expect(scrambled.lastActivityDay, inOrder.lastActivityDay);
+    });
+
+    test('duplicate deliveries in any order do not inflate the streak', () {
+      final s = reduceAll([
+        streak('2026-01-01'),
+        streak('2026-01-02'),
+        streak('2026-01-01'), // re-delivered
+        streak('2026-01-02'), // re-delivered
+      ]);
+      expect(s.streakDays, 2);
+    });
+
+    test('out-of-order delivery with a gap still reflects the run ending at the max day', () {
+      // Days 1,2 then 4,5 (gap at 3): the run ending at the max day (5) is
+      // just {4,5} -> length 2, regardless of the order events arrive in.
+      final s = reduceAll(
+        ['2026-01-05', '2026-01-01', '2026-01-04', '2026-01-02']
+            .map(streak),
+      );
+      expect(s.streakDays, 2);
+      expect(s.lastActivityDay, DateTime.utc(2026, 1, 5));
+    });
+
+    test('a bare date payload is pure-string/DST-safe: no local-timezone shift applied', () {
+      // Regardless of what timezone concept might apply elsewhere, a bare
+      // 'YYYY-MM-DD' always parses to that exact UTC calendar date.
+      final s = reduceAll([streak('2026-03-29'), streak('2026-03-30')]);
+      expect(s.lastActivityDay, DateTime.utc(2026, 3, 30));
+      expect(s.streakDays, 2);
+    });
+
+    test('a payload containing a full ISO datetime (T marker) is rejected', () {
+      final s = reduceAll([
+        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-01T00:00:00'}),
+      ]);
+      expect(s.streakDays, 0);
+      expect(s.lastActivityDay, isNull);
+    });
+
+    test('a payload containing a Z (UTC) marker is rejected', () {
+      final s = reduceAll([
+        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-01Z'}),
+      ]);
+      expect(s.streakDays, 0);
+    });
+
+    test('a rejected malformed day does not disturb an already-valid streak', () {
+      final s = reduceAll([
+        streak('2026-01-01'),
+        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-02T00:00:00Z'}),
+      ]);
+      expect(s.streakDays, 1);
+    });
   });
 
   group('cell_revealed', () {
-    test('each event increments cellsRevealed by 1 by default', () {
+    test('with no payload at all, defaults to bumping the legacy counter by 1', () {
       final s = reduceAll([
         ev(GameEventTypes.cellRevealed, t0, const {}),
         ev(GameEventTypes.cellRevealed, t0, const {}),
       ]);
       expect(s.cellsRevealed, 2);
+      expect(s.revealedCellKeys, isEmpty);
     });
 
-    test('an explicit count payload adds a batch at once', () {
+    test('a legacy count payload adds a batch to the counter at once', () {
       final s = reduceAll([ev(GameEventTypes.cellRevealed, t0, {'count': 7})]);
       expect(s.cellsRevealed, 7);
+      expect(s.revealedCellKeys, isEmpty);
+    });
+
+    test('a cells payload adds distinct cell keys and cellsRevealed tracks the set size', () {
+      final s = reduceAll([
+        ev(GameEventTypes.cellRevealed, t0, {
+          'cells': ['1:1', '1:2', '1:3']
+        }),
+      ]);
+      expect(s.revealedCellKeys, {'1:1', '1:2', '1:3'});
+      expect(s.cellsRevealed, 3);
+    });
+
+    test('re-reporting an already-revealed cell key does not double count', () {
+      final s = reduceAll([
+        ev(GameEventTypes.cellRevealed, t0, {
+          'cells': ['1:1', '1:2']
+        }),
+        ev(GameEventTypes.cellRevealed, t0, {
+          'cells': ['1:2', '1:3']
+        }),
+      ]);
+      expect(s.revealedCellKeys, {'1:1', '1:2', '1:3'});
+      expect(s.cellsRevealed, 3);
     });
   });
 
   group('edge_covered_batch', () {
-    test('accumulates km travelled', () {
+    test('accumulates the total km of each trip batch', () {
       final s = reduceAll([
         ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 2.5}),
         ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 1.5}),
       ]);
       expect(s.totalKm, 4.0);
+    });
+  });
+
+  group('loop_completed', () {
+    test('increments loopsCompleted', () {
+      final s = reduceAll([
+        ev(GameEventTypes.loopCompleted, t0, const {}),
+        ev(GameEventTypes.loopCompleted, t0, const {}),
+      ]);
+      expect(s.loopsCompleted, 2);
+    });
+  });
+
+  group('event id dedup (essential for M5 sync re-delivery)', () {
+    test('the exact same event id delivered twice is only applied once', () {
+      final e = GameEvent(
+        id: 'dup-1',
+        ts: t0,
+        type: GameEventTypes.landmarkVisited,
+        payload: const {'poiId': 'bank-1', 'kind': 'coins'},
+      );
+      final s = reduceAll([e, e]); // literally the same event object twice
+      expect(s.coins, 100); // not 100+100
+      expect(s.landmarksVisited, 1);
+    });
+
+    test('two distinct events with the same id (re-sent payload) also count once', () {
+      final first = GameEvent(
+        id: 'same-id',
+        ts: t0,
+        type: GameEventTypes.coinsEarned,
+        payload: const {'amount': 30},
+      );
+      final resend = GameEvent(
+        id: 'same-id',
+        ts: t0,
+        type: GameEventTypes.coinsEarned,
+        payload: const {'amount': 30},
+      );
+      final s = reduceAll([first, resend]);
+      expect(s.coins, 30);
     });
   });
 
@@ -448,17 +755,88 @@ void main() {
     });
   });
 
-  group('ordering', () {
-    test('reduceAll applies events in the order given, not sorted by ts', () {
-      // Passing a later day before an earlier one is treated as the caller's
-      // chosen order (a gap/reset from the reducer's point of view) — the
-      // reducer never re-sorts by timestamp.
+  group('ordering (reduceAll never re-sorts by timestamp)', () {
+    test('reduceAll applies non-streak events strictly in the order given', () {
+      // Feeding the 24h-later (rewarded) visit BEFORE the first-ever visit
+      // (in list order, regardless of ts) makes the first list item behave
+      // as the "first-ever" reward (100) and the second as blocked, because
+      // its ts is only 1h after the (list-)first one's ts.
       final s = reduceAll([
-        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-05'}),
-        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-01'}),
+        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(hours: 24)),
+            {'poiId': 'bank-1', 'kind': 'coins'}),
+        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(hours: 25)),
+            {'poiId': 'bank-1', 'kind': 'coins'}),
       ]);
-      expect(s.lastActivityDay, DateTime.utc(2026, 1, 1));
-      expect(s.streakDays, 1);
+      expect(s.coins, 100); // only the list-first visit was rewarded
+    });
+  });
+
+  group('GameState equality and replay idempotence', () {
+    test('two states with identical field values compare equal', () {
+      final events = [
+        ev(GameEventTypes.coinsEarned, t0, {'amount': 10}),
+        ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'p1', 'kind': 'reveal'}),
+        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-01'}),
+      ];
+      expect(reduceAll(events), reduceAll(events));
+      expect(reduceAll(events).hashCode, reduceAll(events).hashCode);
+    });
+
+    test('reduceAll(events) == reduceAll(events): replay is idempotent', () {
+      final events = [
+        ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 12}),
+        ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'bank-1', 'kind': 'coins'}),
+        ev(GameEventTypes.xpEarned, t0, {'amount': 10}),
+        ev(GameEventTypes.loopCompleted, t0, const {}),
+        ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-01'}),
+        ev(GameEventTypes.cellRevealed, t0, {
+          'cells': ['1:1', '1:2']
+        }),
+      ];
+      final a = reduceAll(events);
+      final b = reduceAll(events);
+      expect(a, b);
+    });
+
+    test('states that differ in even one field compare unequal', () {
+      final a = reduceAll([ev(GameEventTypes.coinsEarned, t0, {'amount': 10})]);
+      final b = reduceAll([ev(GameEventTypes.coinsEarned, t0, {'amount': 11})]);
+      expect(a == b, isFalse);
+    });
+  });
+
+  group('exposed collections are unmodifiable', () {
+    test('mutating badges from outside throws', () {
+      final s = reduceAll([ev(GameEventTypes.badgeUnlocked, t0, {'badge': 'x'})]);
+      expect(() => s.badges.add('y'), throwsUnsupportedError);
+    });
+
+    test('mutating visitedPoiIds from outside throws', () {
+      final s = reduceAll([
+        ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'p1', 'kind': 'reveal'}),
+      ]);
+      expect(() => s.visitedPoiIds.add('p2'), throwsUnsupportedError);
+    });
+
+    test('mutating lastVisitByPoi from outside throws', () {
+      final s = reduceAll([
+        ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'bank-1', 'kind': 'coins'}),
+      ]);
+      expect(() => s.lastVisitByPoi['x'] = t0, throwsUnsupportedError);
+    });
+
+    test('mutating activeDays from outside throws', () {
+      final s = reduceAll([ev(GameEventTypes.streakUpdated, t0, {'day': '2026-01-01'})]);
+      expect(() => s.activeDays.add('2099-01-01'), throwsUnsupportedError);
+    });
+
+    test('mutating revealedCellKeys from outside throws', () {
+      final s = reduceAll([
+        ev(GameEventTypes.cellRevealed, t0, {
+          'cells': ['1:1']
+        }),
+      ]);
+      expect(() => s.revealedCellKeys.add('9:9'), throwsUnsupportedError);
     });
   });
 }

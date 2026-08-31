@@ -135,12 +135,44 @@ void main() {
         GameEventTypes.xpEarned,
         GameEventTypes.badgeUnlocked,
         GameEventTypes.streakUpdated,
+        GameEventTypes.loopCompleted,
       ];
       for (final t in types) {
         await journal.append(event(id: t, type: t, payload: {'k': 'v'}));
       }
       final events = await journal.readAll();
       expect(events.map((e) => e.type).toList(), types);
+    });
+  });
+
+  group('GameJournal.appendAll', () {
+    test('writes every event in one call and preserves order', () async {
+      final dir = await Directory.systemTemp.createTemp('journal');
+      final journal = GameJournal(dir);
+      await journal.appendAll([
+        event(id: 'a', ts: DateTime.utc(2026, 1, 1)),
+        event(id: 'b', ts: DateTime.utc(2026, 1, 2)),
+        event(id: 'c', ts: DateTime.utc(2026, 1, 3)),
+      ]);
+      final events = await journal.readAll();
+      expect(events.map((e) => e.id).toList(), ['a', 'b', 'c']);
+    });
+
+    test('an empty list is a no-op (does not create the journal dir)', () async {
+      final root = await Directory.systemTemp.createTemp('journal');
+      final nested = Directory('${root.path}/nested');
+      final journal = GameJournal(nested);
+      await journal.appendAll(const []);
+      expect(await nested.exists(), isFalse);
+    });
+
+    test('appendAll followed by append keeps a single coherent file', () async {
+      final dir = await Directory.systemTemp.createTemp('journal');
+      final journal = GameJournal(dir);
+      await journal.appendAll([event(id: 'a'), event(id: 'b')]);
+      await journal.append(event(id: 'c'));
+      final events = await journal.readAll();
+      expect(events.map((e) => e.id).toList(), ['a', 'b', 'c']);
     });
   });
 }
