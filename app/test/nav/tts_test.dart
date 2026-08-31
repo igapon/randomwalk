@@ -122,6 +122,32 @@ void main() {
       expect(calls.map((c) => c.method), ['init']);
     });
 
+    test(
+        'a transient native failure is retried on the next init() and can '
+        'succeed — this test only pins down the Dart-side half (a fresh '
+        'call reaches the channel again after a false); the native retry '
+        'budget itself is TtsChannel.kt\'s (see fix round 3)', () async {
+      var initCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(NativeTtsSpeaker.channel, (call) async {
+        if (call.method != 'init') return null;
+        initCalls++;
+        // First attempt: a transient native failure. Second: the retry
+        // succeeds, exactly as TtsChannel.kt now allows after State.FAILED.
+        return initCalls > 1;
+      });
+
+      final first = NativeTtsSpeaker();
+      expect(await first.init(), isFalse);
+      expect(first.available, isFalse);
+
+      final second = NativeTtsSpeaker();
+      expect(await second.init(), isTrue);
+      expect(second.available, isTrue);
+
+      expect(initCalls, 2);
+    });
+
     test('a channel error during init is treated as unavailable, not thrown',
         () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

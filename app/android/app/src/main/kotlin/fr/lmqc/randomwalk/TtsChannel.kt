@@ -48,13 +48,29 @@ import java.util.concurrent.atomic.AtomicInteger
  * Lazy by design: the engine is constructed on the first `init` call, never at [register]
  * — a trip that never enables "Guidage vocal" must never pay for it, on either engine this
  * is attached to.
+ *
+ * [State.FAILED] is *not* cached forever: `OnInitListener` reporting non-`SUCCESS` can be a
+ * transient cold-start hiccup in the system TTS service (a real-world Android quirk, not
+ * hypothetical), and a walker who enables "Guidage vocal" once is not well served by a
+ * permanent "unavailable" verdict from whatever the engine happened to be doing the first
+ * time it was asked. A later `init` while `FAILED` retries — a fresh `TextToSpeech`, not the
+ * broken one — up to [maxInitAttempts] times, after which it settles into a genuinely
+ * permanent `FAILED` (a device truly missing a TTS engine must not retry forever). This is
+ * deliberately narrower than retrying a *successful* bind that merely lacks French voice
+ * data ([State.READY] with `available == false`): the engine itself came up fine in that
+ * case, and nothing about asking again would change the answer short of the user installing
+ * a language pack in between — out of scope here, same as it was in fix round 2.
  */
 class TtsChannel(private val context: Context) {
     private enum class State { NONE, PENDING, READY, FAILED }
 
+    /** See the class doc comment's note on [State.FAILED] not being permanent. */
+    private val maxInitAttempts = 3
+
     private var tts: TextToSpeech? = null
     private var state = State.NONE
     private var available = false
+    private var failedAttempts = 0
     private val pendingInitResults = mutableListOf<MethodChannel.Result>()
 
     /**
@@ -97,22 +113,43 @@ class TtsChannel(private val context: Context) {
 
     /**
      * Answers immediately from the cached [available] once the engine has settled
-     * ([State.READY]/[State.FAILED]); queues [result] alongside any other caller waiting on
-     * the *same* still-starting engine ([State.PENDING]); or, the first time, starts that
-     * engine and queues [result] to be the first entry [onEngineInitialized] completes.
+     * successfully ([State.READY]); queues [result] alongside any other caller waiting on
+     * the *same* still-starting engine ([State.PENDING]); starts a fresh engine (queuing
+     * [result] the same as [State.NONE]) if the last one [State.FAILED] and there is still
+     * retry budget left ([failedAttempts] `< `[maxInitAttempts]); or, once that budget is
+     * spent, answers `false` without trying again — a device genuinely missing a TTS engine
+     * must not retry forever.
      */
     private fun init(result: MethodChannel.Result) {
         when (state) {
-            State.READY, State.FAILED -> result.success(available)
+            State.READY -> result.success(available)
             State.PENDING -> pendingInitResults.add(result)
-            State.NONE -> {
-                state = State.PENDING
-                pendingInitResults.add(result)
-                val generation = ++initGeneration
-                tts = TextToSpeech(context) { status ->
-                    mainHandler.post { onEngineInitialized(generation, status) }
+            State.FAILED -> {
+                if (failedAttempts >= maxInitAttempts) {
+                    result.success(available)
+                } else {
+                    startEngine(result)
                 }
             }
+            State.NONE -> startEngine(result)
+        }
+    }
+
+    /**
+     * Constructs a fresh `TextToSpeech`, discarding any previous one first — relevant only
+     * on a retry after [State.FAILED], where `tts` may already hold a non-`null` reference to
+     * the engine that just failed to bind; [State.NONE] never has one to discard.
+     */
+    private fun startEngine(result: MethodChannel.Result) {
+        tts?.let {
+            it.stop()
+            it.shutdown()
+        }
+        state = State.PENDING
+        pendingInitResults.add(result)
+        val generation = ++initGeneration
+        tts = TextToSpeech(context) { status ->
+            mainHandler.post { onEngineInitialized(generation, status) }
         }
     }
 
@@ -124,7 +161,13 @@ class TtsChannel(private val context: Context) {
         val engine = tts
         val succeeded = status == TextToSpeech.SUCCESS && engine != null
         available = if (succeeded) applyFrenchLocale(engine!!) else false
-        state = if (succeeded) State.READY else State.FAILED
+        state = if (succeeded) {
+            failedAttempts = 0
+            State.READY
+        } else {
+            failedAttempts++
+            State.FAILED
+        }
         completePendingInitResults()
     }
 
@@ -158,6 +201,12 @@ class TtsChannel(private val context: Context) {
         tts = null
         state = State.NONE
         available = false
+        // A full, deliberate reset (as opposed to a same-state retry after State.FAILED)
+        // earns a fresh retry budget too — the alternative, leaving a spent budget in place
+        // across an explicit shutdown, would make [maxInitAttempts] silently unenforceable
+        // (a later init() lands in the State.NONE branch, which does not consult it at all)
+        // rather than actually resetting anything.
+        failedAttempts = 0
         // Invalidates any OnInitListener callback still in flight for the engine just torn
         // down (see [initGeneration]'s doc comment).
         initGeneration++
