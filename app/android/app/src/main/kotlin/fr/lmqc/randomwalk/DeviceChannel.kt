@@ -6,7 +6,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
-import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 
 /**
@@ -45,8 +45,8 @@ class DeviceChannel(private val context: Context) {
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
 
-    fun register(flutterEngine: FlutterEngine) {
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "randomwalk/device")
+    fun register(messenger: BinaryMessenger) {
+        MethodChannel(messenger, "randomwalk/device")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "sdkInt" -> result.success(Build.VERSION.SDK_INT)

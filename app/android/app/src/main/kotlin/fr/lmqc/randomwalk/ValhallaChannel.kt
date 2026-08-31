@@ -2,7 +2,7 @@ package fr.lmqc.randomwalk
 
 import android.content.Context
 import com.valhalla.valhalla.Valhalla
-import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.Executors
@@ -24,14 +24,20 @@ import java.util.concurrent.Executors
  *  - `Valhalla` is `Closeable` and holds a native actor (incl. the mmapped tiles) for its whole
  *    lifetime; the previous instance is closed before a re-`init`, and [dispose] closes it (and
  *    shuts down the worker thread) when the Flutter engine tears down — see
- *    `MainActivity.cleanUpFlutterEngine`.
+ *    `RandomwalkPlugin.onDetachedFromEngine`.
+ *
+ * One instance is created per [io.flutter.embedding.engine.FlutterEngine] it is registered on
+ * (see `RandomwalkPlugin`), each with its own native actor, worker thread and on-disk config
+ * copy. Two engines attached at once (the UI engine and, during active navigation, the
+ * background tracking engine) means two actors mmapping the same tile files — acceptable, since
+ * the OS shares the mmapped pages between them.
  */
 class ValhallaChannel(private val context: Context) {
     private var actor: Valhalla? = null
     private val executor = Executors.newSingleThreadExecutor()
 
-    fun register(flutterEngine: FlutterEngine) {
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "randomwalk/valhalla")
+    fun register(messenger: BinaryMessenger) {
+        MethodChannel(messenger, "randomwalk/valhalla")
             .setMethodCallHandler { call, result ->
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
                 // Argument extraction happens *inside* the executed block, not before dispatch:
@@ -71,8 +77,8 @@ class ValhallaChannel(private val context: Context) {
 
     /**
      * Releases the native actor (if any) and shuts down the worker thread. Call this from
-     * `cleanUpFlutterEngine` — nothing else frees the native handle or the mmapped tiles, and a
-     * leaked executor thread survives engine teardown otherwise.
+     * `RandomwalkPlugin.onDetachedFromEngine` — nothing else frees the native handle or the
+     * mmapped tiles, and a leaked executor thread survives engine teardown otherwise.
      */
     fun dispose() {
         executor.execute { actor?.close() }
