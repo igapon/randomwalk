@@ -11,6 +11,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/trip_fakes.dart';
 
+/// A [SpeedHistoryStore] whose [recordSession] always throws — task-7 review
+/// carry-over item 11: `recordSession`'s own doc comment promises the trip
+/// controller it never breaks a trip, but nothing enforced that until
+/// `_finalise` actually wrapped the call. A platform-channel-style throw
+/// here (SharedPreferences, in production) must not leave `_finalise` stuck
+/// mid-state — banking and marking-finalised must already have run, and the
+/// trip must still reach idle with its snapshot cleared.
+class ThrowingSpeedHistoryStore implements SpeedHistoryStore {
+  @override
+  Future<void> recordSession(
+      RoutingProfile profile, double sessionKm, Duration elapsed) async {
+    throw StateError('boom');
+  }
+
+  @override
+  Future<double> speedKmh(RoutingProfile profile) async => 4.5;
+}
+
 void main() {
   late FakeTripTracker tracker;
   late MemoryRouteStore routes;
@@ -654,6 +672,28 @@ void main() {
       expect(speedHistory.calls, [
         (RoutingProfile.walk, 2.4, const Duration(minutes: 30)),
       ]);
+    });
+
+    test(
+        'a throwing SpeedHistoryStore does not stop the trip from finalising '
+        '(review carry-over item 11)', () async {
+      totals.total = 10;
+      final trip = build(speedHistoryOverride: ThrowingSpeedHistoryStore());
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      final distance = await trip.stopTrip();
+
+      expect(distance, closeTo(2.4, 1e-9));
+      // Banking and marking-finalised — both before the throwing call in
+      // `_finalise` — must still have run.
+      expect(totals.total, closeTo(12.4, 1e-9));
+      expect(await banked.wasFinalised(recordingSnapshot().startedAt), isTrue);
+      // And the trip must still reach idle with its snapshot cleared, not
+      // get stuck mid-`_finalise`.
+      expect(trip.state, TripState.idle);
+      expect(trip.snapshot, isNull);
+      expect(tracker.clears, greaterThan(0));
     });
   });
 

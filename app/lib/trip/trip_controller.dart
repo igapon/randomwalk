@@ -481,8 +481,23 @@ class TripController extends ChangeNotifier {
     // is the uncommon case and the EMA already damps any one session's
     // effect on the estimate.
     if (snapshot != null) {
-      await _speedHistory.recordSession(
-          snapshot.profile, distanceKm, _clock().difference(snapshot.startedAt));
+      // Best-effort only, and deliberately scoped to just this call: banking
+      // (`addAndGetTotalKm`, above) and marking-finalised have already run by
+      // the time we get here, and `tracker.clearSnapshot()` /
+      // `_state = TripState.idle` below still must run regardless of what
+      // happens to the speed average. `recordSession`'s own doc comment
+      // promises the caller it never breaks a trip; this is what actually
+      // enforces that promise against a real failure (e.g. SharedPreferences
+      // throwing on a platform channel hiccup) rather than merely asserting
+      // it never throws. Log-and-continue: losing one session's contribution
+      // to the learned pace is a rounding error next to leaving the trip
+      // stuck mid-finalise.
+      try {
+        await _speedHistory.recordSession(
+            snapshot.profile, distanceKm, _clock().difference(snapshot.startedAt));
+      } catch (e) {
+        debugPrint('TripController: recordSession failed, continuing: $e');
+      }
     }
     await tracker.clearSnapshot();
 
