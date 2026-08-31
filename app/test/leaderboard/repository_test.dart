@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -41,5 +42,17 @@ void main() {
         base: 'https://x.test');
     expect(() => repo.fetch('u-12345678'),
         throwsA(isA<LeaderboardException>()));
+  });
+
+  test('leaderboardRepositoryProvider closes its owned http.Client on dispose',
+      () async {
+    final container = ProviderContainer();
+    final repo = container.read(leaderboardRepositoryProvider)
+        as HttpLeaderboardRepository;
+    container.dispose();
+    // A closed http.Client throws synchronously on the next request.
+    await expectLater(
+        repo.client.get(Uri.parse('http://example.invalid')),
+        throwsA(isA<http.ClientException>()));
   });
 }

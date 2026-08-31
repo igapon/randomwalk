@@ -1,18 +1,11 @@
 {
   "mjolnir": {
-    "max_cache_size": 1000000000,
-    "id_table_size": 1300000000,
+    "max_cache_size": 268435456,
+    "id_table_size": 350000000,
     "use_lru_mem_cache": false,
     "lru_mem_cache_hard_control": false,
     "use_simple_mem_cache": false,
     "tile_dir": "/data/valhalla",
-    "tile_extract": "/data/valhalla/tiles.tar",
-    "traffic_extract": "/data/valhalla/traffic.tar",
-    "admin": "/data/valhalla/admin.sqlite",
-    "landmarks": "/data/valhalla/landmarks.sqlite",
-    "timezone": "/data/valhalla/tz_world.sqlite",
-    "transit_dir": "/data/valhalla/transit",
-    "transit_feeds_dir": "/data/valhalla/transit_feeds",
     "transit_pbf_limit": 20000,
     "hierarchy": true,
     "shortcuts": true,
@@ -45,9 +38,6 @@
       "color": true,
       "file_name": "path_to_some_file.log"
     }
-  },
-  "additional_data": {
-    "elevation": "/data/valhalla/elevation/"
   },
   "loki": {
     "actions": [
@@ -91,9 +81,6 @@
       "color": true,
       "file_name": "path_to_some_file.log",
       "long_request": 100.0
-    },
-    "service": {
-      "proxy": "ipc:///tmp/loki"
     }
   },
   "thor": {
@@ -104,9 +91,6 @@
       "long_request": 110.0
     },
     "source_to_target_algorithm": "select_optimal",
-    "service": {
-      "proxy": "ipc:///tmp/thor"
-    },
     "max_reserved_labels_count_astar": 2000000,
     "max_reserved_labels_count_bidir_astar": 1000000,
     "max_reserved_labels_count_dijkstras": 4000000,
@@ -167,9 +151,6 @@
       "color": true,
       "file_name": "path_to_some_file.log"
     },
-    "service": {
-      "proxy": "ipc:///tmp/odin"
-    },
     "markup_formatter": {
       "markup_enabled": false,
       "phoneme_format": "<TEXTUAL_STRING> (<span class=<QUOTES>phoneme<QUOTES>>/<VERBAL_STRING>/</span>)"
@@ -222,22 +203,9 @@
       "color": true,
       "file_name": "path_to_some_file.log"
     },
-    "service": {
-      "proxy": "ipc:///tmp/meili"
-    },
     "grid": {
       "size": 500,
       "cache_size": 100240
-    }
-  },
-  "httpd": {
-    "service": {
-      "listen": "tcp://*:8002",
-      "loopback": "ipc:///tmp/loopback",
-      "interrupt": "ipc:///tmp/interrupt",
-      "drain_seconds": 28,
-      "shutdown_seconds": 1,
-      "timeout_seconds": -1
     }
   },
   "service_limits": {

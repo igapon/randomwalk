@@ -28,6 +28,13 @@ class AppColors {
   static const hydroPaleLight = Color(0xFFD6E8ED);
   static const hydroPaleDark = Color(0xFF23424B);
 
+  /// The « Recalcul… » card shown on the map while a route-bound trip is
+  /// off-route and the service is recalculating (Task 7 device-QA
+  /// addendum). Deliberately outside the ink/paper/yellow/hydro identity —
+  /// this is the one guidance state that needs to read as a warning at a
+  /// glance rather than as more trip chrome, in both brightnesses.
+  static const recalcOrange = Color(0xFFE8871E);
+
   // M3 baseline error palette (brief: "erreur M3 par défaut").
   static const errorLight = Color(0xFFB3261E);
   static const onErrorLight = Color(0xFFFFFFFF);

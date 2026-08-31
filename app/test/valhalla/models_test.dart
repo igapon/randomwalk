@@ -63,6 +63,42 @@ void main() {
     expect(r.maneuvers.single.instruction, contains('nord'));
   });
 
+  test('RouteResult round-trips through its own JSON', () {
+    // The form the foreground service is seeded with (see `NavSeed`) and the
+    // one `ActiveRouteStore` persists: everything `RouteFollower` needs must
+    // survive it, maneuvers and shape precision included.
+    final original = RouteResult(
+      shape: const [(46.52, 6.63), (46.521, 6.631), (46.5225, 6.6335)],
+      distanceKm: 1.234,
+      duration: const Duration(seconds: 900),
+      maneuvers: const [
+        Maneuver(
+            instruction: 'Marchez vers le nord.',
+            lengthKm: 0.8,
+            beginShapeIndex: 0),
+        Maneuver(
+            instruction: 'Vous êtes arrivé.',
+            lengthKm: 0.434,
+            beginShapeIndex: 2),
+      ],
+    );
+
+    final restored =
+        RouteResult.fromJson(jsonDecode(jsonEncode(original.toJson())));
+
+    expect(restored.distanceKm, closeTo(1.234, 1e-9));
+    expect(restored.duration, const Duration(seconds: 900));
+    expect(restored.shape, hasLength(3));
+    for (var i = 0; i < original.shape.length; i++) {
+      expect(restored.shape[i].$1, closeTo(original.shape[i].$1, 1e-6));
+      expect(restored.shape[i].$2, closeTo(original.shape[i].$2, 1e-6));
+    }
+    expect(restored.maneuvers, hasLength(2));
+    expect(restored.maneuvers.last.instruction, 'Vous êtes arrivé.');
+    expect(restored.maneuvers.last.lengthKm, closeTo(0.434, 1e-9));
+    expect(restored.maneuvers.last.beginShapeIndex, 2);
+  });
+
   group('RouteRequest.toValhallaJson', () {
     const request = RouteRequest(
         fromLat: 46.52,

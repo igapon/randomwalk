@@ -343,3 +343,8 @@ Chaque point = un test (quand testable) + fix :
 - [ ] Arrivée : carte « Arrivé ! », alerte, Terminer met fin proprement (km bancarisés une fois).
 - [ ] Backlog M1 : les 9 points fermés.
 - [ ] QA M1 restante rejouée sur la nouvelle APK (checklist device du rapport M1).
+
+**Addendum Task 7 (QA device propriétaire, 2026-08-31) — exigences contraignantes :**
+1. Caméra initiale : dernière position connue si disponible (Geolocator.getLastKnownPosition, sans prompt), sinon Genève (46.2044, 6.1432) — plus jamais Lausanne codé en dur.
+2. Point de position invisible avant un app-switch : (ré)activer la couche localisation de MapLibre après l'octroi de la permission / à la première position obtenue (toggler myLocationEnabled ou recréer le layer), tester le parcours « fraîche installation → permission accordée → point visible sans quitter l'app ».
+3. Carte incontrôlable en navigation : le camera-follow doit être LIBÉRÉ par tout geste utilisateur (onCameraTrackingDismissed ou détection de geste → tracking none) ; bouton « recentrer » (glyphe losange, inset-safe) pour réengager le suivi ; le service continue la navigation indépendamment de l'état caméra.

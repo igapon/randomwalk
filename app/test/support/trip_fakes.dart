@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:randomwalk/session/recorder.dart';
+import 'package:randomwalk/tracking/nav_seed.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
@@ -13,10 +14,19 @@ import 'package:randomwalk/valhalla/models.dart';
 /// `main()` against the app support directory and a foreground service).
 class FakeTotalDistanceStore implements TotalDistanceStore {
   double total = 0;
+
+  /// How many times [addAndGetTotalKm] has actually run — a double-banked
+  /// trip (see the trip_controller `stopTrip` re-entrancy test) shows up as
+  /// this being 2 for what should be a single stop.
+  int calls = 0;
+
   @override
   Future<double> totalKm() async => total;
   @override
-  Future<double> addAndGetTotalKm(double km) async => total += km;
+  Future<double> addAndGetTotalKm(double km) async {
+    calls++;
+    return total += km;
+  }
 }
 
 /// In-memory [FinalisedTripMemory]: remembers which trips have already been
@@ -64,6 +74,10 @@ class FakeTripTracker implements TripTracker {
   bool startSucceeds = true;
   bool attached = false;
   final startedWith = <TripSnapshot>[];
+
+  /// The navigation handover each start was given, positionally matching
+  /// [startedWith] — null for a free trip.
+  final startedNav = <NavSeed?>[];
   final publishedSteps = <int>[];
   int stops = 0;
   int clears = 0;
@@ -105,9 +119,10 @@ class FakeTripTracker implements TripTracker {
   }
 
   @override
-  Future<bool> start(TripSnapshot seed) async {
+  Future<bool> start(TripSnapshot seed, {NavSeed? nav}) async {
     if (!startSucceeds) return false;
     startedWith.add(seed);
+    startedNav.add(nav);
     persisted = seed;
     running = true;
     attached = true;
@@ -123,6 +138,16 @@ class FakeTripTracker implements TripTracker {
 
   @override
   Future<void> publishSteps(int steps) async => publishedSteps.add(steps);
+
+  /// Every [TripTracker.updateAlertSettings] call this fake has seen, in
+  /// order.
+  final alertSettingsUpdates = <({bool ttsEnabled, bool hapticsEnabled})>[];
+
+  @override
+  Future<void> updateAlertSettings(
+          {required bool ttsEnabled, required bool hapticsEnabled}) async =>
+      alertSettingsUpdates
+          .add((ttsEnabled: ttsEnabled, hapticsEnabled: hapticsEnabled));
 
   @override
   Future<void> dispose() async {

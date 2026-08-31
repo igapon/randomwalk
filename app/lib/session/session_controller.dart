@@ -14,7 +14,12 @@ class SessionController {
   /// Injectable so the foreground-service isolate can ask for Android-
   /// specific background behaviour (an explicit update interval) without
   /// this class importing anything platform-specific.
-  final LocationSettings _locationSettings;
+  ///
+  /// Mutable — not `final` — so [updateLocationSettings] can swap it for a
+  /// tighter or coarser `distanceFilter` mid-session (adaptive GPS during
+  /// turn-by-turn navigation, Task 7) without this class knowing anything
+  /// about maneuvers or routes.
+  LocationSettings _locationSettings;
 
   SessionRecorder? _recorder;
   DateTime? _lastFixAt;
@@ -30,6 +35,16 @@ class SessionController {
   /// Invoked with an optional error message.
   Future<void> Function(String? errorMessage)? onSessionError;
 
+  /// Invoked for every fix accurate enough to be acted on (see
+  /// [kMaxFixAccuracyM]), right after the recorder has consumed it.
+  ///
+  /// Exists so a second consumer — turn-by-turn navigation, running in the
+  /// same isolate — can be driven by the same stream instead of opening a
+  /// second GPS subscription, which on Android would double the fix rate and
+  /// the battery cost of a screen-off trip. Fire-and-forget by design: the
+  /// recording must not wait on anything the callback does.
+  void Function(GpsSample sample)? onFix;
+
   SessionController({
     required this._store,
     Stream<Position> Function(LocationSettings)? getPositionStream,
@@ -38,6 +53,7 @@ class SessionController {
     LocationSettings? locationSettings,
     this.onSessionEnded,
     this.onSessionError,
+    this.onFix,
   })  : _locationSettings = locationSettings ??
             const LocationSettings(
                 accuracy: LocationAccuracy.best, distanceFilter: 3),
@@ -93,30 +109,60 @@ class SessionController {
       _recorder = SessionRecorder();
       _lastFixAt = null;
 
-      // Subscribe to position stream.
-      _positionStream = _getPositionStream(_locationSettings).listen(
-        (Position position) {
-          _lastFixAt = _getClock();
-          final sample = GpsSample(
-            lat: position.latitude,
-            lon: position.longitude,
-            accuracyM: position.accuracy,
-            speedMps: position.speed,
-            time: position.timestamp,
-          );
-          _recorder?.add(sample);
-        },
-        onError: (e) {
-          // Finish session on stream error, persisting partial distance.
-          _finishSession(isError: true, errorMessage: e?.toString());
-        },
-      );
+      _subscribe();
 
       _isRecording = true;
       return true;
     } finally {
       _isStarting = false;
     }
+  }
+
+  /// (Re)opens the position stream against [_locationSettings]. Factored out
+  /// of [start] so [updateLocationSettings] can resubscribe with a changed
+  /// `distanceFilter` through the exact same listener — a second copy of it
+  /// would be one more place for the recorder/onFix/onError wiring to drift.
+  void _subscribe() {
+    _positionStream = _getPositionStream(_locationSettings).listen(
+      (Position position) {
+        _lastFixAt = _getClock();
+        final sample = GpsSample(
+          lat: position.latitude,
+          lon: position.longitude,
+          accuracyM: position.accuracy,
+          speedMps: position.speed,
+          time: position.timestamp,
+        );
+        _recorder?.add(sample);
+        if (sample.accuracyM <= kMaxFixAccuracyM) onFix?.call(sample);
+      },
+      onError: (e) {
+        // Finish session on stream error, persisting partial distance.
+        _finishSession(isError: true, errorMessage: e?.toString());
+      },
+    );
+  }
+
+  /// Swaps the location stream for a new subscription opened with
+  /// [settings] — used by adaptive GPS (Task 7) to tighten or loosen
+  /// `distanceFilter` as a route-bound trip nears or leaves a maneuver.
+  ///
+  /// A no-op while nothing is recording. Callers are expected to have
+  /// already decided, via `AdaptiveGpsRateLimiter`, that this is worth the
+  /// churn of tearing down and reopening the platform's location provider —
+  /// this method does not itself rate-limit anything.
+  ///
+  /// Re-checks [_isRecording] after the awaited `cancel()` (fix-round
+  /// finding): `stop()` can race in during that gap — it also awaits
+  /// cancelling the very same subscription — and without the re-check, a
+  /// session `stop()` already ended in the meantime would still get a fresh
+  /// stream reopened underneath it.
+  Future<void> updateLocationSettings(LocationSettings settings) async {
+    if (!_isRecording) return;
+    await _positionStream?.cancel();
+    if (!_isRecording) return;
+    _locationSettings = settings;
+    _subscribe();
   }
 
   /// Stops the current session and persists distance to TotalDistanceStore.

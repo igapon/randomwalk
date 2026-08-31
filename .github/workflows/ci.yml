@@ -16,6 +16,16 @@ jobs:
     defaults: {run: {working-directory: app}}
     steps:
       - uses: actions/checkout@v4
+      # Building both the debug and release APK back-to-back (below) filled
+      # the runner's disk entirely (the runner's own diagnostic logging
+      # failed with ENOSPC) once the release build was added — the
+      # preinstalled toolchains this job never uses (.NET, Haskell, CodeQL)
+      # are the biggest safely-removable chunks on a stock ubuntu-latest
+      # runner.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
       - uses: actions/setup-java@v4
         # maplibre_gl 0.27.0 sets compileOptions.sourceCompatibility to Java 21;
         # a JDK 17 toolchain fails javac with "invalid source release: 21".
@@ -28,6 +38,11 @@ jobs:
         with:
           name: randomwalk-debug-apk
           path: app/build/app/outputs/flutter-apk/app-debug.apk
+      # No key.properties on CI (see docs/release-signing.md) — this exercises
+      # the release build's signing fallback path (debug-signing substitution)
+      # rather than producing a distributable artifact, so it runs after the
+      # debug APK is already uploaded and only the debug APK above is kept.
+      - run: flutter build apk --release
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
@@ -545,6 +546,30 @@ void main() {
       expect(next.state, TripState.interrupted);
     });
 
+    test(
+        'a double-tap on "Terminer" banks the trip exactly once (final '
+        'review item 6)', () async {
+      totals.total = 10;
+      final trip = build();
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      // Two concurrent calls, neither awaited before the other starts — the
+      // shape a double-tap actually produces. `stopTrip`'s synchronous
+      // prefix (the `_state`/`_stopping` guard, and setting `_stopping`)
+      // runs to completion for `first` before `second` is even invoked —
+      // Dart only suspends at `first`'s own first `await` — so the second
+      // call deterministically sees `_stopping` already true.
+      final first = trip.stopTrip();
+      final second = trip.stopTrip();
+
+      expect(await second, 0);
+      expect(await first, closeTo(2.4, 1e-9));
+      expect(totals.calls, 1);
+      expect(totals.total, closeTo(12.4, 1e-9));
+      expect(trip.state, TripState.idle);
+    });
+
     test('stopping when idle is a no-op', () async {
       final trip = build();
       expect(await trip.stopTrip(), 0);
@@ -594,6 +619,36 @@ void main() {
       expect(trip.elapsed, const Duration(minutes: 30));
     });
 
+    test(
+        '"Reprendre" does not inherit a previous replan\'s route line '
+        '(final review item 4)', () async {
+      tracker.persisted = recordingSnapshot(routeBound: true).copyWith(
+        nav: const NavFields(
+          instruction: 'Tournez à gauche sur la rue de Bourg',
+          distanceToManeuverM: 42,
+          remainingKm: 0.8,
+          etaSeconds: 300,
+          replanCount: 2,
+          routeShapeEnc: '_izlhA~rlgdF',
+        ),
+      );
+      final trip = build();
+      await trip.restore();
+      await trip.resumeInterrupted();
+
+      final seed = tracker.startedWith.single;
+      expect(seed.navReplanCount, 0);
+      expect(seed.navRouteShapeEnc, isNull);
+      expect(seed.navInstruction, isNull);
+      expect(seed.navDistanceToManeuverM, isNull);
+      expect(seed.navRemainingKm, isNull);
+      expect(seed.navEtaSeconds, isNull);
+      // And it is this blanked seed the UI reads immediately, before the
+      // resumed service has published anything of its own — otherwise the
+      // map would draw the dead session's replanned line in the gap.
+      expect(trip.snapshot?.navRouteShapeEnc, isNull);
+    });
+
     test('"Reprendre" keeps counting steps on from the saved total', () async {
       sensor.value = 50000;
       final trip = build();
@@ -635,6 +690,51 @@ void main() {
       expect(submitted, closeTo(12.4, 1e-9));
       expect(trip.state, TripState.idle);
       expect(tracker.clears, greaterThan(0));
+    });
+
+    test(
+        'a double-tap on the interrupted banner\'s "Terminer" banks the '
+        'trip exactly once (final review item 6, completion)', () async {
+      totals.total = 10;
+      final trip = build();
+      await trip.restore();
+      expect(trip.state, TripState.interrupted);
+
+      // Same shape as stopTrip's double-tap test: two concurrent calls,
+      // neither awaited before the other starts. finishInterrupted's own
+      // synchronous prefix (the `_state`/`_stopping` guard) runs to
+      // completion for `first` before `second` is even invoked, so the
+      // second call deterministically sees `_stopping` already true.
+      final first = trip.finishInterrupted();
+      final second = trip.finishInterrupted();
+
+      expect(await second, 0);
+      expect(await first, closeTo(2.4, 1e-9));
+      expect(totals.calls, 1);
+      expect(totals.total, closeTo(12.4, 1e-9));
+      expect(trip.state, TripState.idle);
+    });
+
+    test(
+        'finishInterrupted racing stopTrip cannot double-bank either — the '
+        'shared _stopping flag makes the second call a no-op regardless of '
+        'which button it came from', () async {
+      totals.total = 10;
+      final trip = build();
+      await trip.restore();
+      expect(trip.state, TripState.interrupted);
+
+      // stopTrip itself is a no-op here (trip.state is interrupted, not
+      // recording) — the point is that finishInterrupted, which really
+      // does bank, is not affected by the other method's guard sharing the
+      // same flag when there is nothing for that other call to race.
+      final finish = trip.finishInterrupted();
+      final stop = trip.stopTrip();
+
+      expect(await finish, closeTo(2.4, 1e-9));
+      expect(await stop, 0);
+      expect(totals.calls, 1);
+      expect(totals.total, closeTo(12.4, 1e-9));
     });
 
     test('"Reprendre" re-checks permissions before restarting the service',

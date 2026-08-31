@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:randomwalk/coverage/coverage_repository.dart';
+import 'package:randomwalk/coverage/manifest.dart';
 import 'package:randomwalk/valhalla/grid.dart';
 
 void main() {
@@ -149,64 +150,182 @@ void main() {
     expect(orphan.existsSync(), isFalse);
   });
 
-  test('ensureCoverage removes sibling directories for old dataset versions',
+  test(
+      'ensureCoverage keeps only the 2 most recently touched sibling version directories',
       () async {
     final root = await Directory.systemTemp.createTemp('cov');
-    // A stale directory from a previously-downloaded dataset version.
-    final oldVersionDir = Directory('${root.path}/OLD-VERSION');
-    await oldVersionDir.create(recursive: true);
-    await File('${oldVersionDir.path}/stale.gph').writeAsBytes([1, 2, 3]);
+    // Three stale directories from previously-downloaded dataset versions,
+    // oldest to newest by mtime.
+    final oldest = Directory('${root.path}/OLDEST');
+    final middle = Directory('${root.path}/MIDDLE');
+    for (final (dir, ageMinutes) in [(oldest, 30), (middle, 20)]) {
+      final f = File('${dir.path}/stale.gph');
+      await f.create(recursive: true);
+      await f.writeAsBytes([1, 2, 3]);
+      await f.setLastModified(
+          DateTime.now().subtract(Duration(minutes: ageMinutes)));
+    }
 
     final repo = CoverageRepository(root: root, client: client());
     final res = await repo.ensureCoverage(lat, lon);
 
-    expect(oldVersionDir.existsSync(), isFalse);
+    // Active dir (just downloaded into) + MIDDLE (2nd most recent) survive;
+    // OLDEST — beyond the top 2 — is reclaimed.
+    expect(oldest.existsSync(), isFalse);
+    expect(middle.existsSync(), isTrue);
     expect(Directory(res.tileDirPath).existsSync(), isTrue);
     // The manifest cache file lives directly under root and must survive.
     expect(File('${root.path}/manifest.cache.json').existsSync(), isTrue);
   });
 
-  test(
-      'keeps an old, fully-usable dataset version until the new version finishes downloading',
+  test('purge-by-count sweeps a sibling directory with no tile file at all',
       () async {
     final root = await Directory.systemTemp.createTemp('cov');
-    // A previously-downloaded, fully-usable old version — this is the
-    // offline fallback fix #1 relies on; it must survive an interrupted
-    // upgrade to a newer dataset version.
-    final oldVersionDir = Directory('${root.path}/OLD-VERSION');
-    final oldTile = File('${oldVersionDir.path}/${knownPaths.first}');
-    await oldTile.create(recursive: true);
-    await oldTile.writeAsBytes(tileBytes);
+    final empty = Directory('${root.path}/EMPTY-LEFTOVER');
+    await empty.create(recursive: true);
 
-    var tilesFail = true;
+    final repo = CoverageRepository(root: root, client: client());
+    await repo.ensureCoverage(lat, lon);
+
+    expect(empty.existsSync(), isFalse);
+  });
+
+  test(
+      'purge-by-count never deletes the active version dir, even when this run had failures',
+      () async {
+    final root = await Directory.systemTemp.createTemp('cov');
+    // One previously-downloaded, fully-usable old version — purge-by-count
+    // keeps the active dir plus this single other one (only 2 siblings
+    // exist total, which is within the 2-dir keep count), so it survives
+    // here regardless of relative recency. (A second old sibling is
+    // deliberately not added: with 2 *other* siblings competing for the 1
+    // remaining slot, which one survives depends on sub-millisecond mtime
+    // ordering that is not reliably comparable across filesystems/OSes —
+    // see the dedicated, explicit-mtime purge-by-count tests above for
+    // that behaviour instead.)
+    final old1 = Directory('${root.path}/OLD-1');
+    await File('${old1.path}/${knownPaths.first}').create(recursive: true);
+    await File('${old1.path}/${knownPaths.first}').writeAsBytes(tileBytes);
+
     final c = MockClient((req) async {
       if (req.url.path.endsWith('manifest.json')) {
         final m = manifestFor(knownPaths)..['dataset_version'] = 'NEW-VERSION';
         return http.Response(jsonEncode(m), 200);
       }
-      if (req.url.path.endsWith('.gph')) {
-        return tilesFail
-            ? http.Response('not found', 404)
-            : http.Response.bytes(tileBytes, 200);
-      }
+      // Every tile download fails (e.g. connectivity dropped mid-download).
       return http.Response('not found', 404);
     });
     final repo = CoverageRepository(root: root, client: c);
 
-    // Manifest fetch succeeds (new version), but every tile download fails
-    // (e.g. connectivity dropped mid-download).
     final incomplete = await repo.ensureCoverage(lat, lon);
     expect(incomplete.datasetVersion, 'NEW-VERSION');
     expect(incomplete.failed, greaterThan(0));
-    expect(oldVersionDir.existsSync(), isTrue,
-        reason:
-            'a partial new-version download must not destroy the old, still-usable one');
+    // The active (partial, empty) new-version directory must survive so a
+    // later run can finish topping it up rather than starting over.
+    expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
+    expect(old1.existsSync(), isTrue);
+  });
 
-    // A later, fully-successful run completes the new version...
-    tilesFail = false;
-    final complete = await repo.ensureCoverage(lat, lon);
-    expect(complete.failed, 0);
-    // ...and only now is the old version reclaimed.
-    expect(oldVersionDir.existsSync(), isFalse);
+  test(
+      'purge-by-count reclaims the oldest sibling beyond 2 even when this run had failures',
+      () async {
+    final root = await Directory.systemTemp.createTemp('cov');
+    final oldest = Directory('${root.path}/OLDEST');
+    final middle = Directory('${root.path}/MIDDLE');
+    for (final (dir, ageMinutes) in [(oldest, 30), (middle, 20)]) {
+      final f = File('${dir.path}/${knownPaths.first}');
+      await f.create(recursive: true);
+      await f.writeAsBytes(tileBytes);
+      await f.setLastModified(
+          DateTime.now().subtract(Duration(minutes: ageMinutes)));
+    }
+
+    final c = MockClient((req) async {
+      if (req.url.path.endsWith('manifest.json')) {
+        final m = manifestFor(knownPaths)..['dataset_version'] = 'NEW-VERSION';
+        return http.Response(jsonEncode(m), 200);
+      }
+      return http.Response('not found', 404); // every tile fails
+    });
+    final repo = CoverageRepository(root: root, client: c);
+
+    final incomplete = await repo.ensureCoverage(lat, lon);
+    expect(incomplete.failed, greaterThan(0));
+    // Unconditional purge-by-count: even with failures this run, the
+    // active dir + MIDDLE (2 most recent) survive; OLDEST is reclaimed.
+    expect(oldest.existsSync(), isFalse);
+    expect(middle.existsSync(), isTrue);
+    expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
+  });
+
+  group('valhalla_version guard', () {
+    Map<String, dynamic> badVersionManifest() =>
+        manifestFor(knownPaths)..['valhalla_version'] = '4.0.0';
+
+    test('rejects a fresh manifest whose valhalla_version mismatches, '
+        'throwing DatasetVersionMismatch when no cache exists', () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final c = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          return http.Response(jsonEncode(badVersionManifest()), 200);
+        }
+        return http.Response('not found', 404);
+      });
+      final repo = CoverageRepository(root: root, client: c);
+      await expectLater(repo.ensureCoverage(lat, lon),
+          throwsA(isA<DatasetVersionMismatch>()));
+    });
+
+    test(
+        'falls back to the cached manifest (still usable) when the fresh one mismatches',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      // Warm a good, matching-version cache first.
+      final goodRepo = CoverageRepository(root: root, client: client());
+      final good = await goodRepo.ensureCoverage(lat, lon);
+      expect(good.versionMismatch, isFalse);
+
+      // Now the server starts serving a manifest for an engine version this
+      // app build does not ship.
+      final badClient = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          return http.Response(jsonEncode(badVersionManifest()), 200);
+        }
+        return http.Response('not found', 404);
+      });
+      final repo = CoverageRepository(root: root, client: badClient);
+      final res = await repo.ensureCoverage(lat, lon);
+
+      expect(res.versionMismatch, isTrue);
+      // Still routes against the last good (cached) dataset version.
+      expect(res.datasetVersion, good.datasetVersion);
+      expect(res.tileDirPath, good.tileDirPath);
+      for (final p in knownPaths) {
+        expect(File('${res.tileDirPath}/$p').existsSync(), isTrue);
+      }
+    });
+
+    test(
+        'does not overwrite the manifest cache with a version-mismatched fetch',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final goodRepo = CoverageRepository(root: root, client: client());
+      await goodRepo.ensureCoverage(lat, lon);
+      final cacheBefore =
+          await File('${root.path}/manifest.cache.json').readAsString();
+
+      final badClient = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          return http.Response(jsonEncode(badVersionManifest()), 200);
+        }
+        return http.Response('not found', 404);
+      });
+      final repo = CoverageRepository(root: root, client: badClient);
+      await repo.ensureCoverage(lat, lon);
+
+      final cacheAfter =
+          await File('${root.path}/manifest.cache.json').readAsString();
+      expect(cacheAfter, cacheBefore);
+    });
   });
 }

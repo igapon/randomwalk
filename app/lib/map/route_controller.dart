@@ -8,7 +8,14 @@ import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
 import 'geocoding.dart';
 
-typedef EnsureCoverage = Future<({String datasetVersion, String tileDirPath})>
+typedef EnsureCoverage
+    = Future<
+        ({
+          String datasetVersion,
+          String tileDirPath,
+          int failed,
+          bool versionMismatch
+        })>
     Function(double lat, double lon);
 
 /// Pure orchestration, unit-testable: coverage -> (re)init -> route.
@@ -18,8 +25,23 @@ class RoutePlanner {
   String? _initializedVersion;
   RoutePlanner({required this.engine, required this.ensureCoverage});
 
+  /// `CoverageResult.failed` (dataset_repository.dart) for the most recent
+  /// [plan] call — previously swallowed by the fixed `(datasetVersion,
+  /// tileDirPath)` tuple [EnsureCoverage] returns. The UI polls this right
+  /// after `plan()` to decide whether to show the "couverture incomplète"
+  /// banner, rather than widening [plan]'s return type (which is the
+  /// routing engine's own [RouteResult]).
+  int lastCoverageFailed = 0;
+
+  /// Whether the coverage used for the most recent [plan] call is a stale
+  /// cached manifest kept because the freshly-fetched one had an
+  /// incompatible `valhalla_version` (see `DatasetVersionMismatch`).
+  bool lastVersionMismatch = false;
+
   Future<RouteResult> plan(RouteRequest request) async {
     final cov = await ensureCoverage(request.fromLat, request.fromLon);
+    lastCoverageFailed = cov.failed;
+    lastVersionMismatch = cov.versionMismatch;
     if (cov.datasetVersion != _initializedVersion) {
       await engine.init(cov.tileDirPath);
       _initializedVersion = cov.datasetVersion;
@@ -33,12 +55,16 @@ final routingEngineProvider =
 
 final coverageRepositoryProvider = FutureProvider<CoverageRepository>((ref) async {
   final dir = await getApplicationSupportDirectory();
-  return CoverageRepository(
-      root: Directory('${dir.path}/tiles'), client: http.Client());
+  final client = http.Client();
+  ref.onDispose(client.close);
+  return CoverageRepository(root: Directory('${dir.path}/tiles'), client: client);
 });
 
-final geocodingServiceProvider = Provider<GeocodingService>(
-    (ref) => PhotonGeocodingService(client: http.Client()));
+final geocodingServiceProvider = Provider<GeocodingService>((ref) {
+  final client = http.Client();
+  ref.onDispose(client.close);
+  return PhotonGeocodingService(client: client);
+});
 
 /// Mutable slot the UI can set right before calling `planner.plan(...)` to
 /// receive tile-download progress for that request, without widening
@@ -58,6 +84,11 @@ final routePlannerProvider = FutureProvider<RoutePlanner>((ref) async {
       ensureCoverage: (lat, lon) async {
         final res = await coverage.ensureCoverage(lat, lon,
             onProgress: sink.onProgress);
-        return (datasetVersion: res.datasetVersion, tileDirPath: res.tileDirPath);
+        return (
+          datasetVersion: res.datasetVersion,
+          tileDirPath: res.tileDirPath,
+          failed: res.failed,
+          versionMismatch: res.versionMismatch,
+        );
       });
 });

@@ -20,14 +20,31 @@ import 'package:flutter/services.dart';
 /// Every method degrades quietly off Android (and on a platform-channel
 /// failure): steps are an optional signal, never a reason to fail a trip.
 class DeviceChannel {
-  static const _channel = MethodChannel('randomwalk/device');
+  // Public (not `_`-prefixed) so tests can mock it directly — see
+  // `NativeTtsSpeaker.channel` for the same pattern.
+  static const channel = MethodChannel('randomwalk/device');
 
   const DeviceChannel();
+
+  /// `Build.MANUFACTURER` (e.g. "xiaomi", "samsung"), or null off Android
+  /// or on any channel failure. Used by Settings to decide whether to show
+  /// the "Suivi fiable en arrière-plan" tile — see
+  /// `isAggressiveBatteryOem`.
+  Future<String?> manufacturer() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      return await channel.invokeMethod<String>('manufacturer');
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
 
   Future<int> sdkInt() async {
     if (!Platform.isAndroid) return 0;
     try {
-      return await _channel.invokeMethod<int>('sdkInt') ?? 0;
+      return await channel.invokeMethod<int>('sdkInt') ?? 0;
     } on PlatformException {
       return 0;
     } on MissingPluginException {
@@ -38,7 +55,7 @@ class DeviceChannel {
   Future<bool> startStepCounter() async {
     if (!Platform.isAndroid) return false;
     try {
-      return await _channel.invokeMethod<bool>('startStepCounter') ?? false;
+      return await channel.invokeMethod<bool>('startStepCounter') ?? false;
     } on PlatformException {
       return false;
     } on MissingPluginException {
@@ -51,7 +68,7 @@ class DeviceChannel {
   Future<int?> stepCount() async {
     if (!Platform.isAndroid) return null;
     try {
-      return await _channel.invokeMethod<int>('stepCount');
+      return await channel.invokeMethod<int>('stepCount');
     } on PlatformException {
       return null;
     } on MissingPluginException {
@@ -62,7 +79,7 @@ class DeviceChannel {
   Future<void> stopStepCounter() async {
     if (!Platform.isAndroid) return;
     try {
-      await _channel.invokeMethod<void>('stopStepCounter');
+      await channel.invokeMethod<void>('stopStepCounter');
     } on PlatformException {
       // Nothing to release, or the engine is already gone.
     } on MissingPluginException {

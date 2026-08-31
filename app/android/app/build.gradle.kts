@@ -1,7 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Upload keystore credentials (see docs/release-signing.md). key.properties is
+// gitignored and never committed — CI (and any fresh checkout) simply has no
+// file here, which the null-safe reads below turn into a clean fallback to
+// debug signing rather than a build failure. This mirrors the standard
+// `flutter create` template for release signing, just spelled out instead of
+// left as a TODO — see the release buildType below.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
 android {
@@ -12,6 +26,12 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications' own Android module compiles with this
+        // on (see its android/build.gradle) — minSdk 24 here is below API 26,
+        // where java.time/java.util.concurrent's newer surface only exists
+        // via desugaring, and AGP requires the *consuming* app module to opt
+        // in too, not just the library that needs it.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -25,11 +45,29 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Real upload signing when key.properties is present (a developer
+            // machine with the keystore set up — see docs/release-signing.md);
+            // falls back to the debug keys otherwise so `flutter build apk
+            // --release`/`flutter run --release` keep working with no secret
+            // configured, in particular in CI, which never has one.
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
@@ -42,6 +80,10 @@ kotlin {
 
 dependencies {
     implementation("io.github.rallista:valhalla-mobile:0.6.3")
+    // Version matched to flutter_local_notifications-22.3.0's own module —
+    // see the compileOptions comment above for why the app module needs it
+    // too.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 flutter {

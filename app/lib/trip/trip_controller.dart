@@ -4,7 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../nav/nav_fields.dart';
 import '../session/recorder.dart';
+import '../settings/alert_settings.dart';
+import '../tracking/nav_seed.dart';
 import '../tracking/permissions.dart';
 import '../tracking/steps.dart';
 import '../tracking/tracking_service.dart';
@@ -81,6 +84,13 @@ class TripController extends ChangeNotifier {
   final DateTime Function() _clock;
   final Future<void> Function(RoutingProfile profile) _persistProfile;
   final Future<RoutingProfile?> Function() _loadProfile;
+  final AlertSettingsStore _alertSettings;
+
+  /// Where the offline tiles already on disk live, so the tracking service
+  /// can recalculate a route without this process (or any network) being
+  /// around. Null — or absent — simply means a trip whose route cannot be
+  /// recalculated; it never stops one from starting.
+  final Future<String?> Function()? resolveTileDir;
 
   /// Notified when the map should turn its "follow me" camera mode on
   /// (route-bound trip start) or off (trip stop / manual pan elsewhere).
@@ -122,14 +132,17 @@ class TripController extends ChangeNotifier {
     DateTime Function()? clock,
     Future<void> Function(RoutingProfile profile)? persistProfile,
     Future<RoutingProfile?> Function()? loadProfile,
+    this.resolveTileDir,
     this.onCameraFollowChanged,
+    AlertSettingsStore? alertSettings,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
         _createStepCounter = createStepCounter ??
             ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
         _clock = clock ?? DateTime.now,
         _persistProfile = persistProfile ?? _defaultPersistProfile,
-        _loadProfile = loadProfile ?? _defaultLoadProfile {
+        _loadProfile = loadProfile ?? _defaultLoadProfile,
+        _alertSettings = alertSettings ?? AlertSettingsStore() {
     _updates = tracker.updates.listen(_onTrackerSnapshot);
     _errors = tracker.errors.listen((message) => onSessionError?.call(message));
   }
@@ -250,11 +263,45 @@ class TripController extends ChangeNotifier {
       _profile = await _loadProfile() ?? _profile;
     }
 
-    return _launch(TripSnapshot.starting(
-      startedAt: _clock(),
+    return _launch(
+      TripSnapshot.starting(
+        startedAt: _clock(),
+        profile: _profile,
+        routeBound: route != null,
+      ),
+      nav: await _navSeedFor(route),
+    );
+  }
+
+  /// The navigation handover for a route-bound trip: the route itself, where
+  /// it is going, and the tiles a service-side replan may need. Null for a
+  /// free trip, and for a route too degenerate to follow.
+  ///
+  /// Built here, in the UI isolate, because this is the only side that knows
+  /// what the user planned and where the tiles were downloaded — the service
+  /// has neither the route store nor `path_provider`.
+  Future<NavSeed?> _navSeedFor(RouteResult? route) async {
+    if (route == null || route.shape.length < 2) return null;
+    final destination = _activeRoute?.destination ?? route.shape.last;
+    return NavSeed(
+      route: route,
+      destLat: destination.$1,
+      destLon: destination.$2,
       profile: _profile,
-      routeBound: route != null,
-    ));
+      tileDirPath: await _tileDirPath(),
+    );
+  }
+
+  Future<String?> _tileDirPath() async {
+    final resolve = resolveTileDir;
+    if (resolve == null) return null;
+    try {
+      return await resolve();
+      // Losing the ability to recalculate is worth a trip without guidance
+      // updates, never a trip that refuses to start.
+    } catch (_) {
+      return null;
+    }
   }
 
   /// « Reprendre » on the interrupted-trip banner: restarts the service
@@ -266,35 +313,63 @@ class TripController extends ChangeNotifier {
     // gpsSilent deliberately cleared: it describes the *previous* session's
     // stream, and the service re-derives it from the new one's first repeat
     // event. Carrying it would flash the warning for the couple of seconds
-    // before that arrives.
-    return _launch(snapshot.copyWith(
-        status: TripStatus.recording,
-        updatedAt: _clock(),
-        gpsSilent: false));
+    // before that arrives. nav is blanked the same way: the interrupted
+    // session's guidance — including any replanned route shape — belongs to
+    // a follower that is gone, not to whatever this resumed service builds
+    // fresh from the planned route below. Without this, the map would draw
+    // the dead session's replanned line (keyed on `navRouteShapeEnc`, see
+    // `map_screen.dart`'s `_maybeSyncReplannedRoute`) until the new service
+    // happens to replan again — which might be never.
+    return _launch(
+      snapshot.copyWith(
+          status: TripStatus.recording,
+          updatedAt: _clock(),
+          gpsSilent: false,
+          nav: const NavFields()),
+      // A resumed route-bound trip is re-seeded from the planned route
+      // (which outlives the trip, see [ActiveRouteStore]); without this,
+      // « Reprendre » would silently come back without guidance.
+      nav: snapshot.routeBound ? await _navSeedFor(_activeRoute?.route) : null,
+    );
   }
 
   /// « Terminer » on the interrupted-trip banner: banks what was recorded
   /// through exactly the same path a normal stop takes, so the leaderboard
   /// submit happens once and identically.
+  ///
+  /// Shares [_stopping] with [stopTrip] — same double-bank window (the
+  /// `_state != interrupted` guard alone lets two close-together taps both
+  /// through before the first call's first `await` ever suspends it), same
+  /// fix, and the shared flag means the two banners can never race each
+  /// other into a double bank either (unlikely in the UI, since only one of
+  /// « Terminer »/the interrupted banner is ever shown at once, but the
+  /// guard is free either way once it is shared).
   Future<double> finishInterrupted() async {
     final snapshot = _snapshot;
-    if (_state != TripState.interrupted || snapshot == null) return 0;
-    // The service is *probably* dead — that is what put us in this state —
-    // but `allowAutoRestart` means Android may have brought it back before
-    // the user answered the banner. Banking without stopping would leave it
-    // recording, notification and all, over a trip that has been finished.
-    // Tolerant of failure: when the service really is gone there is nothing
-    // to stop, and that must not block the user's « Terminer ».
-    TripSnapshot? persisted;
-    try {
-      persisted = await tracker.stop();
-    } catch (_) {
-      persisted = null;
+    if (_state != TripState.interrupted || snapshot == null || _stopping) {
+      return 0;
     }
-    return _finalise(_freshest(persisted, snapshot));
+    _stopping = true;
+    try {
+      // The service is *probably* dead — that is what put us in this state —
+      // but `allowAutoRestart` means Android may have brought it back before
+      // the user answered the banner. Banking without stopping would leave
+      // it recording, notification and all, over a trip that has been
+      // finished. Tolerant of failure: when the service really is gone
+      // there is nothing to stop, and that must not block « Terminer ».
+      TripSnapshot? persisted;
+      try {
+        persisted = await tracker.stop();
+      } catch (_) {
+        persisted = null;
+      }
+      return await _finalise(_freshest(persisted, snapshot));
+    } finally {
+      _stopping = false;
+    }
   }
 
-  Future<bool> _launch(TripSnapshot seed) async {
+  Future<bool> _launch(TripSnapshot seed, {NavSeed? nav}) async {
     _starting = true;
     try {
       final permissions = await ensurePermissions();
@@ -306,7 +381,7 @@ class TripController extends ChangeNotifier {
         return false;
       }
 
-      if (!await tracker.start(seed)) {
+      if (!await tracker.start(seed, nav: nav)) {
         _lastStartFailure = TripStartFailure.serviceUnavailable;
         notifyListeners();
         return false;
@@ -341,12 +416,34 @@ class TripController extends ChangeNotifier {
     _stepsAvailable = await counter.start();
   }
 
+  /// True from the moment [stopTrip] or [finishInterrupted] commits to
+  /// stopping until it (or the call it raced — either of itself, or the
+  /// other of the pair) has finished banking. Shared between the two: both
+  /// bank through [_finalise] and both have the identical double-tap
+  /// window (their own `_state` guard alone is not enough — see either
+  /// method's doc comment).
+  bool _stopping = false;
+
   /// Stops the trip and banks it. Returns the distance recorded by this
   /// trip (not the cumulative total, which reaches [onSessionEnded]).
+  ///
+  /// [_state] does not become [TripState.idle] until deep inside
+  /// [_finalise], after several `await`s (`tracker.stop()`,
+  /// `markFinalised`, `addAndGetTotalKm`...) — a double-tap on « Terminer »
+  /// fires two calls before the first of those awaits ever suspends the
+  /// first call, so the `_state != recording` guard alone lets both through
+  /// and banks the same trip twice. [_stopping] is set synchronously,
+  /// before the first `await`, closing that window: the second call sees it
+  /// already true and returns immediately rather than racing the first.
   Future<double> stopTrip() async {
-    if (_state != TripState.recording) return 0;
-    final persisted = await tracker.stop();
-    return _finalise(_freshest(persisted, _snapshot));
+    if (_state != TripState.recording || _stopping) return 0;
+    _stopping = true;
+    try {
+      final persisted = await tracker.stop();
+      return await _finalise(_freshest(persisted, _snapshot));
+    } finally {
+      _stopping = false;
+    }
   }
 
   /// The service may be killed between its last published snapshot and its
@@ -476,6 +573,24 @@ class TripController extends ChangeNotifier {
     }
     notifyListeners();
     await _persistProfile(profile);
+  }
+
+  /// Persists « Guidage vocal » and pushes it into a running trip's service
+  /// immediately — see [TripTracker.updateAlertSettings] — so toggling it
+  /// mid-trip takes effect on the very next alert instead of waiting for the
+  /// trip to end.
+  Future<void> setTtsEnabled(bool value) async {
+    await _alertSettings.setTtsEnabled(value);
+    await tracker.updateAlertSettings(
+        ttsEnabled: value, hapticsEnabled: await _alertSettings.hapticsEnabled());
+  }
+
+  /// Persists « Vibrations et alertes » and pushes it into a running trip's
+  /// service immediately — see [setTtsEnabled].
+  Future<void> setHapticsEnabled(bool value) async {
+    await _alertSettings.setHapticsEnabled(value);
+    await tracker.updateAlertSettings(
+        ttsEnabled: await _alertSettings.ttsEnabled(), hapticsEnabled: value);
   }
 
   /// Re-reads whether "Autoriser tout le temps" has since been granted —
