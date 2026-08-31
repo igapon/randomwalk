@@ -130,6 +130,20 @@ List<(double, double)> densify(List<(double, double)> pts, int n) {
   return out;
 }
 
+/// A straight line of [segments] hops of [stepM] metres that then retraces
+/// its final hop, giving a shape with a small, exactly known repeated ratio:
+/// one repeated hop over `segments` unique ones, i.e. `1 / segments`.
+List<(double, double)> lineWithBackstep({
+  required int segments,
+  required double stepM,
+}) {
+  final points = [
+    for (var i = 0; i <= segments; i++)
+      destinationPoint(46.52, 6.63, 90, i * stepM),
+  ];
+  return [...points, points[points.length - 2]];
+}
+
 /// Rounded compass bearing from [from] to [to] — used to tell candidates
 /// apart: bisection changes a candidate's radius but never its bearing.
 int bearingKey((double, double) from, (double, double) to) {
@@ -360,6 +374,31 @@ void main() {
       expect(scores, [...scores]..sort());
     });
 
+    test('bestGapRatio reports a route that dedup dropped', () async {
+      // A duplicate pair where the *dropped* one is the closer route:
+      //   kept    5.50 km, gap 0.10, repeated 0.000 -> score 0.0600
+      //   dropped 5.45 km, gap 0.09, repeated 0.048 -> score 0.0730
+      // They are 0.9% apart in distance and 0.048 apart in repeated ratio,
+      // so both dedup windows catch them — yet the better-scored survivor is
+      // the further-off one. "Closest we found" must still be 0.09.
+      final clean = densify([start, destinationPoint(start.$1, start.$2, 90, 2000)], 20);
+      final slightlyRetraced = lineWithBackstep(segments: 21, stepM: 100);
+      final scripted = ScriptedRouter(
+        [5.5, 5.45, 5.45],
+        shapeFor: (index) => index == 0 ? clean : slightlyRetraced,
+      );
+      final result = await LoopPlanner(router: scripted.route)
+          .plan(loopRequest(targetKm: 5));
+
+      expect(repeatedSegmentRatio(slightlyRetraced, cellM: 25),
+          closeTo(1 / 21, 1e-9));
+      expect(result.candidates, hasLength(1));
+      expect(result.candidates.single.gapRatio, closeTo(0.10, 1e-9));
+      expect(result.candidates.single.repeatedRatio, closeTo(0.0, 1e-9));
+      expect(result.bestGapRatio, closeTo(0.09, 1e-9),
+          reason: 'the dropped duplicate was the closest route routed');
+    });
+
     test('bestGapRatio is null on an empty plan', () async {
       final fake = FakeRouter(alwaysNull: true);
       final result = await LoopPlanner(router: fake.route).plan(loopRequest());
@@ -456,6 +495,18 @@ void main() {
           reason: 'all three candidates were still searched');
       expect(probedBearings(fake), hasLength(LoopPlanner.candidateCount));
       expect(result.candidates, hasLength(1));
+    });
+
+    test('degenerate zero-length routes are never merged', () async {
+      // No meaningful relative distance comparison exists at 0 km, so the
+      // dedup window must not swallow them (and must not divide by zero).
+      final scripted = ScriptedRouter([0.0]);
+      final result =
+          await LoopPlanner(router: scripted.route).plan(loopRequest());
+
+      expect(result.candidates, hasLength(LoopPlanner.candidateCount));
+      expect(result.bestGapRatio, closeTo(1.0, 1e-9)); // 0 km vs 5 km target
+      expect(result.targetMet, isFalse);
     });
 
     test('genuinely different lengths are both kept', () async {

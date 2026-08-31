@@ -124,10 +124,14 @@ class LoopPlanResult {
   /// got.
   final bool targetMet;
 
-  /// Smallest |[LoopCandidate.gapRatio]| across [candidates] — a magnitude,
-  /// so always >= 0 — or null when there are none. Display-only: lets the UI
-  /// say "closest we found: 8.4 km" even when the top-scored candidate is not
-  /// the closest one.
+  /// Smallest |[LoopCandidate.gapRatio]| across every route the planner
+  /// obtained — a magnitude, so always >= 0 — or null when it obtained none.
+  /// Display-only: lets the UI say "closest we found: 8.4 km" even when the
+  /// top-scored candidate is not the closest one.
+  ///
+  /// Measured *before* near-duplicates are dropped, so it can be smaller than
+  /// any |gapRatio| left in [candidates]: dedup keeps the better-scored
+  /// survivor, which may be the slightly-further-off one.
   final double? bestGapRatio;
 
   const LoopPlanResult({
@@ -213,15 +217,18 @@ class LoopPlanner {
       }
     }
 
-    final candidates =
-        _dedup(_scoreAndSort(request.kind, request.targetKm, routes));
+    final scored = _scoreAndSort(request.kind, request.targetKm, routes);
+    // Measured before deduplication, on purpose: dedup keeps the
+    // better-*scored* survivor of a duplicate pair, which is not necessarily
+    // the closest-*distance* one. "Closest we found" has to mean closest
+    // among everything we actually routed, not among what survived.
+    final bestGapRatio = scored.isEmpty
+        ? null
+        : scored.map((c) => c.gapRatio.abs()).reduce((a, b) => a < b ? a : b);
+
+    final candidates = _dedup(scored);
     final targetMet = candidates.isNotEmpty &&
         candidates.first.gapRatio.abs() <= targetTolerance + _epsilon;
-    final bestGapRatio = candidates.isEmpty
-        ? null
-        : candidates
-            .map((c) => c.gapRatio.abs())
-            .reduce((a, b) => a < b ? a : b);
     return LoopPlanResult(
       candidates: candidates,
       targetMet: targetMet,
@@ -389,8 +396,12 @@ class LoopPlanner {
       final duplicate = kept.any((k) {
         final distanceDelta =
             (candidate.route.distanceKm - k.route.distanceKm).abs();
-        final relative =
-            k.route.distanceKm == 0 ? 0.0 : distanceDelta / k.route.distanceKm;
+        final longer =
+            math.max(candidate.route.distanceKm, k.route.distanceKm);
+        // A zero-length route is degenerate; there is no meaningful relative
+        // comparison to make, so never merge on one.
+        if (longer <= 0) return false;
+        final relative = distanceDelta / longer;
         return relative < dedupDistanceTolerance &&
             (candidate.repeatedRatio - k.repeatedRatio).abs() <
                 dedupRepeatedTolerance;
