@@ -71,4 +71,46 @@ void main() {
               .having((e) => e.message, 'message', 'bad config')));
     });
   });
+
+  group('routeMulti()', () {
+    test('a null native reply raises RoutingException("empty engine reply")',
+        () async {
+      setHandler((call) async => null);
+      final multiRequest = MultiPointRouteRequest(
+        locations: const [(46.52, 6.63), (46.53, 6.64), (46.54, 6.65)],
+        profile: RoutingProfile.walk,
+      );
+      final engine = ChannelRoutingEngine();
+      await expectLater(
+          engine.routeMulti(multiRequest),
+          throwsA(isA<RoutingException>().having(
+              (e) => e.message, 'message', 'empty engine reply')));
+    });
+
+    test('a PlatformException is wrapped as RoutingException', () async {
+      setHandler((call) async =>
+          throw PlatformException(code: 'VALHALLA', message: 'no route'));
+      final multiRequest = MultiPointRouteRequest(
+        locations: const [(46.52, 6.63), (46.53, 6.64), (46.54, 6.65)],
+        profile: RoutingProfile.walk,
+      );
+      final engine = ChannelRoutingEngine();
+      await expectLater(
+          engine.routeMulti(multiRequest),
+          throwsA(isA<RoutingException>()
+              .having((e) => e.message, 'message', 'no route')));
+    });
+
+    test('MissingPluginException (no native engine registered) is wrapped as '
+        'RoutingException instead of crashing', () async {
+      // No handler registered at all -> MissingPluginException.
+      final multiRequest = MultiPointRouteRequest(
+        locations: const [(46.52, 6.63), (46.53, 6.64), (46.54, 6.65)],
+        profile: RoutingProfile.walk,
+      );
+      final engine = ChannelRoutingEngine();
+      await expectLater(
+          engine.routeMulti(multiRequest), throwsA(isA<RoutingException>()));
+    });
+  });
 }

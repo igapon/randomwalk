@@ -22,6 +22,38 @@ class RouteRequest {
       });
 }
 
+class MultiPointRouteRequest {
+  final List<(double, double)> locations;
+  final RoutingProfile profile;
+
+  MultiPointRouteRequest(
+      {required this.locations, required this.profile}) {
+    assert(locations.length >= 2,
+        'MultiPointRouteRequest requires at least 2 locations');
+  }
+
+  String toValhallaJson() {
+    final locObjects = <Map<String, dynamic>>[];
+    for (var i = 0; i < locations.length; i++) {
+      final (lat, lon) = locations[i];
+      final isFirst = i == 0;
+      final isLast = i == locations.length - 1;
+      final type = (isFirst || isLast) ? 'break' : 'through';
+      locObjects.add({
+        'lat': lat,
+        'lon': lon,
+        'type': type,
+      });
+    }
+
+    return jsonEncode({
+      'locations': locObjects,
+      'costing': profile == RoutingProfile.bike ? 'bicycle' : 'pedestrian',
+      'directions_options': {'units': 'kilometers', 'language': 'fr-FR'},
+    });
+  }
+}
+
 class Maneuver {
   final String instruction;
   final double lengthKm;

@@ -145,4 +145,107 @@ void main() {
       expect(to['type'], 'break');
     });
   });
+
+  group('MultiPointRouteRequest.toValhallaJson', () {
+    test('4-location request with bicycle costing and correct types', () {
+      final request = MultiPointRouteRequest(
+        locations: const [
+          (46.52, 6.63),
+          (46.525, 6.635),
+          (46.53, 6.64),
+          (46.535, 6.645),
+        ],
+        profile: RoutingProfile.bike,
+      );
+
+      final j = jsonDecode(request.toValhallaJson()) as Map<String, dynamic>;
+
+      // Check costing
+      expect(j['costing'], 'bicycle');
+
+      // Check directions_options
+      final options = j['directions_options'] as Map<String, dynamic>;
+      expect(options['units'], 'kilometers');
+      expect(options['language'], 'fr-FR');
+
+      // Check locations: first and last are 'break', middle are 'through'
+      final locations = j['locations'] as List<dynamic>;
+      expect(locations, hasLength(4));
+
+      final loc0 = locations[0] as Map<String, dynamic>;
+      expect(loc0['lat'], 46.52);
+      expect(loc0['lon'], 6.63);
+      expect(loc0['type'], 'break');
+
+      final loc1 = locations[1] as Map<String, dynamic>;
+      expect(loc1['lat'], 46.525);
+      expect(loc1['lon'], 6.635);
+      expect(loc1['type'], 'through');
+
+      final loc2 = locations[2] as Map<String, dynamic>;
+      expect(loc2['lat'], 46.53);
+      expect(loc2['lon'], 6.64);
+      expect(loc2['type'], 'through');
+
+      final loc3 = locations[3] as Map<String, dynamic>;
+      expect(loc3['lat'], 46.535);
+      expect(loc3['lon'], 6.645);
+      expect(loc3['type'], 'break');
+    });
+
+    test('requires at least 2 locations', () {
+      expect(
+        () => MultiPointRouteRequest(
+          locations: const [(46.52, 6.63)],
+          profile: RoutingProfile.walk,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+  });
+
+  group('RouteResult.fromValhallaJson with multiple legs', () {
+    test('parses 3-leg Valhalla response with correct shape indices', () {
+      // Create three legs with distinct shapes and maneuvers
+      final leg1Shape = encodePolyline6([(46.52, 6.63), (46.521, 6.631)]);
+      final leg2Shape = encodePolyline6([(46.521, 6.631), (46.53, 6.64)]);
+      final leg3Shape = encodePolyline6([(46.53, 6.64), (46.535, 6.645)]);
+
+      final j = jsonDecode('''
+      {"trip":{"summary":{"length":3.0,"time":2700},
+        "legs":[
+          {"shape":"$leg1Shape",
+            "maneuvers":[{"instruction":"Allez nord.","length":1.0,"begin_shape_index":0}]},
+          {"shape":"$leg2Shape",
+            "maneuvers":[{"instruction":"Tournez gauche.","length":1.0,"begin_shape_index":0}]},
+          {"shape":"$leg3Shape",
+            "maneuvers":[{"instruction":"Vous arrivez.","length":1.0,"begin_shape_index":0}]}
+        ]}}
+      ''') as Map<String, dynamic>;
+
+      final r = RouteResult.fromValhallaJson(j);
+
+      // Verify total distance and duration
+      expect(r.distanceKm, closeTo(3.0, 1e-9));
+      expect(r.duration, const Duration(seconds: 2700));
+
+      // Verify combined shape (3 legs = 6 points total due to overlaps)
+      expect(r.shape, hasLength(6));
+
+      // Verify maneuvers: 3 total, with correct global beginShapeIndex offsets
+      expect(r.maneuvers, hasLength(3));
+
+      // First maneuver from leg 1 should start at shape index 0
+      expect(r.maneuvers[0].instruction, 'Allez nord.');
+      expect(r.maneuvers[0].beginShapeIndex, 0);
+
+      // Second maneuver from leg 2 should start at shape index 2 (after leg 1's 2 points)
+      expect(r.maneuvers[1].instruction, 'Tournez gauche.');
+      expect(r.maneuvers[1].beginShapeIndex, 2);
+
+      // Third maneuver from leg 3 should start at shape index 4 (after legs 1-2's 4 points)
+      expect(r.maneuvers[2].instruction, 'Vous arrivez.');
+      expect(r.maneuvers[2].beginShapeIndex, 4);
+    });
+  });
 }

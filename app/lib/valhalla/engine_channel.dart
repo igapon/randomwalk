@@ -40,4 +40,21 @@ class ChannelRoutingEngine implements RoutingEngine {
       throw RoutingException('route failed: no native engine registered');
     }
   }
+
+  @override
+  Future<RouteResult> routeMulti(MultiPointRouteRequest request) async {
+    try {
+      final resp = await _channel
+          .invokeMethod<String>('route', {'request': request.toValhallaJson()});
+      if (resp == null) {
+        throw RoutingException('empty engine reply');
+      }
+      return RouteResult.fromValhallaJson(
+          jsonDecode(resp) as Map<String, dynamic>);
+    } on PlatformException catch (e) {
+      throw RoutingException(e.message ?? 'route failed');
+    } on MissingPluginException {
+      throw RoutingException('route failed: no native engine registered');
+    }
+  }
 }

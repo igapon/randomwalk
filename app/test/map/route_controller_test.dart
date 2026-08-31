@@ -26,6 +26,15 @@ class FakeEngine implements RoutingEngine {
         duration: Duration(minutes: 30),
         maneuvers: []);
   }
+
+  @override
+  Future<RouteResult> routeMulti(MultiPointRouteRequest request) async {
+    return const RouteResult(
+        shape: [(46.52, 6.63), (46.53, 6.64), (46.54, 6.65)],
+        distanceKm: 3.5,
+        duration: Duration(minutes: 40),
+        maneuvers: []);
+  }
 }
 
 void main() {
