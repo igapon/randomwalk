@@ -83,6 +83,7 @@ void main() {
           // Deliberately not persisted: it phrases a notification, it is not
           // trip state the UI has to rebuild from disk.
           degraded: true,
+          replanning: true,
         ),
       );
       final restored =
@@ -96,6 +97,7 @@ void main() {
       expect(restored.navArrived, isFalse);
       expect(restored.navReplanCount, 2);
       expect(restored.navRouteShapeEnc, '_izlhA~rlgdF');
+      expect(restored.navReplanning, isTrue);
     });
 
     test('a free trip carries no navigation fields at all', () {
@@ -110,6 +112,7 @@ void main() {
       expect(restored.navOffRoute, isFalse);
       expect(restored.navArrived, isFalse);
       expect(restored.navReplanCount, 0);
+      expect(restored.navReplanning, isFalse);
     });
 
     test('a document written before navigation existed reads as not navigating',
@@ -125,6 +128,13 @@ void main() {
       expect(restored.navReplanCount, 0);
       expect(restored.navInstruction, isNull);
       expect(restored.distanceKm, closeTo(1.2, 1e-9));
+    });
+
+    test(
+        'a document written before navReplanning existed (final review item '
+        '5) reads as not replanning', () {
+      final legacy = _recording().toJson()..remove('navReplanning');
+      expect(TripSnapshot.fromJson(legacy).navReplanning, isFalse);
     });
 
     test('an unknown profile name degrades to walk rather than throwing', () {

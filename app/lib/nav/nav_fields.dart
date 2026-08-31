@@ -20,6 +20,18 @@ class NavFields {
   final bool offRoute;
   final bool arrived;
 
+  /// True on the tick a replan is attempted (successful or not) and while
+  /// one is in flight — a transient, unlike [offRoute], which a
+  /// *successful* same-tick replan already clears back to false before
+  /// this [NavFields] is even built (`NavigationRuntime.onFix` replaces the
+  /// off-route update with the new follower's on-route one). Without this,
+  /// the off-route alert and the « Recalcul… » card (both keyed on
+  /// [offRoute]) would only ever fire when a replan *fails* — a successful
+  /// recalculation happens too fast for either to ever see the moment the
+  /// walker actually left the route. Callers key those two off
+  /// `offRoute || replanning` instead of [offRoute] alone.
+  final bool replanning;
+
   /// How many times the route has been recomputed since the trip started.
   /// Persisted so a UI attaching mid-trip can tell that the line it is
   /// drawing is not the one the user originally planned.
@@ -48,6 +60,7 @@ class NavFields {
     this.replanCount = 0,
     this.routeShapeEnc,
     this.degraded = false,
+    this.replanning = false,
   });
 }
 

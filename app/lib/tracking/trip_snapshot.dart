@@ -79,6 +79,14 @@ class TripSnapshot {
   final bool navArrived;
   final int navReplanCount;
 
+  /// True on the tick a replan was attempted (see [NavFields.replanning]'s
+  /// doc comment) — the transient a successful same-tick replan needs
+  /// [navOffRoute] itself cannot carry, since by the time this snapshot is
+  /// built the follower has already been replaced and reads on-route
+  /// again. `map_screen.dart`'s « Recalcul… » card keys on
+  /// `navOffRoute || navReplanning` for exactly that reason.
+  final bool navReplanning;
+
   /// Polyline6 of the route currently being followed. Present so the map can
   /// redraw the line after a service-side replan, which the UI never sees
   /// happen and whose result exists nowhere else in this process.
@@ -101,6 +109,7 @@ class TripSnapshot {
     this.navArrived = false,
     this.navReplanCount = 0,
     this.navRouteShapeEnc,
+    this.navReplanning = false,
   });
 
   /// A trip that is about to start: zeroed, or — when resuming an
@@ -168,6 +177,7 @@ class TripSnapshot {
         navArrived: nav?.arrived ?? navArrived,
         navReplanCount: nav?.replanCount ?? navReplanCount,
         navRouteShapeEnc: nav == null ? navRouteShapeEnc : nav.routeShapeEnc,
+        navReplanning: nav?.replanning ?? navReplanning,
       );
 
   Map<String, dynamic> toJson() => {
@@ -191,6 +201,7 @@ class TripSnapshot {
         if (navArrived) 'navArrived': navArrived,
         if (navReplanCount != 0) 'navReplanCount': navReplanCount,
         if (navRouteShapeEnc != null) 'navRouteShapeEnc': navRouteShapeEnc,
+        if (navReplanning) 'navReplanning': navReplanning,
       };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
@@ -213,6 +224,10 @@ class TripSnapshot {
         navArrived: j['navArrived'] as bool? ?? false,
         navReplanCount: (j['navReplanCount'] as num?)?.toInt() ?? 0,
         navRouteShapeEnc: j['navRouteShapeEnc'] as String?,
+        // Backward-compat default: a snapshot written before this field
+        // existed has no key for it at all, and must read as "not
+        // replanning" rather than throw or coerce a null to true.
+        navReplanning: j['navReplanning'] as bool? ?? false,
       );
 }
 

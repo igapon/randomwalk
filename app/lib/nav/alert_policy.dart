@@ -56,7 +56,15 @@ class AlertPolicy {
   /// fix, in order; calling it twice for the same fix double-latches nothing
   /// (idempotent within a tick) but consumes the "once" for real ticks that
   /// never arrive.
-  bool shouldAlert(NavUpdate u) {
+  ///
+  /// [replanning] is [NavFields.replanning] for this same tick: a
+  /// successful same-tick replan already rewrites [u] to the new,
+  /// on-route reading before this is ever called, so `u.offRoute` alone
+  /// can no longer tell "never left the route" from "left it and was
+  /// already routed back" — [replanning] is what still can. Off-route
+  /// alerting below reads `u.offRoute || replanning` for exactly that
+  /// reason; every other branch keys on [u] alone.
+  bool shouldAlert(NavUpdate u, {bool replanning = false}) {
     if (u.arrived) {
       final isNew = !_wasArrived;
       _wasArrived = true;
@@ -67,7 +75,8 @@ class AlertPolicy {
     // resurrected-false update.
     _wasArrived = false;
 
-    if (u.offRoute) {
+    final offRoute = u.offRoute || replanning;
+    if (offRoute) {
       final isNew = !_wasOffRoute;
       _wasOffRoute = true;
       return isNew;
@@ -105,8 +114,14 @@ class AlertPolicy {
 /// notification, depending on which of « Guidage vocal »/« Vibrations et
 /// alertes » are on. Arrival and off-route each have their own fixed
 /// phrasing; an ordinary maneuver alert reads the instruction itself.
-String alertText(NavUpdate u) {
+///
+/// [replanning] (see [AlertPolicy.shouldAlert]'s doc comment) says this
+/// same tick left the route and was already recalculated onto a new one —
+/// [u] itself already reads on-route by the time this is called, so
+/// without it the walker would hear the *new* route's first instruction
+/// with no mention of ever having left the old one.
+String alertText(NavUpdate u, {bool replanning = false}) {
   if (u.arrived) return 'Arrivé !';
-  if (u.offRoute) return "Écart d'itinéraire — recalcul";
+  if (u.offRoute || replanning) return "Écart d'itinéraire — recalcul";
   return u.instruction.isEmpty ? "Suivez l'itinéraire" : u.instruction;
 }

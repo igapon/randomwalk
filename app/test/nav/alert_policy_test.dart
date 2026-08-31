@@ -178,4 +178,64 @@ void main() {
       expect(policy.shouldAlert(update(offRoute: true)), isFalse);
     });
   });
+
+  group('AlertPolicy — replanning (final review item 5)', () {
+    test(
+        'a successful same-tick replan alerts even though offRoute itself '
+        'already reads false', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      // This is exactly the shape NavigationRuntime.onFix hands
+      // _maybeAlert on a successful replan: the update it returns already
+      // describes the *new*, on-route follower, so offRoute is false — only
+      // `replanning` still says this tick left the route.
+      expect(
+          policy.shouldAlert(update(offRoute: false), replanning: true),
+          isTrue);
+    });
+
+    test('does not repeat while still replanning-flagged on the next tick',
+        () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(
+          policy.shouldAlert(update(offRoute: false), replanning: true),
+          isTrue);
+      expect(
+          policy.shouldAlert(update(offRoute: false), replanning: true),
+          isFalse);
+    });
+
+    test('a genuinely off-route update alerts the same whether or not '
+        'replanning is also passed', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(
+          policy.shouldAlert(update(offRoute: true), replanning: true),
+          isTrue);
+    });
+
+    test('defaults to false — callers that never pass it see the old '
+        'offRoute-only behaviour', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(policy.shouldAlert(update(offRoute: false)), isFalse);
+    });
+  });
+
+  group('alertText — replanning', () {
+    test('reads as the off-route phrasing even though offRoute is false',
+        () {
+      expect(alertText(update(offRoute: false), replanning: true),
+          "Écart d'itinéraire — recalcul");
+    });
+
+    test('arrival still outranks replanning', () {
+      expect(
+          alertText(update(arrived: true, offRoute: false), replanning: true),
+          'Arrivé !');
+    });
+
+    test('defaults to the plain offRoute-only phrasing', () {
+      expect(alertText(update(offRoute: true)), "Écart d'itinéraire — recalcul");
+      expect(alertText(update(offRoute: false, instruction: 'Tournez à droite')),
+          'Tournez à droite');
+    });
+  });
 }

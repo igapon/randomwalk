@@ -140,6 +140,13 @@ void main() {
       expect(fields.routeShapeEnc, encodePolyline6(replacement.shape));
       expect(fields.offRoute, isFalse);
       expect(fields.degraded, isFalse);
+      // offRoute itself is honestly false — the fresh follower really does
+      // read the walker as on the new line — but this tick did leave the
+      // old route, and replanning is what still says so (final review item
+      // 5: without it, a *successful* same-tick replan is invisible to the
+      // off-route alert and the "Recalcul…" card, which only ever saw a
+      // failed one).
+      expect(fields.replanning, isTrue);
     });
 
     test('a divergence big enough to look like a GPS spike still replans',
@@ -168,6 +175,10 @@ void main() {
       expect(fields.routeShapeEnc, encodePolyline6(replacement.shape));
       expect(fields.offRoute, isFalse,
           reason: 'the fresh follower has the walker on the new line');
+      // Same distinction as the previous test: offRoute is honestly false,
+      // but replanning still says this tick recalculated onto a new route
+      // (final review item 5).
+      expect(fields.replanning, isTrue);
     });
 
     test('no second replan starts while one is in flight', () async {
@@ -191,6 +202,9 @@ void main() {
       expect(replan.calls, 1);
       expect(second.replanCount, 0);
       expect(second.offRoute, isTrue);
+      // A replan is genuinely in flight (the first fix's), even though this
+      // second call did not start it.
+      expect(second.replanning, isTrue);
 
       replan.gate!.complete();
       expect((await first).replanCount, 1);
@@ -209,6 +223,10 @@ void main() {
       expect(failed.degraded, isTrue);
       expect(failed.replanCount, 0);
       expect(failed.offRoute, isTrue);
+      // A replan was attempted this tick (it just failed) — offRoute alone
+      // already covers alerting for this case, but replanning is set
+      // regardless of outcome.
+      expect(failed.replanning, isTrue);
       // Still following the planned route — a walker out of tile coverage is
       // better served by a stale line than by nothing at all.
       expect(failed.instruction, 'Rue du Lac');

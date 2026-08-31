@@ -605,7 +605,8 @@ class TripTaskHandler extends TaskHandler {
     try {
       _navFields = await nav.onFix(
           sample.lat, sample.lon, sample.speedMps, sample.time);
-      await _maybeAlert(nav.lastUpdate);
+      await _maybeAlert(nav.lastUpdate,
+          replanning: _navFields?.replanning ?? false);
       await _maybeAdaptGps();
       // Publishing is inside the try for the same reason [_stopped] exists:
       // a fix whose replan outlived the teardown must not raise from a
@@ -624,7 +625,7 @@ class TripTaskHandler extends TaskHandler {
   /// Both are best-effort: a notification-plugin hiccup or a wedged TTS
   /// engine must cost this fix nothing beyond the alert it was trying to
   /// deliver — the trip keeps recording either way.
-  Future<void> _maybeAlert(NavUpdate? update) async {
+  Future<void> _maybeAlert(NavUpdate? update, {bool replanning = false}) async {
     final policy = _alertPolicy;
     if (policy == null || update == null || _stopped) return;
 
@@ -638,9 +639,9 @@ class TripTaskHandler extends TaskHandler {
       _lastAlertPolicyReplanCount = replanCount;
     }
 
-    if (!policy.shouldAlert(update)) return;
+    if (!policy.shouldAlert(update, replanning: replanning)) return;
 
-    final text = alertText(update);
+    final text = alertText(update, replanning: replanning);
     final tasks = <Future<void>>[];
     if (_hapticsEnabled) tasks.add(_postAlertNotification(text));
     if (_ttsEnabled) tasks.add(_speaker.speak(text).catchError((_) {}));

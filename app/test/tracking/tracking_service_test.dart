@@ -213,6 +213,7 @@ void main() {
             arrived: true,
             replanCount: 3,
             routeShapeEnc: '_izlhA~rlgdF',
+            replanning: true,
           ),
         );
 
@@ -234,6 +235,7 @@ void main() {
       expect(fresh.navOffRoute, isFalse);
       expect(fresh.navArrived, isFalse);
       expect(fresh.navReplanCount, 0);
+      expect(fresh.navReplanning, isFalse);
     });
 
     test('a snapshot that was never navigating comes back unchanged', () {

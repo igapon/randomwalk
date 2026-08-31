@@ -90,18 +90,30 @@ class NavigationRuntime {
   Future<NavFields> onFix(
       double lat, double lon, double speedMps, DateTime time) async {
     var update = _follower.update(lat, lon, time);
+    var replanning = false;
 
     if (!update.offRoute) {
       // Back on the line: whatever went wrong last time is no longer the
       // user's problem, and a fresh departure deserves an immediate attempt.
       _degraded = false;
       _lastFailureAt = null;
+    } else if (_inFlight) {
+      // Another (concurrent) onFix call's replan hasn't resolved yet —
+      // production serializes fixes so this is only ever exercised as a
+      // property of this class (see the class doc comment), but a replan
+      // genuinely is in flight, so this tick is "replanning" too.
+      replanning = true;
     } else if (_shouldReplan(update)) {
+      // Latched *before* awaiting the recalculation: a successful replan
+      // below replaces `update` with the new follower's on-route reading,
+      // which would otherwise erase every trace of this tick ever having
+      // been off-route (see [NavFields.replanning]'s doc comment).
+      replanning = true;
       update = await _recalculate(lat, lon, time) ?? update;
     }
 
     _lastUpdate = update;
-    return _fieldsFrom(update);
+    return _fieldsFrom(update, replanning: replanning);
   }
 
   bool _shouldReplan(NavUpdate update) {
@@ -159,7 +171,7 @@ class NavigationRuntime {
     _routeShapeEnc = encodePolyline6(route.shape);
   }
 
-  NavFields _fieldsFrom(NavUpdate u) => NavFields(
+  NavFields _fieldsFrom(NavUpdate u, {bool replanning = false}) => NavFields(
         instruction: u.instruction,
         distanceToManeuverM: u.distanceToManeuverM,
         remainingKm: u.remainingKm,
@@ -169,5 +181,6 @@ class NavigationRuntime {
         replanCount: _replanCount,
         routeShapeEnc: _routeShapeEnc,
         degraded: _degraded,
+        replanning: replanning,
       );
 }
