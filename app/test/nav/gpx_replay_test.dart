@@ -17,6 +17,18 @@ List<NavUpdate> _replay(String fixtureName) {
   return [for (final p in points) follower.update(p.lat, p.lon, p.time)];
 }
 
+/// Slack allowed on top of a strict decrease in `distanceToManeuverM`
+/// between two fixes still approaching the same maneuver (final review item
+/// 7 — the old check allowed up to +0.5 m of *increase*, loose enough to
+/// hide a genuine regression). Zero: the `nominal` fixture walks the route
+/// exactly, with no GPS jitter, and against it a fully strict decrease
+/// (`lessThan(prev)`, no slack at all) passes cleanly — tried first per the
+/// review's own fallback instruction ("keep the smallest slack that
+/// passes"), and the smallest slack that passes turned out to be none.
+/// Revisit if this ever starts flaking against a regenerated fixture — see
+/// `../support/make_fixtures.dart`.
+const _kManeuverEpsilonM = 0.0;
+
 void main() {
   final route = buildReferenceRoute();
 
@@ -44,15 +56,19 @@ void main() {
       expect(seen, {1, 2, 3, 4});
       expect(updates.last.maneuverIndex, route.maneuvers.length - 1);
 
-      // Within each maneuver, distanceToManeuverM should count down (small
-      // tolerance for floating point / resampling noise) as the walker
-      // heads straight toward it on an unjittered trace.
+      // Within each maneuver, distanceToManeuverM should count down as the
+      // walker heads straight toward it on an unjittered trace — a strict
+      // decrease, not merely "not much of an increase". [_kManeuverEpsilonM]
+      // is the smallest slack that still passes against this fixture; see
+      // its doc comment for why it is not exactly zero.
       for (var i = 1; i < updates.length; i++) {
         if (updates[i].maneuverIndex == updates[i - 1].maneuverIndex) {
-          expect(updates[i].distanceToManeuverM,
-              lessThanOrEqualTo(updates[i - 1].distanceToManeuverM + 0.5),
-              reason: 'distanceToManeuverM should decrease while approaching '
-                  'maneuver ${updates[i].maneuverIndex}');
+          expect(
+              updates[i].distanceToManeuverM,
+              lessThan(
+                  updates[i - 1].distanceToManeuverM + _kManeuverEpsilonM),
+              reason: 'distanceToManeuverM should strictly decrease while '
+                  'approaching maneuver ${updates[i].maneuverIndex}');
         }
       }
     });
@@ -128,8 +144,13 @@ void main() {
       expect(gapDuration.inSeconds, greaterThanOrEqualTo(45),
           reason: 'the tunnel fixture should contain a genuine ~45s gap');
 
-      // No arrival latched anywhere before the resumed fix after the gap.
-      expect(updates.sublist(0, gapIndex).any((u) => u.arrived), isFalse);
+      // No arrival latched anywhere up to and including the resumed fix
+      // after the gap — `sublist(0, gapIndex)` alone excludes
+      // `updates[gapIndex]` itself, the exact fix whose forward alongKm
+      // jump (checked below) is the one most likely to spuriously cross
+      // the arrival radius; `gapIndex + 1` brings it into the window.
+      expect(
+          updates.sublist(0, gapIndex + 1).any((u) => u.arrived), isFalse);
 
       // alongKm jumps forward across the gap by roughly the distance a
       // walker at 1.4 m/s would cover during the missing time, not just one
