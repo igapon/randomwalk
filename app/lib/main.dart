@@ -47,9 +47,16 @@ Future<TripController> _buildTripController() async {
   final dir = await getApplicationSupportDirectory();
   // Same root the routing providers use (see `coverageRepositoryProvider`);
   // built here too because the trip controller exists before the
-  // ProviderScope does, and only needs the read-only lookup.
+  // ProviderScope does, and only needs the read-only lookup
+  // (`cachedTileDirPath`, below — disk only, no network call). The
+  // `http.Client()` `CoverageRepository` otherwise requires is therefore
+  // never actually used through this instance; closing it immediately
+  // avoids leaking a real socket-owning resource for the rest of the app's
+  // process lifetime (item 9) rather than keeping one open on the off
+  // chance `resolveTileDir` grows a network path later — it would need its
+  // own client if it ever does.
   final coverage = CoverageRepository(
-      root: Directory('${dir.path}/tiles'), client: http.Client());
+      root: Directory('${dir.path}/tiles'), client: http.Client()..close());
   final permissions = TripPermissionCoordinator(
     PluginPermissionService(),
     showBackgroundRationale: () async {
