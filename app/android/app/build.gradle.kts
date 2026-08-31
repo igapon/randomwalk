@@ -12,6 +12,12 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications' own Android module compiles with this
+        // on (see its android/build.gradle) — minSdk 24 here is below API 26,
+        // where java.time/java.util.concurrent's newer surface only exists
+        // via desugaring, and AGP requires the *consuming* app module to opt
+        // in too, not just the library that needs it.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -42,6 +48,10 @@ kotlin {
 
 dependencies {
     implementation("io.github.rallista:valhalla-mobile:0.6.3")
+    // Version matched to flutter_local_notifications-22.3.0's own module —
+    // see the compileOptions comment above for why the app module needs it
+    // too.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 flutter {

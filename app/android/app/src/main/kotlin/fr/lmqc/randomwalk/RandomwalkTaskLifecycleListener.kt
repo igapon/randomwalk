@@ -3,30 +3,31 @@ package fr.lmqc.randomwalk
 import com.pravera.flutter_foreground_task.FlutterForegroundTaskLifecycleListener
 import com.pravera.flutter_foreground_task.FlutterForegroundTaskStarter
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugins.GeneratedPluginRegistrant
 
 /**
- * Attaches [RandomwalkPlugin] to the [FlutterEngine] that flutter_foreground_task creates for
- * its background isolate (the one the tracking service runs its Dart callback on).
+ * Attaches every plugin the app depends on — [RandomwalkPlugin] and, since Task 6, every
+ * ordinary pub plugin via [GeneratedPluginRegistrant] — to the [FlutterEngine] that
+ * flutter_foreground_task creates for its background isolate (the one the tracking service runs
+ * its Dart callback on).
  *
- * Why this exists instead of relying on `GeneratedPluginRegistrant`, and why a *local Flutter
- * plugin package* would not have solved this either — both findings come from reading the
- * installed flutter_foreground_task:11.0.1 sources directly (pub cache path:
+ * Why a manual call is needed at all, and why a *local Flutter plugin package* would not have
+ * solved it either — both findings come from reading the installed flutter_foreground_task:11.0.1
+ * sources directly (pub cache path:
  * `flutter_foreground_task-11.0.1/android/src/main/kotlin/com/pravera/flutter_foreground_task/`):
  *
  *  - `service/ForegroundTask.kt`'s `init` block builds the background engine by hand
  *    (`flutterEngine = FlutterEngine(context)`) and never calls
- *    `GeneratedPluginRegistrant.registerWith(flutterEngine)` on it — that call only happens on
- *    the UI engine, via `FlutterActivity`'s default `configureFlutterEngine`.
+ *    `GeneratedPluginRegistrant.registerWith(flutterEngine)` on it itself — that call only
+ *    happens automatically on the UI engine, via `FlutterActivity`'s default
+ *    `configureFlutterEngine`.
  *  - The package's own example app confirms this is intentional, not an oversight:
  *    `example/android/app/.../MainActivity.kt` is a bare `class MainActivity : FlutterActivity()`
  *    with no custom engine wiring, i.e. the example relies on exactly zero automatic plugin
  *    registration on the background engine.
- *  - Consequently, converting `RandomwalkPlugin` into a separate local *pub* plugin package
- *    (its own `pubspec.yaml` + `flutter.plugin.platforms.android`) would not have helped:
- *    `GeneratedPluginRegistrant.registerWith` is exactly the mechanism that never runs on this
- *    engine, pub package or not. It would have added real gradle/AGP-compatibility risk (a
- *    second Android Gradle module, verifiable only via CI since local gradle is broken on this
- *    machine) for no benefit.
+ *  - Consequently, converting a plugin into a separate local *pub* plugin package (its own
+ *    `pubspec.yaml` + `flutter.plugin.platforms.android`) would not, on its own, register it here
+ *    either — nothing calls `GeneratedPluginRegistrant.registerWith` on this engine unless told to.
  *  - What the package *does* provide, as its documented extension point for this exact need, is
  *    `FlutterForegroundTaskLifecycleListener` (see that file's doc comments) plus the static
  *    `FlutterForegroundTaskPlugin.addTaskLifecycleListener` / `removeTaskLifecycleListener`
@@ -36,6 +37,34 @@ import io.flutter.embedding.engine.FlutterEngine
  *    normally about to tear it down. This listener is the robust path for *attaching*; see below
  *    for why *detaching* uses a different, engine-scoped hook instead of this method.
  *
+ * Task 6 (maneuver alerts) is what forced the second half of this: `flutter_local_notifications`
+ * and `flutter_tts` are ordinary pub plugins, so without also calling
+ * `GeneratedPluginRegistrant.registerWith(engine)` here, their Dart-side method channels have no
+ * handler on this engine and every call from inside the service isolate throws
+ * `MissingPluginException` — the exact failure mode `RandomwalkPlugin` was built to avoid for the
+ * app's own channels. Read from the *generated* `GeneratedPluginRegistrant.java` (not just the
+ * package docs) to confirm two things before wiring this in: it wraps every single plugin's
+ * registration in its own `try`/`catch (Exception e)` and merely logs a failure, so one
+ * misbehaving plugin cannot take the others — or the service — down with it; and every plugin this
+ * app actually depends on (`flutter_local_notifications`, `flutter_tts`, `geolocator`,
+ * `shared_preferences`, `permission_handler`, `maplibre_gl`, ...) implements only `FlutterPlugin`'s
+ * `onAttachedToEngine`/`onDetachedFromEngine` there — no `ActivityAware` method is required to
+ * construct any of their platform state, so attaching them to an engine with no Activity (this
+ * one) is exactly the supported, documented shape of a `FlutterPlugin`, not a workaround. This
+ * also incidentally makes `geolocator`'s GPS stream and `shared_preferences` reliable from inside
+ * the service isolate for the first time — both were already relied on there (Task 5) without
+ * this call ever having run, unverified until now.
+ *
+ * One accepted cost: `flutter_tts`'s Android plugin (`FlutterTtsPlugin.onAttachedToEngine`)
+ * unconditionally constructs an Android `TextToSpeech` engine the instant it attaches — not
+ * lazily, and not gated on "Guidage vocal" being on — so every service start now pays that cost
+ * once, even for a free trip or a route-bound one with alerts turned off. `TtsSpeaker`'s own
+ * laziness (`nav/tts.dart`) only avoids this class's *Dart-side* setup; it cannot reach into the
+ * plugin's `onAttachedToEngine`. Judged acceptable: constructing `TextToSpeech` is comparatively
+ * cheap (it does not load voice data until `speak()` is actually called), and gating registration
+ * itself on a setting would mean re-deriving, in Kotlin, exactly the Dart-side settings-read this
+ * task already does once in `TripTaskHandler`.
+ *
  * Registered once, from [RandomwalkApplication.onCreate] — not from `MainActivity` — because the
  * service can (re)create its engine without any Activity ever running (e.g. `RestartReceiver`
  * after the service was killed, or a reboot), and the listener must already be in place by the
@@ -44,6 +73,7 @@ import io.flutter.embedding.engine.FlutterEngine
 object RandomwalkTaskLifecycleListener : FlutterForegroundTaskLifecycleListener {
     override fun onEngineCreate(flutterEngine: FlutterEngine?) {
         val engine = flutterEngine ?: return
+        GeneratedPluginRegistrant.registerWith(engine)
         engine.plugins.add(RandomwalkPlugin())
 
         // Detach by pairing with THIS specific engine, not with flutter_foreground_task's
@@ -99,5 +129,14 @@ object RandomwalkTaskLifecycleListener : FlutterForegroundTaskLifecycleListener 
     // thread it owns — is never detached/disposed either. Bounding that would need an explicit
     // timeout independent of flutter_foreground_task's own teardown path, which is out of scope
     // here; flagged in the Task 4 report for Task 5 device QA to watch for.
+    //
+    // The pub plugins `GeneratedPluginRegistrant.registerWith` adds above (Task 6) share the same
+    // wedge residual, but with no equivalent early-detach: only `RandomwalkPlugin` is explicitly
+    // `remove()`d in the per-engine listener; the rest are cleaned up when (and only when) the
+    // eventual `flutterEngine.destroy()` -> `pluginRegistry.destroy()` actually runs. Accepted
+    // asymmetrically on purpose — `RandomwalkPlugin` owns the native Valhalla actor and its worker
+    // thread, the one resource here worth guaranteeing an early detach for; `flutter_tts`'s
+    // `TextToSpeech` engine, the notification channel handle, and the rest are comparatively cheap
+    // to leak in the same already-rare "isolate never dies" scenario.
     override fun onEngineWillDestroy() = Unit
 }
