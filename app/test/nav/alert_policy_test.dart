@@ -140,4 +140,42 @@ void main() {
           isFalse);
     });
   });
+
+  group('AlertPolicy — reset on replan', () {
+    test(
+        'a fresh route renumbering maneuvers from 0 alerts again after reset',
+        () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      // Alerted for maneuver 0 on the original route.
+      expect(
+          policy.shouldAlert(
+              update(maneuverIndex: 0, distanceToManeuverM: 70)),
+          isTrue);
+
+      // A replan swaps in a fresh RouteFollower, whose maneuver numbering
+      // starts at 0 again — without a reset this would read as "maneuver 0
+      // already alerted" and stay silent for the rest of the new route's
+      // first leg.
+      policy.reset();
+
+      expect(
+          policy.shouldAlert(
+              update(maneuverIndex: 0, distanceToManeuverM: 70)),
+          isTrue);
+    });
+
+    test('reset does not disturb offRoute/arrived — they self-correct anyway',
+        () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(policy.shouldAlert(update(offRoute: true)), isTrue);
+
+      policy.reset();
+
+      // Still off-route on the very next fix: no repeat, exactly as if no
+      // replan (and no reset) had happened — offRoute latching is driven by
+      // the update itself, not by the maneuver-index bookkeeping reset
+      // clears.
+      expect(policy.shouldAlert(update(offRoute: true)), isFalse);
+    });
+  });
 }

@@ -81,6 +81,24 @@ class AlertPolicy {
     }
     return false;
   }
+
+  /// Clears which maneuver has already been alerted for. Call this whenever
+  /// the route being followed changes — a replan always builds a fresh
+  /// [RouteFollower] (see `NavigationRuntime`'s own doc comment), which
+  /// renumbers maneuvers from its own index 0. Without this, a
+  /// `maneuverIndex` that happens to coincide with the one last alerted on
+  /// the *previous* route — index 0 is the common case, since a fresh
+  /// follower's first published maneuver is almost always 0 — would be
+  /// silently treated as already handled, and the new route's early
+  /// maneuvers would never alert.
+  ///
+  /// Off-route/arrived state is deliberately left alone: both are driven
+  /// entirely by the update passed to [shouldAlert] and already
+  /// self-correct on the very next call regardless of a replan (see the
+  /// `_wasOffRoute = false` / `_wasArrived = false` fallthrough above).
+  void reset() {
+    _alertedManeuverIndex = null;
+  }
 }
 
 /// The text an alert carries — spoken aloud and/or shown in the guidance
