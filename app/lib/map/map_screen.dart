@@ -80,6 +80,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// Set once the "Couverture incomplète" banner has been shown, so it
   /// surfaces at most once per planning session (task-8 brief point 2)
   /// instead of on every replan for the rest of the screen's lifetime.
+  ///
+  /// "Session" is reset-scoped, not screen-lifetime-scoped (task-7 item 8
+  /// fix): [_clearCandidates] (✕ on the sheet) and the start of a
+  /// fresh series (`_planRoute`/`_proposeCandidates`) both clear it, so a
+  /// warning already shown for one planning attempt does not silently
+  /// suppress the same warning for an unrelated later one.
   bool _coverageWarningShown = false;
 
   /// Resolved once at startup — see [_resolveInitialCamera] — before the
@@ -578,6 +584,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
           const SnackBar(content: Text(kPositionUnavailableMessage)));
       return;
     }
+    // Item 8: a fresh planning series earns a fresh chance to warn about
+    // incomplete coverage, same reasoning as `_clearCandidates`' reset.
+    _coverageWarningShown = false;
     setState(() {
       _planning = true;
       _downloadProgress = null;
@@ -842,6 +851,22 @@ class MapScreenState extends ConsumerState<MapScreen> {
           .saveActiveRoute(_plan(trip).copyWith(clearDestination: true));
     }
     _clearCandidates();
+    // Review carry-over item 12: an open address search belongs to whatever
+    // panel was showing when it was typed (the Itinéraire search field, or
+    // the Durée destination search) — switching mode swaps that panel out
+    // from under it, so its stale results/spinner/error must not linger
+    // and block the panel/Proposer button that is now visible from being
+    // immediately usable. Debounced searches in flight are cancelled the
+    // same way `_onSearchChanged`'s own clear path does.
+    _searchDebounce?.cancel();
+    _searchGeneration.start();
+    if (mounted) {
+      setState(() {
+        _searchResults = [];
+        _searchError = null;
+        _searching = false;
+      });
+    }
     await _planModeStore.save(mode);
   }
 
@@ -879,6 +904,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // that window (setState's callback runs synchronously).
     if (_candidatePlanning) return;
     final gen = _candidateGeneration.start();
+    // Item 8: same reset as `_planRoute` — a fresh « Proposer » series earns
+    // a fresh chance to warn about incomplete coverage.
+    _coverageWarningShown = false;
     setState(() => _candidatePlanning = true);
 
     final trip = ref.read(tripControllerProvider);
@@ -984,6 +1012,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// ✕ on the sheet: drops the candidates and their preview lines, leaving
   /// whatever was planned before untouched.
   void _clearCandidates() {
+    // Item 8: the coverage-incomplete warning's scope is one planning
+    // session, not the whole screen lifetime — ✕ ends that session, so the
+    // next « Proposer »/« Planifier » that hits incomplete coverage again
+    // must be free to warn again rather than staying silenced by a flag an
+    // unrelated, already-dismissed session set.
+    _coverageWarningShown = false;
     if (_candidateResult == null && !_candidatePlanning) return;
     _candidateGeneration.start();
     setState(() {
