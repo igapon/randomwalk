@@ -420,12 +420,15 @@ class TripTaskHandler extends TaskHandler {
     try {
       _navFields = await nav.onFix(
           sample.lat, sample.lon, sample.speedMps, sample.time);
+      // Publishing is inside the guard too: a fix whose replan outlived the
+      // service teardown would otherwise update a notification that is on
+      // its way out, from a callback nothing is left to await.
+      _publish(DateTime.now());
     } catch (_) {
       return;
     } finally {
       _navBusy = false;
     }
-    _publish(DateTime.now());
   }
 
   /// The recalculation [NavigationRuntime] calls when the walker has left
