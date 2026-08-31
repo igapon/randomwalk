@@ -546,6 +546,30 @@ void main() {
       expect(next.state, TripState.interrupted);
     });
 
+    test(
+        'a double-tap on "Terminer" banks the trip exactly once (final '
+        'review item 6)', () async {
+      totals.total = 10;
+      final trip = build();
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      // Two concurrent calls, neither awaited before the other starts — the
+      // shape a double-tap actually produces. `stopTrip`'s synchronous
+      // prefix (the `_state`/`_stopping` guard, and setting `_stopping`)
+      // runs to completion for `first` before `second` is even invoked —
+      // Dart only suspends at `first`'s own first `await` — so the second
+      // call deterministically sees `_stopping` already true.
+      final first = trip.stopTrip();
+      final second = trip.stopTrip();
+
+      expect(await second, 0);
+      expect(await first, closeTo(2.4, 1e-9));
+      expect(totals.calls, 1);
+      expect(totals.total, closeTo(12.4, 1e-9));
+      expect(trip.state, TripState.idle);
+    });
+
     test('stopping when idle is a no-op', () async {
       final trip = build();
       expect(await trip.stopTrip(), 0);

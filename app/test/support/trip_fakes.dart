@@ -14,10 +14,19 @@ import 'package:randomwalk/valhalla/models.dart';
 /// `main()` against the app support directory and a foreground service).
 class FakeTotalDistanceStore implements TotalDistanceStore {
   double total = 0;
+
+  /// How many times [addAndGetTotalKm] has actually run — a double-banked
+  /// trip (see the trip_controller `stopTrip` re-entrancy test) shows up as
+  /// this being 2 for what should be a single stop.
+  int calls = 0;
+
   @override
   Future<double> totalKm() async => total;
   @override
-  Future<double> addAndGetTotalKm(double km) async => total += km;
+  Future<double> addAndGetTotalKm(double km) async {
+    calls++;
+    return total += km;
+  }
 }
 
 /// In-memory [FinalisedTripMemory]: remembers which trips have already been

@@ -401,12 +401,30 @@ class TripController extends ChangeNotifier {
     _stepsAvailable = await counter.start();
   }
 
+  /// True from the moment [stopTrip] commits to stopping until it (or the
+  /// call it raced) has finished banking — see [stopTrip]'s doc comment.
+  bool _stopping = false;
+
   /// Stops the trip and banks it. Returns the distance recorded by this
   /// trip (not the cumulative total, which reaches [onSessionEnded]).
+  ///
+  /// [_state] does not become [TripState.idle] until deep inside
+  /// [_finalise], after several `await`s (`tracker.stop()`,
+  /// `markFinalised`, `addAndGetTotalKm`...) — a double-tap on « Terminer »
+  /// fires two calls before the first of those awaits ever suspends the
+  /// first call, so the `_state != recording` guard alone lets both through
+  /// and banks the same trip twice. [_stopping] is set synchronously,
+  /// before the first `await`, closing that window: the second call sees it
+  /// already true and returns immediately rather than racing the first.
   Future<double> stopTrip() async {
-    if (_state != TripState.recording) return 0;
-    final persisted = await tracker.stop();
-    return _finalise(_freshest(persisted, _snapshot));
+    if (_state != TripState.recording || _stopping) return 0;
+    _stopping = true;
+    try {
+      final persisted = await tracker.stop();
+      return await _finalise(_freshest(persisted, _snapshot));
+    } finally {
+      _stopping = false;
+    }
   }
 
   /// The service may be killed between its last published snapshot and its
