@@ -500,6 +500,10 @@ class TripTaskHandler extends TaskHandler {
       _nav = NavigationRuntime(
         follower: RouteFollower(navSeed.route),
         replan: _replanFrom,
+        // Final review item 1: a loop is followed but never recalculated —
+        // its only routable "destination" is its own start, so a replan
+        // would swap the loop for the shortest way home and end the trip.
+        isLoop: navSeed.isLoop,
       );
       _alertPolicy = AlertPolicy(profile: navSeed.profile);
     }
@@ -641,7 +645,8 @@ class TripTaskHandler extends TaskHandler {
 
     if (!policy.shouldAlert(update, replanning: replanning)) return;
 
-    final text = alertText(update, replanning: replanning);
+    final text = alertText(update,
+        replanning: replanning, isLoop: _navSeed?.isLoop ?? false);
     final tasks = <Future<void>>[];
     if (_hapticsEnabled) tasks.add(_postAlertNotification(text));
     if (_ttsEnabled) tasks.add(_speaker.speak(text).catchError((_) {}));
@@ -737,6 +742,10 @@ class TripTaskHandler extends TaskHandler {
   /// the walker who most needs a replan is the one least likely to have
   /// connectivity. It routes against whatever was on disk when the trip
   /// started, and reports failure outside that.
+  ///
+  /// Never reached at all on a loop: [NavigationRuntime.isLoop] short-circuits
+  /// the decision upstream, precisely because [NavSeed.destLat]/[NavSeed.destLon]
+  /// name the loop's own start point and routing there would end the trip.
   Future<RouteResult?> _replanFrom(double lat, double lon) async {
     final seed = _navSeed;
     final tileDirPath = seed?.tileDirPath;

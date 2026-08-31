@@ -145,4 +145,162 @@ void main() {
       expect(to['type'], 'break');
     });
   });
+
+  group('MultiPointRouteRequest.toValhallaJson', () {
+    test('4-location request with bicycle costing and correct types', () {
+      final request = MultiPointRouteRequest(
+        locations: const [
+          (46.52, 6.63),
+          (46.525, 6.635),
+          (46.53, 6.64),
+          (46.535, 6.645),
+        ],
+        profile: RoutingProfile.bike,
+      );
+
+      final j = jsonDecode(request.toValhallaJson()) as Map<String, dynamic>;
+
+      // Check costing
+      expect(j['costing'], 'bicycle');
+
+      // Check directions_options
+      final options = j['directions_options'] as Map<String, dynamic>;
+      expect(options['units'], 'kilometers');
+      expect(options['language'], 'fr-FR');
+
+      // Check locations: first and last are 'break', middle are 'through'
+      final locations = j['locations'] as List<dynamic>;
+      expect(locations, hasLength(4));
+
+      final loc0 = locations[0] as Map<String, dynamic>;
+      expect(loc0['lat'], 46.52);
+      expect(loc0['lon'], 6.63);
+      expect(loc0['type'], 'break');
+
+      final loc1 = locations[1] as Map<String, dynamic>;
+      expect(loc1['lat'], 46.525);
+      expect(loc1['lon'], 6.635);
+      expect(loc1['type'], 'through');
+
+      final loc2 = locations[2] as Map<String, dynamic>;
+      expect(loc2['lat'], 46.53);
+      expect(loc2['lon'], 6.64);
+      expect(loc2['type'], 'through');
+
+      final loc3 = locations[3] as Map<String, dynamic>;
+      expect(loc3['lat'], 46.535);
+      expect(loc3['lon'], 6.645);
+      expect(loc3['type'], 'break');
+    });
+
+    test('requires at least 2 locations', () {
+      expect(
+        () => MultiPointRouteRequest(
+          locations: const [(46.52, 6.63)],
+          profile: RoutingProfile.walk,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
+
+  group('RouteResult.fromValhallaJson with single leg and multiple waypoints', () {
+    test('parses single-leg response with multiple through-waypoint maneuvers '
+        'and correct global shape indices', () {
+      // Realistic: MultiPointRouteRequest produces a single leg because
+      // Valhalla splits legs only at break/break_through boundaries.
+      // The shape traverses through several waypoints, and maneuvers occur
+      // at different positions within that single leg.
+      final legShape = encodePolyline6([
+        (46.52, 6.63),
+        (46.521, 6.631),
+        (46.522, 6.632),
+        (46.53, 6.64),
+        (46.535, 6.645),
+      ]);
+
+      final j = jsonDecode('''
+      {"trip":{"summary":{"length":2.5,"time":900},
+        "legs":[
+          {"shape":"$legShape",
+            "maneuvers":[
+              {"instruction":"Partez nord-est.","length":1.0,"begin_shape_index":0},
+              {"instruction":"Continuez tout droit.","length":0.8,"begin_shape_index":2},
+              {"instruction":"Vous êtes arrivé.","length":0.7,"begin_shape_index":4}
+            ]}
+        ]}}
+      ''') as Map<String, dynamic>;
+
+      final r = RouteResult.fromValhallaJson(j);
+
+      // Verify totals
+      expect(r.distanceKm, closeTo(2.5, 1e-9));
+      expect(r.duration, const Duration(seconds: 900));
+
+      // Verify shape from single leg (5 points)
+      expect(r.shape, hasLength(5));
+      expect(r.shape.first.$1, closeTo(46.52, 1e-6));
+      expect(r.shape.last.$1, closeTo(46.535, 1e-6));
+
+      // Verify maneuvers with globally consistent indices (no leg offset added)
+      expect(r.maneuvers, hasLength(3));
+
+      expect(r.maneuvers[0].instruction, 'Partez nord-est.');
+      expect(r.maneuvers[0].beginShapeIndex, 0);
+
+      expect(r.maneuvers[1].instruction, 'Continuez tout droit.');
+      expect(r.maneuvers[1].beginShapeIndex, 2);
+
+      expect(r.maneuvers[2].instruction, 'Vous êtes arrivé.');
+      expect(r.maneuvers[2].beginShapeIndex, 4);
+    });
+  });
+
+  group('RouteResult.fromValhallaJson with multi-break responses', () {
+    test('parses multi-break responses (not produced by MultiPointRouteRequest) '
+        'with correct global shape indices across legs', () {
+      // This tests the general multi-leg parsing machinery.
+      // MultiPointRouteRequest does not produce multi-leg responses because
+      // Valhalla only splits legs at explicit break boundaries.
+      final leg1Shape = encodePolyline6([(46.52, 6.63), (46.521, 6.631)]);
+      final leg2Shape = encodePolyline6([(46.521, 6.631), (46.53, 6.64)]);
+      final leg3Shape = encodePolyline6([(46.53, 6.64), (46.535, 6.645)]);
+
+      final j = jsonDecode('''
+      {"trip":{"summary":{"length":3.0,"time":2700},
+        "legs":[
+          {"shape":"$leg1Shape",
+            "maneuvers":[{"instruction":"Allez nord.","length":1.0,"begin_shape_index":0}]},
+          {"shape":"$leg2Shape",
+            "maneuvers":[{"instruction":"Tournez gauche.","length":1.0,"begin_shape_index":0}]},
+          {"shape":"$leg3Shape",
+            "maneuvers":[{"instruction":"Vous arrivez.","length":1.0,"begin_shape_index":0}]}
+        ]}}
+      ''') as Map<String, dynamic>;
+
+      final r = RouteResult.fromValhallaJson(j);
+
+      // Verify total distance and duration
+      expect(r.distanceKm, closeTo(3.0, 1e-9));
+      expect(r.duration, const Duration(seconds: 2700));
+
+      // Verify combined shape (3 legs = 6 points total due to overlaps)
+      expect(r.shape, hasLength(6));
+
+      // Verify maneuvers: 3 total, with correct global beginShapeIndex offsets
+      expect(r.maneuvers, hasLength(3));
+
+      // First maneuver from leg 1 should start at shape index 0
+      expect(r.maneuvers[0].instruction, 'Allez nord.');
+      expect(r.maneuvers[0].beginShapeIndex, 0);
+
+      // Second maneuver from leg 2 should start at shape index 2 (after leg 1's 2 points)
+      expect(r.maneuvers[1].instruction, 'Tournez gauche.');
+      expect(r.maneuvers[1].beginShapeIndex, 2);
+
+      // Third maneuver from leg 3 should start at shape index 4 (after legs 1-2's 4 points)
+      expect(r.maneuvers[2].instruction, 'Vous arrivez.');
+      expect(r.maneuvers[2].beginShapeIndex, 4);
+    });
+  });
 }

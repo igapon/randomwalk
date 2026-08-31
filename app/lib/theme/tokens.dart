@@ -55,6 +55,11 @@ class AppColors {
   /// on the map can't silently drift from these tokens.
   static const routeLineCasingHex = '#1C2B25';
   static const routeLineHex = '#F5B800';
+
+  /// Hex form of [hydro], for the loop/duration candidate preview lines
+  /// (task 6) drawn the same MapLibre `LineOptions` way as the route line
+  /// above — the unselected candidates' color, at 40% opacity.
+  static const hydroHex = '#3D7A8C';
 }
 
 class AppRadii {

@@ -258,6 +258,51 @@ void main() {
     expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
   });
 
+  test(
+      'purge-by-count keeps the more complete sibling over the more recent '
+      'one — completeness before recency (item 10, churn scenario)',
+      () async {
+    final root = await Directory.systemTemp.createTemp('cov');
+    // MORE-COMPLETE is the older of the two siblings by mtime, but has every
+    // tile this dataset point needs (all 3 of knownPaths). LESS-COMPLETE is
+    // newer, but only has one — e.g. a version the app churned away from
+    // mid-download, or partially purged by an earlier LRU pass. With only
+    // recency to go on, LESS-COMPLETE would win the single remaining slot;
+    // completeness-first must instead keep MORE-COMPLETE, since a version
+    // with more of its tiles on disk is more useful offline than a merely
+    // newer, thinner one.
+    final moreComplete = Directory('${root.path}/MORE-COMPLETE');
+    for (final path in knownPaths) {
+      final f = File('${moreComplete.path}/$path');
+      await f.create(recursive: true);
+      await f.writeAsBytes(tileBytes);
+      await f.setLastModified(
+          DateTime.now().subtract(const Duration(minutes: 30)));
+    }
+    final lessComplete = Directory('${root.path}/LESS-COMPLETE');
+    final onlyTile = File('${lessComplete.path}/${knownPaths.first}');
+    await onlyTile.create(recursive: true);
+    await onlyTile.writeAsBytes(tileBytes);
+    await onlyTile.setLastModified(
+        DateTime.now().subtract(const Duration(minutes: 5)));
+
+    final c = MockClient((req) async {
+      if (req.url.path.endsWith('manifest.json')) {
+        final m = manifestFor(knownPaths)..['dataset_version'] = 'NEW-VERSION';
+        return http.Response(jsonEncode(m), 200);
+      }
+      return http.Response('not found', 404); // every tile fails this run
+    });
+    final repo = CoverageRepository(root: root, client: c);
+
+    await repo.ensureCoverage(lat, lon);
+
+    expect(moreComplete.existsSync(), isTrue,
+        reason: 'more complete despite being older');
+    expect(lessComplete.existsSync(), isFalse,
+        reason: 'newer but thinner — reclaimed in favour of completeness');
+  });
+
   group('valhalla_version guard', () {
     Map<String, dynamic> badVersionManifest() =>
         manifestFor(knownPaths)..['valhalla_version'] = '4.0.0';

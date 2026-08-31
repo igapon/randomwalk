@@ -49,6 +49,48 @@ class ValhallaChannel(private val context: Context) {
     private val configFileName = "randomwalk_valhalla_config_${System.identityHashCode(this)}.json"
 
     fun register(messenger: BinaryMessenger) {
+        // Item 2: [dispose] deletes this instance's own config file, but that
+        // only runs on an orderly engine teardown. A low-memory kill (LMK) —
+        // the same real-world scenario [RandomwalkTaskLifecycleListener]'s
+        // own doc comment already accepts as a residual for a wedged
+        // isolate — takes the whole process, `dispose()` included, so the
+        // file from whatever `init()` call last ran on that instance is
+        // simply left behind in [context.filesDir] forever; each restart
+        // (or foreground-service reattach) mints a fresh, differently-named
+        // one (see [configFileName]) without ever cleaning up the last
+        // process's. Swept here, at attach — [register] runs once per fresh
+        // [ValhallaChannel]/engine, before this instance's own [init] has
+        // written anything — rather than relying on a future [dispose] that
+        // an LMK kill already proved unreliable.
+        //
+        // Deleting a file that happens to still belong to another
+        // concurrently-live instance (the UI engine and the background
+        // tracking engine can both be attached at once — see the class doc
+        // comment) is safe for an instance whose engine is already *built*,
+        // not just swept-under-the-rug: `Valhalla`'s constructor reads the
+        // file once, synchronously, before returning (see the class doc
+        // comment's account of the real AAR API), so a live actor has nothing
+        // left to reread from it. The only way it matters again is a *later*
+        // `init()` on that same instance, and `File.writeText` recreates the
+        // file unconditionally either way.
+        //
+        // One window is genuinely racy, and is accepted rather than closed:
+        // the two statements inside another instance's `init` —
+        // `configFile.writeText(configJson)` then `Valhalla(path)` — are not
+        // atomic, and a sweep landing between them deletes a config that
+        // instance is about to open. The engine's own worker thread then
+        // fails to construct, `init` answers `VALHALLA <no such file>` to
+        // Dart, and (per that block's build-into-a-local discipline) `actor`
+        // is left cleanly null rather than pointing at anything broken; Dart
+        // sees a routing call fail and can re-`init`. Hitting it requires two
+        // engines attaching and initialising within the same few
+        // milliseconds — plausible only around
+        // `ForegroundService.createForegroundTask` — and the alternative
+        // (a cross-instance lock, or naming files by a registry the process
+        // has to keep in sync across an LMK kill) buys a rarer failure than
+        // the orphaned-file leak this sweep exists to stop. Stated here so
+        // the next reader does not have to rediscover it.
+        sweepOrphanedConfigFiles()
         val methodChannel = MethodChannel(messenger, "randomwalk/valhalla")
         channel = methodChannel
         methodChannel.setMethodCallHandler { call, result ->
@@ -104,6 +146,26 @@ class ValhallaChannel(private val context: Context) {
                 }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    /**
+     * Deletes every `randomwalk_valhalla_config_*.json` file already sitting in
+     * [context.filesDir] — leftovers from a previous process's [ValhallaChannel]
+     * instance(s) whose own [dispose] never ran (see [register]'s call site doc
+     * comment for why that happens). Best-effort: a filesystem hiccup here must
+     * not stop this instance from attaching.
+     */
+    private fun sweepOrphanedConfigFiles() {
+        try {
+            context.filesDir
+                ?.listFiles { file ->
+                    file.name.startsWith("randomwalk_valhalla_config_") &&
+                        file.name.endsWith(".json")
+                }
+                ?.forEach { it.delete() }
+        } catch (_: Exception) {
+            // Best-effort disk hygiene; nothing here is worth failing attach over.
         }
     }
 

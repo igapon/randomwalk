@@ -1,9 +1,15 @@
 package fr.lmqc.randomwalk
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 import java.util.Locale
@@ -54,12 +60,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * hypothetical), and a walker who enables "Guidage vocal" once is not well served by a
  * permanent "unavailable" verdict from whatever the engine happened to be doing the first
  * time it was asked. A later `init` while `FAILED` retries — a fresh `TextToSpeech`, not the
- * broken one — up to [maxInitAttempts] times, after which it settles into a genuinely
- * permanent `FAILED` (a device truly missing a TTS engine must not retry forever). This is
- * deliberately narrower than retrying a *successful* bind that merely lacks French voice
- * data ([State.READY] with `available == false`): the engine itself came up fine in that
- * case, and nothing about asking again would change the answer short of the user installing
- * a language pack in between — out of scope here, same as it was in fix round 2.
+ * broken one — up to [maxInitAttempts] times within [failureWindowMs] of the first failure in
+ * that run; once that budget is spent *and* the window has not yet elapsed, `init` stops
+ * retrying and just answers unavailable. Task-7 item 1/carry-over item 13: the budget is
+ * windowed in time, not permanent for the whole attachment — [failureWindowMs] after the
+ * first failure of a run, the window (and the count with it) resets, so a device that had a
+ * bad cold-start ten minutes ago gets a fresh budget rather than being stuck answering
+ * unavailable for the rest of the process's life purely because it used up 3 attempts once,
+ * long ago. This is deliberately narrower than retrying a *successful* bind that merely lacks
+ * French voice data ([State.READY] with `available == false`): the engine itself came up fine
+ * in that case, and nothing about asking again would change the answer short of the user
+ * installing a language pack in between — out of scope here, same as it was in fix round 2.
  */
 class TtsChannel(private val context: Context) {
     private enum class State { NONE, PENDING, READY, FAILED }
@@ -67,10 +78,27 @@ class TtsChannel(private val context: Context) {
     /** See the class doc comment's note on [State.FAILED] not being permanent. */
     private val maxInitAttempts = 3
 
+    /**
+     * How long the [failedAttempts] budget stays exhausted for before resetting — see the
+     * class doc comment's note on [State.FAILED]/item 1. Measured from [SystemClock]'s boot
+     * clock (via [windowStartElapsedMs]), not wall-clock time: immune to the user (or the OS,
+     * around a timezone/DST change) moving the clock, which a `System.currentTimeMillis()`
+     * window would not be.
+     */
+    private val failureWindowMs = 10 * 60 * 1000L
+
     private var tts: TextToSpeech? = null
     private var state = State.NONE
     private var available = false
     private var failedAttempts = 0
+
+    /**
+     * [SystemClock.elapsedRealtime] at the *first* failure of the current run — `0L` when no
+     * failure is currently being counted (no failures yet, or the last reset already cleared
+     * it). See [failureWindowMs].
+     */
+    private var windowStartElapsedMs = 0L
+
     private val pendingInitResults = mutableListOf<MethodChannel.Result>()
 
     /**
@@ -86,6 +114,55 @@ class TtsChannel(private val context: Context) {
     private var channel: MethodChannel? = null
     private val nextUtteranceId = AtomicInteger(0)
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Item 4: the [AudioAttributes] a spoken turn-by-turn instruction is — navigation
+     * guidance, not media/notification/alarm — so the system (and any other app currently
+     * playing audio) treats it accordingly: ducked-under by music apps that respect audio
+     * focus, not silently mixed as if it were a notification chime. Applied once, right after
+     * the engine successfully binds (see [onEngineInitialized]), the same place
+     * [applyFrenchLocale] runs — `TextToSpeech.setAudioAttributes` is an engine-level setting
+     * that applies to every synthesis request after it, not a per-utterance one.
+     */
+    private val ttsAudioAttributes: AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+    private val audioManager: AudioManager? =
+        context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+
+    /**
+     * The `AudioFocusRequest` currently held, API 26+ only (see [requestFocus]/[abandonFocus] —
+     * the API < 26 path uses the legacy `requestAudioFocus(listener, stream, gain)` instead,
+     * which needs no request object). Rebuilt fresh in every [requestFocus] call, since
+     * `AudioFocusRequest` is immutable; tracked here only so [abandonFocus] can hand the exact
+     * same instance back to `abandonAudioFocusRequest`, which that API requires — unlike the
+     * legacy `abandonAudioFocus(listener)`, which only needs the listener.
+     */
+    private var focusRequest: AudioFocusRequest? = null
+
+    /**
+     * One shared, do-nothing listener for every focus request, on both the modern and legacy
+     * (API < 26) audio-focus APIs. A real callback (pausing/resuming *our own* playback on
+     * `AUDIOFOCUS_LOSS`) would matter for a media player; it does not for one-shot navigation
+     * cues that already play-and-forget via [UtteranceProgressListener] — there is nothing
+     * ongoing here for a focus-loss callback to meaningfully pause. Required by both focus
+     * APIs regardless: `requestAudioFocus` needs a non-null listener to hand a loss
+     * notification to, even when — as here — that notification is deliberately unused.
+     */
+    private val legacyFocusListener = AudioManager.OnAudioFocusChangeListener { }
+
+    /**
+     * The utterance id [speak] most recently enqueued, so the [UtteranceProgressListener]
+     * (registered once in [onEngineInitialized]) knows whether a completion callback is for
+     * the *current* utterance — and safe to [abandonFocus] on — or a stale one for an
+     * utterance a newer [speak] call already superseded via `QUEUE_FLUSH`. Without this guard,
+     * a late `onStop` for an interrupted utterance could abandon focus out from under the
+     * newer one that replaced it (see [speak]'s doc comment).
+     */
+    private var activeUtteranceId: String? = null
 
     /**
      * How long [startEngine] waits for `OnInitListener` before giving up on its own. A
@@ -130,8 +207,10 @@ class TtsChannel(private val context: Context) {
      * successfully ([State.READY]); queues [result] alongside any other caller waiting on
      * the *same* still-starting engine ([State.PENDING]); starts a fresh engine (queuing
      * [result] the same as [State.NONE]) if the last one [State.FAILED] and there is still
-     * retry budget left ([failedAttempts] `< `[maxInitAttempts]); or, once that budget is
-     * spent, answers `false` without trying again — a device genuinely missing a TTS engine
+     * retry budget left ([failedAttempts] `< `[maxInitAttempts]) *or* [failureWindowMs] has
+     * elapsed since the first failure of the exhausted run (item 1: the budget resets rather
+     * than staying spent forever); or, once that budget is spent and the window has not yet
+     * elapsed, answers `false` without trying again — a device genuinely missing a TTS engine
      * must not retry forever.
      */
     private fun init(result: MethodChannel.Result) {
@@ -139,6 +218,10 @@ class TtsChannel(private val context: Context) {
             State.READY -> result.success(available)
             State.PENDING -> pendingInitResults.add(result)
             State.FAILED -> {
+                if (windowExpired()) {
+                    failedAttempts = 0
+                    windowStartElapsedMs = 0L
+                }
                 if (failedAttempts >= maxInitAttempts) {
                     result.success(available)
                 } else {
@@ -147,6 +230,18 @@ class TtsChannel(private val context: Context) {
             }
             State.NONE -> startEngine(result)
         }
+    }
+
+    /**
+     * Whether the current failure run's [failureWindowMs] window has elapsed — true both when
+     * there is no window currently open ([windowStartElapsedMs] `== 0L`, defensive: [State.FAILED]
+     * cannot actually be reached without at least one failure having opened one) and when the
+     * budget was exhausted long enough ago to earn a fresh one. See [init]'s [State.FAILED]
+     * branch, the only caller.
+     */
+    private fun windowExpired(): Boolean {
+        val start = windowStartElapsedMs
+        return start == 0L || SystemClock.elapsedRealtime() - start >= failureWindowMs
     }
 
     /**
@@ -188,11 +283,34 @@ class TtsChannel(private val context: Context) {
 
         val engine = tts
         val succeeded = status == TextToSpeech.SUCCESS && engine != null
+        if (succeeded) {
+            // Item 4: applied once here, right as the engine comes up — see
+            // [ttsAudioAttributes]'s doc comment for why this is engine-level, not
+            // per-utterance.
+            engine!!.setAudioAttributes(ttsAudioAttributes)
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) = onUtteranceEnded(utteranceId)
+                override fun onStop(utteranceId: String?, interrupted: Boolean) =
+                    onUtteranceEnded(utteranceId)
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) = onUtteranceEnded(utteranceId)
+                override fun onError(utteranceId: String?, errorCode: Int) =
+                    onUtteranceEnded(utteranceId)
+            })
+        }
         available = if (succeeded) applyFrenchLocale(engine!!) else false
         state = if (succeeded) {
             failedAttempts = 0
+            windowStartElapsedMs = 0L
             State.READY
         } else {
+            // The window opens on the first failure of a run; a later failure within
+            // the same still-open window does not push it back out (see
+            // [failureWindowMs]'s doc comment) — it counts against the same budget,
+            // it does not start a new one.
+            if (failedAttempts == 0) windowStartElapsedMs = SystemClock.elapsedRealtime()
             failedAttempts++
             State.FAILED
         }
@@ -213,14 +331,96 @@ class TtsChannel(private val context: Context) {
             availability != TextToSpeech.LANG_NOT_SUPPORTED
     }
 
-    /** A no-op if `init` never ran, or answered unavailable — `tts` is null either way. */
+    /**
+     * A no-op if `init` never ran, or answered unavailable — `tts` is null either way.
+     *
+     * Item 4: requests transient, ducking-friendly audio focus before enqueueing the
+     * utterance — `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, matching [ttsAudioAttributes]'
+     * navigation-guidance intent: briefly interrupt/duck whatever else is playing (podcast,
+     * music) for one spoken instruction, not seize focus outright the way a media app
+     * starting playback would. [QUEUE_FLUSH] means at most one utterance is ever actually
+     * in flight, so [activeUtteranceId] tracks that single utterance's id — set *before*
+     * `speak()` is called, so a synchronous/near-immediate completion callback (short
+     * utterances on a fast engine are not hypothetical) can never observe it still null.
+     * Focus is released once that utterance's own progress listener callback confirms it is
+     * done — see [onUtteranceEnded] — not eagerly here, so a still-playing instruction is not
+     * cut loose to un-duck mid-sentence.
+     *
+     * Fix round 1, item 2: `engine.speak(...)` itself can throw on some OEM TTS stacks
+     * (a real-world quirk, not hypothetical — the same category of "engine misbehaves in a
+     * way the platform API does not model" this class already works around elsewhere, e.g.
+     * [initTimeoutMs]). Without a catch here, that throw would propagate out of the
+     * `randomwalk/tts` method-channel handler having already requested focus but with no
+     * utterance ever going on to call [onUtteranceEnded] — the focus grant would then leak
+     * until the next [shutdown]. Abandon it immediately on that path instead.
+     *
+     * Final review item 7: the *documented* failure mode is not a throw at all —
+     * `TextToSpeech.speak` returns `ERROR` (rather than `SUCCESS`) when the engine declines
+     * the request, and no `UtteranceProgressListener` callback follows a request that was
+     * never enqueued. That is the same leak as the throw, so it gets the same treatment,
+     * in the same block: a non-`SUCCESS` return code releases focus immediately instead of
+     * ducking the user's music until the next [speak] or [shutdown] happens to come along.
+     */
     private fun speak(text: String) {
-        tts?.speak(
-            text,
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "randomwalk-${nextUtteranceId.incrementAndGet()}",
-        )
+        val engine = tts ?: return
+        val utteranceId = "randomwalk-${nextUtteranceId.incrementAndGet()}"
+        activeUtteranceId = utteranceId
+        requestFocus()
+        try {
+            val queued = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+            if (queued != TextToSpeech.SUCCESS) {
+                activeUtteranceId = null
+                abandonFocus()
+            }
+        } catch (_: Exception) {
+            activeUtteranceId = null
+            abandonFocus()
+        }
+    }
+
+    /**
+     * Called from [UtteranceProgressListener]'s callbacks (which do not run on a documented
+     * thread) via [mainHandler] to keep every read/write of [activeUtteranceId]/[focusRequest]
+     * on one thread. Only actually abandons focus when [utteranceId] is still the one [speak]
+     * most recently started — an `onStop` for an utterance a newer [speak] call already
+     * interrupted via `QUEUE_FLUSH` must not tear down the *new* utterance's still-held focus.
+     */
+    private fun onUtteranceEnded(utteranceId: String?) {
+        mainHandler.post {
+            if (utteranceId == null || utteranceId != activeUtteranceId) return@post
+            activeUtteranceId = null
+            abandonFocus()
+        }
+    }
+
+    private fun requestFocus() {
+        val manager = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(ttsAudioAttributes)
+                .setOnAudioFocusChangeListener(legacyFocusListener)
+                .build()
+            focusRequest = request
+            manager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.requestAudioFocus(
+                legacyFocusListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK,
+            )
+        }
+    }
+
+    private fun abandonFocus() {
+        val manager = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            focusRequest?.let { manager.abandonAudioFocusRequest(it) }
+            focusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            manager.abandonAudioFocus(legacyFocusListener)
+        }
     }
 
     private fun shutdown() {
@@ -231,12 +431,21 @@ class TtsChannel(private val context: Context) {
         tts = null
         state = State.NONE
         available = false
+        // A trip ending (or the engine tearing down) mid-utterance must not leave focus held
+        // forever — [tts]?.stop() above does not itself fire the progress listener, so this is
+        // the only remaining path back to [abandonFocus] for that case.
+        activeUtteranceId = null
+        abandonFocus()
         // A full, deliberate reset (as opposed to a same-state retry after State.FAILED)
         // earns a fresh retry budget too — the alternative, leaving a spent budget in place
         // across an explicit shutdown, would make [maxInitAttempts] silently unenforceable
         // (a later init() lands in the State.NONE branch, which does not consult it at all)
-        // rather than actually resetting anything.
+        // rather than actually resetting anything. Same reasoning extends the window reset
+        // to [windowStartElapsedMs] — item 13: shutdown() is a deliberate teardown, not a
+        // transient failure, and must still reset fully even though [failureWindowMs] now
+        // also resets it on its own after enough time passes.
         failedAttempts = 0
+        windowStartElapsedMs = 0L
         // Invalidates any OnInitListener callback still in flight for the engine just torn
         // down (see [initGeneration]'s doc comment).
         initGeneration++

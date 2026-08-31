@@ -52,9 +52,11 @@ class NavUpdate {
 /// Progress never regresses by more than 2 segments per update (absorbing
 /// projection wobble while resisting real backward snaps on self-crossing
 /// routes), a single wildly-off fix (cross-track > 200 m) is reported but
-/// frozen rather than applied, off-route/arrival state is latched sensibly,
-/// and an ETA is derived from an EMA of recent speed once enough samples
-/// exist. `alongKm` itself stays non-monotonic by design (it can wobble
+/// frozen rather than applied, off-route/arrival state is latched sensibly
+/// (arrival additionally requires real progress along the route — see
+/// [_minProgressForArrivalKm], without which a closed loop arrives at its own
+/// departure), and an ETA is derived from an EMA of recent speed once enough
+/// samples exist. `alongKm` itself stays non-monotonic by design (it can wobble
 /// backward within that 2-segment tolerance); only the *published*
 /// `maneuverIndex` (and the instruction/distance derived from it) is floored
 /// so a brief wobble right after passing a maneuver never un-announces it.
@@ -98,6 +100,31 @@ class RouteFollower {
     ];
     _lastManeuverIndex = _maneuverIndexFor(0);
     _publishedManeuverIndex = _lastManeuverIndex;
+  }
+
+  /// How far along the route the walker must have got before arrival is
+  /// allowed to latch at all (final review item 5).
+  ///
+  /// The bug this closes: arrival used to be "the last maneuver is active
+  /// *and* we are within [arrivalRadiusM] of the final shape point", and the
+  /// first half of that is true from the very first fix whenever the route
+  /// has no maneuvers, or its last maneuver begins at shape index 0 — while
+  /// the second half is *always* true at the departure of a **closed loop**,
+  /// whose end point is its start. A loop therefore announced « Arrivé ! »
+  /// before the walker had taken a step, and the trip was over. Relying on
+  /// the maneuver index to rule that out was only ever a coincidence of the
+  /// A→B routes Valhalla happens to return.
+  ///
+  /// The floor is `max(arrivalRadiusM, 2 % of the route)` — an absolute
+  /// margin so GPS noise around a short route's start cannot cross it, and a
+  /// relative one so a long route is not declared finished 25 m in — but
+  /// never more than *half* the route, so a route shorter than the arrival
+  /// radius itself (degenerate, but constructible) stays arrivable instead of
+  /// becoming a trip that can never end.
+  double get _minProgressForArrivalKm {
+    final total = _geometry.totalKm;
+    final floor = math.max(arrivalRadiusM / 1000, total * 0.02);
+    return math.min(floor, total / 2);
   }
 
   /// First maneuver whose position is strictly ahead of [alongKm]; if none
@@ -167,7 +194,10 @@ class RouteFollower {
 
     final lastPoint = route.shape.last;
     final distanceToEndM = metersBetween(lat, lon, lastPoint.$1, lastPoint.$2);
-    if (!_arrived && isLastManeuver && distanceToEndM < arrivalRadiusM) {
+    if (!_arrived &&
+        isLastManeuver &&
+        distanceToEndM < arrivalRadiusM &&
+        _lastAlongKm > _minProgressForArrivalKm) {
       _arrived = true;
     }
 

@@ -185,6 +185,77 @@ void main() {
       final u2 = follower.update(a.$1, a.$2, t);
       expect(u2.arrived, isTrue);
     });
+
+    group('arrival requires actual progress (final review item 5)', () {
+      test('a closed loop with no maneuvers does not arrive at its departure',
+          () {
+        // The regression: `isLastManeuver` is *true* from the first fix for a
+        // route with no maneuvers at all (and for one whose last maneuver
+        // begins at index 0), and a closed loop's start is by definition
+        // within the arrival radius of its end. The walker's very first fix
+        // therefore latched "Arrivé !" before they had taken a step, killing
+        // the trip — the same coincidence a replan onto a 2-point route to
+        // the loop's own start used to produce (see NavigationRuntime.isLoop).
+        final a = (46.5200, 6.6300);
+        final shape = [
+          a,
+          offsetMeters(a, 800, 0),
+          offsetMeters(a, 800, 800),
+          offsetMeters(a, 0, 800),
+          a, // closes on the departure
+        ];
+        final route = syntheticRoute(shape, const []);
+        final follower = RouteFollower(route);
+        var t = DateTime(2026, 1, 1);
+
+        final u0 = follower.update(a.$1, a.$2, t);
+        expect(u0.arrived, isFalse,
+            reason: 'standing at the start of a loop is not arriving');
+
+        // A couple of metres in — still nowhere near having walked the loop.
+        t = t.add(const Duration(seconds: 2));
+        final crawl = offsetMeters(a, 3, 0);
+        expect(follower.update(crawl.$1, crawl.$2, t).arrived, isFalse);
+
+        // All the way round, back to the departure: now it really is arrival.
+        t = t.add(const Duration(minutes: 30));
+        final home = offsetMeters(a, 2, 2);
+        expect(follower.update(home.$1, home.$2, t).arrived, isTrue);
+      });
+
+      test('a single-maneuver A→B route still arrives normally', () {
+        // The guard must not cost an ordinary route its arrival: the progress
+        // floor is a fraction of the route, so any route actually walked to
+        // its end clears it.
+        final a = (46.5200, 6.6300);
+        final shape = [a, offsetMeters(a, 0, 400)];
+        final route = syntheticRoute(shape, [(0, 'Départ'), (1, 'Arrivée')]);
+        final follower = RouteFollower(route);
+        var t = DateTime(2026, 1, 1);
+
+        expect(follower.update(a.$1, a.$2, t).arrived, isFalse);
+        t = t.add(const Duration(minutes: 5));
+        final end = offsetMeters(a, 0, 400);
+        expect(follower.update(end.$1, end.$2, t).arrived, isTrue);
+      });
+
+      test('a degenerate route shorter than the arrival radius still arrives',
+          () {
+        // The floor is the *smaller* of the two bounds by construction, so a
+        // route too short for the absolute one cannot become unarrivable —
+        // it just needs to be walked (nearly) end to end.
+        final a = (46.5200, 6.6300);
+        final shape = [a, offsetMeters(a, 0, 12)];
+        final route = syntheticRoute(shape, [(0, 'Départ'), (1, 'Arrivée')]);
+        final follower = RouteFollower(route);
+        var t = DateTime(2026, 1, 1);
+
+        expect(follower.update(a.$1, a.$2, t).arrived, isFalse);
+        t = t.add(const Duration(seconds: 20));
+        final end = offsetMeters(a, 0, 12);
+        expect(follower.update(end.$1, end.$2, t).arrived, isTrue);
+      });
+    });
   });
 
   group('published maneuverIndex is monotonic despite GPS wobble', () {

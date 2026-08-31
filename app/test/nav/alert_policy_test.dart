@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/nav/alert_policy.dart';
+import 'package:randomwalk/nav/guidance_text.dart';
 import 'package:randomwalk/nav/route_follower.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
@@ -236,6 +237,32 @@ void main() {
       expect(alertText(update(offRoute: true)), "Écart d'itinéraire — recalcul");
       expect(alertText(update(offRoute: false, instruction: 'Tournez à droite')),
           'Tournez à droite');
+    });
+  });
+
+  group('alertText — isLoop (final review item 1)', () {
+    test('an off-route loop is asked to rejoin, never promised a recalcul', () {
+      // A loop is never recalculated (see NavigationRuntime.isLoop), so the
+      // « recalcul » phrasing would promise something that is not coming.
+      expect(alertText(update(offRoute: true), isLoop: true),
+          kNavRejoinLoopLabel);
+      expect(kNavRejoinLoopLabel, "Écart d'itinéraire — rejoignez la boucle");
+    });
+
+    test('arrival still outranks it', () {
+      expect(alertText(update(arrived: true, offRoute: true), isLoop: true),
+          'Arrivé !');
+    });
+
+    test('an on-route loop reads its ordinary instruction', () {
+      expect(
+          alertText(update(offRoute: false, instruction: 'Tournez à droite'),
+              isLoop: true),
+          'Tournez à droite');
+    });
+
+    test('defaults to false — an A→B trip keeps the recalcul phrasing', () {
+      expect(alertText(update(offRoute: true)), "Écart d'itinéraire — recalcul");
     });
   });
 }

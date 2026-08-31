@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/loop/speed_history.dart';
 import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
@@ -6,8 +7,27 @@ import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
 import 'package:randomwalk/valhalla/models.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/trip_fakes.dart';
+
+/// A [SpeedHistoryStore] whose [recordSession] always throws — task-7 review
+/// carry-over item 11: `recordSession`'s own doc comment promises the trip
+/// controller it never breaks a trip, but nothing enforced that until
+/// `_finalise` actually wrapped the call. A platform-channel-style throw
+/// here (SharedPreferences, in production) must not leave `_finalise` stuck
+/// mid-state — banking and marking-finalised must already have run, and the
+/// trip must still reach idle with its snapshot cleared.
+class ThrowingSpeedHistoryStore implements SpeedHistoryStore {
+  @override
+  Future<void> recordSession(
+      RoutingProfile profile, double sessionKm, Duration elapsed) async {
+    throw StateError('boom');
+  }
+
+  @override
+  Future<double> speedKmh(RoutingProfile profile) async => 4.5;
+}
 
 void main() {
   late FakeTripTracker tracker;
@@ -15,6 +35,7 @@ void main() {
   late FakeTotalDistanceStore totals;
   late FakeStepSensor sensor;
   late MemoryFinalisedTripMemory banked;
+  late FakeSpeedHistoryStore speedHistory;
   late TripPermissions permissions;
   late int permissionCalls;
   late DateTime now;
@@ -24,12 +45,14 @@ void main() {
     Future<RoutingProfile?> Function()? loadProfile,
     void Function(bool)? onCameraFollowChanged,
     Future<TrackingMode> Function()? readTrackingMode,
+    SpeedHistoryStore? speedHistoryOverride,
   }) =>
       TripController(
         tracker: tracker,
         routeStore: routes,
         totalStore: totals,
         finalisedTrips: banked,
+        speedHistory: speedHistoryOverride ?? speedHistory,
         ensurePermissions: () async {
           permissionCalls++;
           return permissions;
@@ -48,6 +71,7 @@ void main() {
     totals = FakeTotalDistanceStore();
     sensor = FakeStepSensor();
     banked = MemoryFinalisedTripMemory();
+    speedHistory = FakeSpeedHistoryStore();
     permissionCalls = 0;
     permissions = const TripPermissions(
         outcome: TripPermissionOutcome.ready,
@@ -575,6 +599,101 @@ void main() {
       expect(await trip.stopTrip(), 0);
       expect(trip.state, TripState.idle);
       expect(tracker.stops, 0);
+    });
+  });
+
+  group('speed history', () {
+    test('a plausible stopped trip records its session speed', () async {
+      final trip = build();
+      await trip.startTrip();
+      // recordingSnapshot()'s startedAt (9:30) replaces the seed's on adopt,
+      // so against `now` (10:00) this is a 30-minute, 2.4 km walk.
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      await trip.stopTrip();
+
+      expect(speedHistory.calls, [
+        (RoutingProfile.walk, 2.4, const Duration(minutes: 30)),
+      ]);
+    });
+
+    test('a bike trip records against the bike history, not the walk one',
+        () async {
+      final trip = build();
+      await trip.startTrip(profile: RoutingProfile.bike);
+      tracker.emit(TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 8.0,
+        steps: 0,
+        startedAt: DateTime.utc(2026, 8, 30, 9, 30, 0),
+        updatedAt: DateTime.utc(2026, 8, 30, 9, 58, 0),
+        profile: RoutingProfile.bike,
+        routeBound: false,
+      ));
+
+      await trip.stopTrip();
+
+      expect(speedHistory.calls, [
+        (RoutingProfile.bike, 8.0, const Duration(minutes: 30)),
+      ]);
+    });
+
+    test('a session too short to be meaningful does not move the average',
+        () async {
+      // Real store, not the recording fake: the point is to observe that
+      // the session was actually ignored (the EMA is untouched), not just
+      // that some call landed — see writing-good-tests on asserting real
+      // behaviour rather than mock behaviour.
+      SharedPreferences.setMockInitialValues({});
+      final realHistory = SpeedHistoryStore();
+      final trip = build(speedHistoryOverride: realHistory);
+      // No emitted snapshot: the seed's distance (0 km) and elapsed (0
+      // minutes, `now` unchanged since start) are both under the ignore
+      // thresholds.
+      await trip.startTrip();
+
+      await trip.stopTrip();
+
+      expect(
+          await realHistory.speedKmh(RoutingProfile.walk), closeTo(4.5, 1e-9));
+    });
+
+    test('finishing an interrupted trip also records its session speed',
+        () async {
+      tracker
+        ..persisted = recordingSnapshot(distanceKm: 2.4)
+        ..running = false;
+      final trip = build();
+      await trip.restore();
+      expect(trip.state, TripState.interrupted);
+
+      await trip.finishInterrupted();
+
+      expect(speedHistory.calls, [
+        (RoutingProfile.walk, 2.4, const Duration(minutes: 30)),
+      ]);
+    });
+
+    test(
+        'a throwing SpeedHistoryStore does not stop the trip from finalising '
+        '(review carry-over item 11)', () async {
+      totals.total = 10;
+      final trip = build(speedHistoryOverride: ThrowingSpeedHistoryStore());
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      final distance = await trip.stopTrip();
+
+      expect(distance, closeTo(2.4, 1e-9));
+      // Banking and marking-finalised — both before the throwing call in
+      // `_finalise` — must still have run.
+      expect(totals.total, closeTo(12.4, 1e-9));
+      expect(await banked.wasFinalised(recordingSnapshot().startedAt), isTrue);
+      // And the trip must still reach idle with its snapshot cleared, not
+      // get stuck mid-`_finalise`.
+      expect(trip.state, TripState.idle);
+      expect(trip.snapshot, isNull);
+      expect(tracker.clears, greaterThan(0));
     });
   });
 

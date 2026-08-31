@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:randomwalk/loop/speed_history.dart';
 import 'package:randomwalk/session/recorder.dart';
 import 'package:randomwalk/tracking/nav_seed.dart';
 import 'package:randomwalk/tracking/steps.dart';
@@ -41,6 +42,26 @@ class MemoryFinalisedTripMemory implements FinalisedTripMemory {
   @override
   Future<void> markFinalised(DateTime startedAt) async =>
       banked.add(startedAt.toUtc());
+}
+
+/// Records every [recordSession] call this fake has seen — unconditionally,
+/// unlike the real store, which silently drops short or implausible
+/// sessions. That filtering is the real [SpeedHistoryStore]'s job and is
+/// covered by its own tests; a controller test that needs to see a session
+/// actually get ignored should use a real store (see trip_controller_test's
+/// "speed history" group) rather than duplicate the threshold policy here.
+class FakeSpeedHistoryStore implements SpeedHistoryStore {
+  final calls = <(RoutingProfile, double, Duration)>[];
+
+  @override
+  Future<void> recordSession(
+      RoutingProfile profile, double sessionKm, Duration elapsed) async {
+    calls.add((profile, sessionKm, elapsed));
+  }
+
+  @override
+  Future<double> speedKmh(RoutingProfile profile) async =>
+      profile == RoutingProfile.walk ? 4.5 : 16.0;
 }
 
 class MemoryRouteStore implements ActiveRouteStore {

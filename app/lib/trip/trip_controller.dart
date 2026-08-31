@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../loop/speed_history.dart';
 import '../nav/nav_fields.dart';
 import '../session/recorder.dart';
 import '../settings/alert_settings.dart';
@@ -80,6 +81,7 @@ class TripController extends ChangeNotifier {
   final Future<TripPermissions> Function() ensurePermissions;
   final SessionStepCounter Function(int seed) _createStepCounter;
   final FinalisedTripMemory _finalisedTrips;
+  final SpeedHistoryStore _speedHistory;
   final Future<TrackingMode> Function()? readTrackingMode;
   final DateTime Function() _clock;
   final Future<void> Function(RoutingProfile profile) _persistProfile;
@@ -127,6 +129,7 @@ class TripController extends ChangeNotifier {
     required TotalDistanceStore totalStore,
     required this.ensurePermissions,
     FinalisedTripMemory? finalisedTrips,
+    SpeedHistoryStore? speedHistory,
     SessionStepCounter Function(int seed)? createStepCounter,
     this.readTrackingMode,
     DateTime Function()? clock,
@@ -137,6 +140,7 @@ class TripController extends ChangeNotifier {
     AlertSettingsStore? alertSettings,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
+        _speedHistory = speedHistory ?? SpeedHistoryStore(),
         _createStepCounter = createStepCounter ??
             ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
         _clock = clock ?? DateTime.now,
@@ -289,6 +293,11 @@ class TripController extends ChangeNotifier {
       destLon: destination.$2,
       profile: _profile,
       tileDirPath: await _tileDirPath(),
+      // Final review item 1: without this the `shape.last` fallback above
+      // silently names a closed loop's own *start* as the replan target, and
+      // the first wrong turn reroutes the walker home. A loop is flagged
+      // instead, and the service skips replanning entirely.
+      isLoop: _activeRoute?.isLoop ?? false,
     );
   }
 
@@ -466,6 +475,35 @@ class TripController extends ChangeNotifier {
       await _finalisedTrips.markFinalised(snapshot.startedAt);
     }
     final totalKm = await _totals.addAndGetTotalKm(distanceKm);
+    // The session's own distance and duration, not the cumulative total
+    // above — the speed history is per-trip pace, not a running sum. Elapsed
+    // is measured from the snapshot's *original* `startedAt`: a resumed
+    // interrupted trip (see [resumeInterrupted]) keeps that timestamp across
+    // the gap it was interrupted for, so this counts wall-clock time
+    // including the pause rather than only time spent actively recording.
+    // That is a deliberate approximation — accepted here rather than
+    // plumbing "moving time" through the snapshot — because a resumed trip
+    // is the uncommon case and the EMA already damps any one session's
+    // effect on the estimate.
+    if (snapshot != null) {
+      // Best-effort only, and deliberately scoped to just this call: banking
+      // (`addAndGetTotalKm`, above) and marking-finalised have already run by
+      // the time we get here, and `tracker.clearSnapshot()` /
+      // `_state = TripState.idle` below still must run regardless of what
+      // happens to the speed average. `recordSession`'s own doc comment
+      // promises the caller it never breaks a trip; this is what actually
+      // enforces that promise against a real failure (e.g. SharedPreferences
+      // throwing on a platform channel hiccup) rather than merely asserting
+      // it never throws. Log-and-continue: losing one session's contribution
+      // to the learned pace is a rounding error next to leaving the trip
+      // stuck mid-finalise.
+      try {
+        await _speedHistory.recordSession(
+            snapshot.profile, distanceKm, _clock().difference(snapshot.startedAt));
+      } catch (e) {
+        debugPrint('TripController: recordSession failed, continuing: $e');
+      }
+    }
     await tracker.clearSnapshot();
 
     _state = TripState.idle;

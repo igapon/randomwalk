@@ -20,11 +20,27 @@ class ActiveRoute {
   final (double, double)? departure;
   final RoutingProfile profile;
 
+  /// True when [route] is a closed loop (M3 « Distance », or a « Durée »
+  /// plan with no pinned destination) rather than an A→B itinerary.
+  ///
+  /// Carried all the way into the tracking service (via `NavSeed`) because a
+  /// loop has *no destination*: nothing downstream can infer loop-ness from
+  /// the geometry cheaply, and the one place that tried — falling back to
+  /// `route.shape.last` as the replan target — picks the loop's own **start**
+  /// point, so the first off-route replan reroutes the walker straight home,
+  /// latches arrival and ends the trip (final review item 1). Loops are
+  /// therefore never replanned; see `NavigationRuntime.isLoop`.
+  ///
+  /// Defaults to false, and is omitted from [toJson] when false, so every
+  /// document written before loops existed loads unchanged.
+  final bool isLoop;
+
   const ActiveRoute({
     this.route,
     this.destination,
     this.departure,
     required this.profile,
+    this.isLoop = false,
   });
 
   /// Nothing has been planned. Persisting this is the same as persisting
@@ -36,15 +52,23 @@ class ActiveRoute {
     RouteResult? route,
     bool clearRoute = false,
     (double, double)? destination,
+    bool clearDestination = false,
     (double, double)? departure,
     bool clearDeparture = false,
     RoutingProfile? profile,
+    bool? isLoop,
   }) =>
       ActiveRoute(
         route: clearRoute ? null : (route ?? this.route),
-        destination: destination ?? this.destination,
+        destination:
+            clearDestination ? null : (destination ?? this.destination),
         departure: clearDeparture ? null : (departure ?? this.departure),
         profile: profile ?? this.profile,
+        // Loop-ness describes the *route*, so clearing the route clears it
+        // too: leaving a stale `true` behind would make the next A→B route
+        // computed into this plan (see `map_screen.dart`'s `_planRoute`)
+        // silently unreplannable.
+        isLoop: clearRoute ? false : (isLoop ?? this.isLoop),
       );
 
   Map<String, dynamic> toJson() => {
@@ -53,6 +77,9 @@ class ActiveRoute {
           'destination': [destination!.$1, destination!.$2],
         if (departure != null) 'departure': [departure!.$1, departure!.$2],
         'profile': profile.name,
+        // Omitted when false — same optional-field discipline as
+        // `TripSnapshot.toJson`, and what keeps pre-M3 documents loadable.
+        if (isLoop) 'isLoop': true,
       };
 
   factory ActiveRoute.fromJson(Map<String, dynamic> j) {
@@ -73,6 +100,7 @@ class ActiveRoute {
         (p) => p.name == j['profile'],
         orElse: () => RoutingProfile.walk,
       ),
+      isLoop: j['isLoop'] as bool? ?? false,
     );
   }
 }

@@ -1,0 +1,7 @@
+# Android upload-keystore credentials (see app/android/app/build.gradle.kts
+# and docs/release-signing.md) — never committed. A fresh checkout (and CI)
+# simply has none of these, which the release build's null-safe reads treat
+# as a clean fallback to debug signing rather than a build failure.
+key.properties
+*.jks
+*.keystore

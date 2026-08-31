@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import '../coverage/coverage_repository.dart';
+import '../loop/loop_planner.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
@@ -80,6 +82,73 @@ final routePlannerProvider = FutureProvider<RoutePlanner>((ref) async {
   final coverage = await ref.watch(coverageRepositoryProvider.future);
   final sink = ref.watch(progressSinkProvider);
   return RoutePlanner(
+      engine: ref.watch(routingEngineProvider),
+      ensureCoverage: (lat, lon) async {
+        final res = await coverage.ensureCoverage(lat, lon,
+            onProgress: sink.onProgress);
+        return (
+          datasetVersion: res.datasetVersion,
+          tileDirPath: res.tileDirPath,
+          failed: res.failed,
+          versionMismatch: res.versionMismatch,
+        );
+      });
+});
+
+/// Pure orchestration for loop/duration planning (task 6), the same
+/// coverage -> (re)init -> route shape [RoutePlanner] uses for a plain A->B
+/// plan — but coverage is only ever fetched *once* per [plan] call, up
+/// front, rather than once per [LoopPlanner]'s many router probes (up to
+/// `LoopPlanner.candidateCount * LoopPlanner.maxRouterCallsPerCandidate`):
+/// every probe for one request starts from the same point, so there is
+/// nothing a second `ensureCoverage` call for the same series would learn
+/// that the first one did not already establish.
+class LoopPlanOrchestrator {
+  final RoutingEngine engine;
+  final EnsureCoverage ensureCoverage;
+  String? _initializedVersion;
+
+  /// Same meaning as [RoutePlanner.lastCoverageFailed] — surfaced the same
+  /// way, for the same "couverture incomplète" banner.
+  int lastCoverageFailed = 0;
+  bool lastVersionMismatch = false;
+
+  LoopPlanOrchestrator({required this.engine, required this.ensureCoverage});
+
+  Future<LoopPlanResult> plan(LoopRequest request,
+      {math.Random Function(int seed)? rng}) async {
+    final (lat, lon) = request.start;
+    final cov = await ensureCoverage(lat, lon);
+    lastCoverageFailed = cov.failed;
+    lastVersionMismatch = cov.versionMismatch;
+    if (cov.datasetVersion != _initializedVersion) {
+      await engine.init(cov.tileDirPath);
+      _initializedVersion = cov.datasetVersion;
+    }
+
+    final planner = LoopPlanner(
+      rng: rng,
+      router: (locations) async {
+        try {
+          return await engine.routeMulti(
+              MultiPointRouteRequest(locations: locations, profile: request.profile));
+          // A geometry the engine cannot route (too far off-network, outside
+          // covered territory, etc.) is exactly what LoopRouter's contract
+          // calls "not routable" — a null candidate for the bisection to
+          // shrink away from, never a crash that would abort the whole plan.
+        } on RoutingException {
+          return null;
+        }
+      },
+    );
+    return planner.plan(request);
+  }
+}
+
+final loopPlannerProvider = FutureProvider<LoopPlanOrchestrator>((ref) async {
+  final coverage = await ref.watch(coverageRepositoryProvider.future);
+  final sink = ref.watch(progressSinkProvider);
+  return LoopPlanOrchestrator(
       engine: ref.watch(routingEngineProvider),
       ensureCoverage: (lat, lon) async {
         final res = await coverage.ensureCoverage(lat, lon,
