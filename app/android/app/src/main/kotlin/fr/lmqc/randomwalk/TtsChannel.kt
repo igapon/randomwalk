@@ -345,13 +345,26 @@ class TtsChannel(private val context: Context) {
      * Focus is released once that utterance's own progress listener callback confirms it is
      * done — see [onUtteranceEnded] — not eagerly here, so a still-playing instruction is not
      * cut loose to un-duck mid-sentence.
+     *
+     * Fix round 1, item 2: `engine.speak(...)` itself can throw on some OEM TTS stacks
+     * (a real-world quirk, not hypothetical — the same category of "engine misbehaves in a
+     * way the platform API does not model" this class already works around elsewhere, e.g.
+     * [initTimeoutMs]). Without a catch here, that throw would propagate out of the
+     * `randomwalk/tts` method-channel handler having already requested focus but with no
+     * utterance ever going on to call [onUtteranceEnded] — the focus grant would then leak
+     * until the next [shutdown]. Abandon it immediately on that path instead.
      */
     private fun speak(text: String) {
         val engine = tts ?: return
         val utteranceId = "randomwalk-${nextUtteranceId.incrementAndGet()}"
         activeUtteranceId = utteranceId
         requestFocus()
-        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        try {
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        } catch (_: Exception) {
+            activeUtteranceId = null
+            abandonFocus()
+        }
     }
 
     /**

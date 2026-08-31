@@ -19,8 +19,12 @@ const _kLoggedModules = ['mjolnir', 'loki', 'thor', 'odin', 'meili'];
 /// release silences every module's logging (`type: ""`, which Valhalla's
 /// `midgard::logging::Configure` treats as "no sink configured" — neither
 /// `std_out` nor `std_err` matches), debug leaves the template's own
-/// `std_out` alone. Verified end-to-end by the `integration` CI job, which
-/// actually constructs the native engine from this patched config.
+/// `std_out` alone. The `integration` CI job runs under `flutter test`,
+/// where `kReleaseMode` is always false — it constructs the real native
+/// engine from this patched config and so verifies the *pipeline* (a
+/// well-formed config reaches `Valhalla`'s constructor end to end), but
+/// never actually exercises the `release: true` branch; that branch is
+/// covered only by [quietenLoggingForRelease]'s own direct unit test.
 ///
 /// Kept as a standalone, synchronous, side-effect-free function (rather than
 /// inlined into [ChannelRoutingEngine.init]) specifically so it is testable
