@@ -30,10 +30,10 @@ void main() {
       expect(ratio, lessThan(0.05));
     });
 
-    test('perfect out-and-back (same points reversed) → ratio of 0.5', () {
+    test('perfect out-and-back (same points reversed) → high ratio', () {
       // Go north 1000m and back south 1000m.
       // With 2 equal segments on the same cell-pair, the 2nd is repeated,
-      // so ratio = 1 / (1 + 1) = 0.5.
+      // so ratio = repeatedLength / uniqueLength = 1 / 1 = 1.0.
       final north = destinationPoint(baseLat, baseLon, 0, 1000);
       final shape = [
         (baseLat, baseLon),
@@ -42,8 +42,8 @@ void main() {
       ];
 
       final ratio = repeatedSegmentRatio(shape);
-      // Only the return segment is counted as repeated.
-      expect(ratio, closeTo(0.5, 0.05));
+      // 50% of the path is repeated against the other 50% that's unique.
+      expect(ratio, closeTo(1.0, 0.05));
     });
 
     test('clean square loop (~400m sides) → low ratio', () {
@@ -60,23 +60,23 @@ void main() {
       expect(ratio, lessThan(0.1));
     });
 
-    test('loop with slight start/end overlap → small but nonzero ratio', () {
+    test('loop with slight start/end overlap → small ratio', () {
       // Build a loop, but at the end, do a retrace of the beginning.
       final p1 = (baseLat, baseLon);
       final p2 = destinationPoint(baseLat, baseLon, 0, 300); // North 300m
       final p3 = destinationPoint(p2.$1, p2.$2, 90, 300); // East 300m
       final p4 = destinationPoint(p3.$1, p3.$2, 180, 300); // South 300m
       final p5 = destinationPoint(p4.$1, p4.$2, 270, 300); // West 300m (back to p1)
-      // Now add a partial retrace of the first segment (300m out of ~1200m loop)
+      // Now add a retrace of the first segment (300m out of ~1200m loop)
       final p6 = destinationPoint(p1.$1, p1.$2, 0, 300);
 
       final shape = [p1, p2, p3, p4, p5, p6];
 
       final ratio = repeatedSegmentRatio(shape);
-      // The last segment (p5->p6) retraces (p1->p2) with a coarse enough grid,
-      // so expect a nonzero but small ratio (~25% at most, more likely less).
-      expect(ratio, greaterThanOrEqualTo(0.0));
-      expect(ratio, lessThan(0.25));
+      // The last segment (p5->p6) retraces (p1->p2).
+      // repeatedLength = 300, uniqueLength = 1200, ratio = 300/1200 = 0.25
+      expect(ratio, greaterThan(0.0));
+      expect(ratio, lessThan(0.3));
     });
 
     test('figure-eight (two overlapping loops) → medium-to-high ratio', () {
@@ -151,7 +151,7 @@ void main() {
       expect(ratio, lessThanOrEqualTo(1.0));
     });
 
-    test('out-and-back with multiple waypoints → ratio of 0.5', () {
+    test('out-and-back with multiple waypoints → high ratio', () {
       // Go north 1000m via waypoints, then return south via the same waypoints.
       // Break into: start, 500m north, 1000m north, 500m north, start.
       final p1 = (baseLat, baseLon);
@@ -164,8 +164,8 @@ void main() {
       final ratio = repeatedSegmentRatio(shape);
       // Segments 1 and 2 are not repeated (outbound path).
       // Segments 3 and 4 retrace segments 2 and 1 respectively.
-      // So ratio = 2 repeated / 4 total = 0.5
-      expect(ratio, closeTo(0.5, 0.05));
+      // repeatedLength = 2L, uniqueLength = 2L, ratio = 1.0
+      expect(ratio, closeTo(1.0, 0.05));
     });
   });
 }

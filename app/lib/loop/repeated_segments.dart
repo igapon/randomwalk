@@ -30,15 +30,17 @@ import 'package:randomwalk/nav/polyline_math.dart';
   return (code1 <= code2) ? (code1, code2) : (code2, code1);
 }
 
-/// Calculates the ratio of repeated segment distance to total distance.
+/// Calculates the ratio of repeated segment distance to unique segment distance.
 ///
 /// Quantizes each point in [shape] to a grid cell (using cell size [cellM]
 /// in meters). For each segment, creates an unordered pair key of its endpoint
-/// cells. Sums the length of all segments whose key was previously seen.
+/// cells. Sums the length of all segments whose key was previously seen
+/// (repeated length) and the length of segments seen for the first time (unique length).
 ///
-/// Returns the ratio: repeated length / total length. Returns 0.0 for
-/// empty shapes, single-point shapes, or shapes with no repeated segments.
-/// Protects against division by zero.
+/// Returns the ratio: repeated length / unique length, capped at 1.0.
+/// - Returns 0.0 for empty shapes, single-point shapes, or shapes with no repeated segments.
+/// - Returns 1.0 when all non-zero length is repeated (totalLength == repeatedLength > 0).
+/// - Returns 0.0 if total length is zero.
 double repeatedSegmentRatio(
   List<(double, double)> shape, {
   double cellM = 25,
@@ -80,8 +82,15 @@ double repeatedSegmentRatio(
     visitedPairs.add(pairKey);
   }
 
-  // Guard against division by zero.
+  // Guard: zero total length returns 0.0.
   if (totalLength == 0.0) return 0.0;
 
-  return repeatedLength / totalLength;
+  // Calculate unique length.
+  final uniqueLength = totalLength - repeatedLength;
+
+  // If all length is repeated (no unique segments), return 1.0.
+  if (uniqueLength == 0.0) return 1.0;
+
+  // Return the ratio, capped at 1.0.
+  return (repeatedLength / uniqueLength).clamp(0.0, 1.0);
 }
