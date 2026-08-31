@@ -70,10 +70,8 @@ class FakeTripTracker implements TripTracker {
   int attaches = 0;
   final _updates = StreamController<TripSnapshot>.broadcast();
   final _errors = StreamController<String?>.broadcast();
-  final _gpsSilent = StreamController<bool>.broadcast();
 
   void emitError(String message) => _errors.add(message);
-  void emitGpsSilent(bool silent) => _gpsSilent.add(silent);
 
   /// The service publishing progress: it always lands on disk, but only
   /// reaches the UI's stream while the UI is attached.
@@ -87,9 +85,6 @@ class FakeTripTracker implements TripTracker {
     attaches++;
     attached = true;
   }
-
-  @override
-  Stream<bool> get gpsSilent => _gpsSilent.stream;
 
   @override
   Stream<TripSnapshot> get updates => _updates.stream;
@@ -134,7 +129,6 @@ class FakeTripTracker implements TripTracker {
     attached = false;
     await _updates.close();
     await _errors.close();
-    await _gpsSilent.close();
   }
 }
 

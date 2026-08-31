@@ -117,6 +117,35 @@ void main() {
       expect(trip.distanceKm, closeTo(5.1, 1e-9));
     });
 
+    test('adopting an already-silent service shows the warning at once',
+        () async {
+      // The UI process died and came back mid-trip. The service went quiet
+      // while nothing was listening, so there is no transition left to
+      // observe — which is exactly the geolocator-in-isolate case the
+      // watchdog exists for, and the case a transition-only side channel
+      // could never report.
+      tracker
+        ..persisted = recordingSnapshot().copyWith(gpsSilent: true)
+        ..running = true;
+      final trip = build();
+      await trip.restore();
+
+      expect(trip.isRecording, isTrue);
+      expect(trip.gpsSilent, isTrue);
+    });
+
+    test('an interrupted trip is not reported as a silent GPS', () async {
+      // Nothing is recording, so there is nothing to warn about; the
+      // « Trajet interrompu » banner is the whole message.
+      tracker
+        ..persisted = recordingSnapshot().copyWith(gpsSilent: true)
+        ..running = false;
+      final trip = build();
+      await trip.restore();
+
+      expect(trip.gpsSilent, isFalse);
+    });
+
     test('an interrupted trip does not reattach to anything', () async {
       tracker
         ..persisted = recordingSnapshot()
@@ -196,11 +225,14 @@ void main() {
       expect(tracker.startedWith.single.routeBound, isFalse);
     });
 
-    test('double start is ignored', () async {
+    test('double start is ignored, and says why', () async {
       final trip = build();
       expect(await trip.startTrip(), isTrue);
       expect(await trip.startTrip(), isFalse);
       expect(tracker.startedWith, hasLength(1));
+      expect(trip.lastStartFailure, TripStartFailure.alreadyRecording);
+      expect(startFailureMessage(trip.lastStartFailure),
+          contains('déjà en cours'));
     });
 
     test('refused location blocks the trip and is reported', () async {
@@ -377,19 +409,32 @@ void main() {
       await trip.startTrip();
       expect(trip.gpsSilent, isFalse);
 
-      tracker.emitGpsSilent(true);
+      tracker.emit(recordingSnapshot().copyWith(gpsSilent: true));
       await pumpEventQueue();
       expect(trip.gpsSilent, isTrue);
 
-      tracker.emitGpsSilent(false);
+      tracker.emit(recordingSnapshot().copyWith(gpsSilent: false));
       await pumpEventQueue();
       expect(trip.gpsSilent, isFalse);
+    });
+
+    test('a silent GPS reaches a detached UI through the poll fallback',
+        () async {
+      final trip = build();
+      await trip.startTrip();
+      tracker.attached = false;
+
+      tracker.persisted = recordingSnapshot()
+          .copyWith(gpsSilent: true, updatedAt: DateTime.utc(2026, 8, 30, 10, 30));
+      await trip.tick();
+
+      expect(trip.gpsSilent, isTrue);
     });
 
     test('stopping a trip clears the silent-GPS warning', () async {
       final trip = build();
       await trip.startTrip();
-      tracker.emitGpsSilent(true);
+      tracker.emit(recordingSnapshot().copyWith(gpsSilent: true));
       await pumpEventQueue();
 
       await trip.stopTrip();
@@ -525,6 +570,17 @@ void main() {
       final seed = tracker.startedWith.single;
       expect(seed.distanceKm, closeTo(2.4, 1e-9));
       expect(seed.steps, 3100);
+    });
+
+    test('"Reprendre" does not inherit a silent-GPS warning from before',
+        () async {
+      tracker.persisted = recordingSnapshot().copyWith(gpsSilent: true);
+      final trip = build();
+      await trip.restore();
+      await trip.resumeInterrupted();
+
+      expect(trip.gpsSilent, isFalse);
+      expect(tracker.startedWith.single.gpsSilent, isFalse);
     });
 
     test('"Reprendre" keeps the original start time, so elapsed is continuous',

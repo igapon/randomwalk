@@ -35,6 +35,11 @@ enum TripStartFailure {
   locationDenied,
   openedSettings,
 
+  /// A trip is already recording. Reachable when both screens are mounted
+  /// (see the shell's IndexedStack) and one is tapped while the other has
+  /// not rebuilt yet.
+  alreadyRecording,
+
   /// A trip is sitting in [TripState.interrupted]. The « Trajet interrompu »
   /// banner is the only way out of that state, so the user is pointed at it.
   interruptedTripPending,
@@ -100,13 +105,11 @@ class TripController extends ChangeNotifier {
   TrackingMode _trackingMode = TrackingMode.background;
   TripStartFailure? _lastStartFailure;
   bool _stepsAvailable = true;
-  bool _gpsSilent = false;
   bool _starting = false;
   DateTime? _lastPollAt;
   SessionStepCounter? _steps;
   StreamSubscription<TripSnapshot>? _updates;
   StreamSubscription<String?>? _errors;
-  StreamSubscription<bool>? _gpsSilence;
 
   TripController({
     required this.tracker,
@@ -129,7 +132,6 @@ class TripController extends ChangeNotifier {
         _loadProfile = loadProfile ?? _defaultLoadProfile {
     _updates = tracker.updates.listen(_onTrackerSnapshot);
     _errors = tracker.errors.listen((message) => onSessionError?.call(message));
-    _gpsSilence = tracker.gpsSilent.listen(_onGpsSilent);
   }
 
   TripState get state => _state;
@@ -163,7 +165,13 @@ class TripController extends ChangeNotifier {
   /// The recorder has stopped hearing from the location stream — see
   /// [isGpsSilent]. Drives a discreet banner, because this is the one
   /// tracking failure with no other visible symptom.
-  bool get gpsSilent => _gpsSilent;
+  ///
+  /// Read straight off the snapshot: the service is the only party that can
+  /// tell a quiet stream from a stationary walker, and taking it from the
+  /// snapshot means a UI that adopts an already-silent service shows the
+  /// warning immediately instead of waiting for a transition that has
+  /// already happened.
+  bool get gpsSilent => isRecording && (_snapshot?.gpsSilent ?? false);
 
   static Future<void> _defaultPersistProfile(RoutingProfile profile) async {
     await (await SharedPreferences.getInstance())
@@ -230,7 +238,7 @@ class TripController extends ChangeNotifier {
     if (_state != TripState.idle) {
       _lastStartFailure = _state == TripState.interrupted
           ? TripStartFailure.interruptedTripPending
-          : null;
+          : TripStartFailure.alreadyRecording;
       notifyListeners();
       return false;
     }
@@ -255,8 +263,14 @@ class TripController extends ChangeNotifier {
   Future<bool> resumeInterrupted() async {
     final snapshot = _snapshot;
     if (_state != TripState.interrupted || snapshot == null) return false;
+    // gpsSilent deliberately cleared: it describes the *previous* session's
+    // stream, and the service re-derives it from the new one's first repeat
+    // event. Carrying it would flash the warning for the couple of seconds
+    // before that arrives.
     return _launch(snapshot.copyWith(
-        status: TripStatus.recording, updatedAt: _clock()));
+        status: TripStatus.recording,
+        updatedAt: _clock(),
+        gpsSilent: false));
   }
 
   /// « Terminer » on the interrupted-trip banner: banks what was recorded
@@ -299,7 +313,6 @@ class TripController extends ChangeNotifier {
       }
 
       _lastStartFailure = null;
-      _gpsSilent = false;
       _lastPollAt = null;
       _snapshot = seed;
       _state = TripState.recording;
@@ -360,7 +373,6 @@ class TripController extends ChangeNotifier {
 
     _state = TripState.idle;
     _snapshot = null;
-    _gpsSilent = false;
     // The planned route deliberately survives the trip: finishing a walk is
     // not a request to erase the itinerary from the map. The ✕ on the route
     // card is what clears it.
@@ -429,12 +441,6 @@ class TripController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _onGpsSilent(bool silent) {
-    if (_gpsSilent == silent || !isRecording) return;
-    _gpsSilent = silent;
-    notifyListeners();
-  }
-
   /// Persists the planned route. Called by the map screen on every planning
   /// change, which is what makes the itinerary survive a tab switch, a
   /// theme flip (which remounts the whole map) and a cold start.
@@ -488,7 +494,6 @@ class TripController extends ChangeNotifier {
   void dispose() {
     unawaited(_updates?.cancel() ?? Future.value());
     unawaited(_errors?.cancel() ?? Future.value());
-    unawaited(_gpsSilence?.cancel() ?? Future.value());
     unawaited(_steps?.stop() ?? Future.value());
     super.dispose();
   }

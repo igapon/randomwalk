@@ -56,12 +56,6 @@ abstract class TripTracker {
   /// and the user deserves to be told why.
   Stream<String?> get errors;
 
-  /// Whether the recorder has gone quiet: the stream reported no error but
-  /// has stopped delivering positions (see [isGpsSilent]). This is the
-  /// symptom of geolocator not working inside the service isolate, which is
-  /// otherwise completely silent — the trip simply never advances.
-  Stream<bool> get gpsSilent;
-
   /// Hands the tracker a step count sampled by the UI (the step sensor is
   /// read from the UI isolate — see [StepSensor]) so it lands in the
   /// persisted snapshot too.
@@ -83,7 +77,6 @@ const _kServiceId = 4211;
 const _kSnapshotPathKey = 'randomwalk_snapshot_path';
 const _kSeedKey = 'randomwalk_seed_snapshot';
 const _kGpsErrorKey = 'gpsError';
-const _kGpsSilentKey = 'gpsSilent';
 
 /// How long a recording trip may go without a single position before the UI
 /// is told the GPS has gone quiet. Long enough not to fire on a cold fix in
@@ -128,7 +121,6 @@ class ForegroundServiceTripTracker implements TripTracker {
       FileTripSnapshotStore(snapshotFile, tmpSuffix: '.ui.tmp');
   final _updates = StreamController<TripSnapshot>.broadcast();
   final _errors = StreamController<String?>.broadcast();
-  final _gpsSilent = StreamController<bool>.broadcast();
   bool _callbackAttached = false;
 
   ForegroundServiceTripTracker(this.snapshotFile);
@@ -143,9 +135,6 @@ class ForegroundServiceTripTracker implements TripTracker {
 
   @override
   Stream<String?> get errors => _errors.stream;
-
-  @override
-  Stream<bool> get gpsSilent => _gpsSilent.stream;
 
   @override
   Future<void> attach() async => _attachCallback();
@@ -206,7 +195,6 @@ class ForegroundServiceTripTracker implements TripTracker {
     }
     await _updates.close();
     await _errors.close();
-    await _gpsSilent.close();
   }
 
   void _attachCallback() {
@@ -222,12 +210,6 @@ class ForegroundServiceTripTracker implements TripTracker {
       if (message.containsKey(_kGpsErrorKey)) {
         if (!_errors.isClosed) {
           _errors.add(message[_kGpsErrorKey] as String?);
-        }
-        return;
-      }
-      if (message.containsKey(_kGpsSilentKey)) {
-        if (!_gpsSilent.isClosed) {
-          _gpsSilent.add(message[_kGpsSilentKey] as bool);
         }
         return;
       }
@@ -299,7 +281,6 @@ class TripTaskHandler extends TaskHandler {
   TripSnapshot? _seed;
   int _steps = 0;
   DateTime? _recordingSince;
-  bool _gpsSilent = false;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -347,9 +328,11 @@ class TripTaskHandler extends TaskHandler {
     final session = _session;
     if (session != null && !session.isRecording && !session.isStarting) {
       session.start();
+      // Restart the watchdog's clock with the session. Left at the original
+      // trip start it would measure a gap the new session was never given a
+      // chance to fill, and raise the warning on the very next event.
+      _recordingSince = timestamp;
     }
-
-    _reportGpsSilence(timestamp);
 
     final snapshot = _snapshotAt(timestamp);
     if (snapshot == null) return;
@@ -375,21 +358,14 @@ class TripTaskHandler extends TaskHandler {
     _session = null;
   }
 
-  /// Tells the UI when the location stream has gone quiet, and when it
-  /// comes back. Only on transitions: the UI does not need this repeated
-  /// every two seconds for as long as it lasts.
-  void _reportGpsSilence(DateTime now) {
+  bool _isGpsSilentAt(DateTime now) {
     final since = _recordingSince;
-    if (since == null) return;
-    final silent = isGpsSilent(
+    if (since == null) return false;
+    return isGpsSilent(
       now: now,
       lastFixAt: _session?.lastFixAt,
       recordingSince: since,
     );
-    if (silent == _gpsSilent) return;
-    _gpsSilent = silent;
-    FlutterForegroundTask.sendDataToMain(
-        jsonEncode({_kGpsSilentKey: silent}));
   }
 
   /// Folds a finished session's distance into the running total.
@@ -417,6 +393,7 @@ class TripTaskHandler extends TaskHandler {
       distanceKm: seed.distanceKm + recorded,
       steps: _steps,
       updatedAt: now,
+      gpsSilent: _isGpsSilentAt(now),
     );
   }
 }

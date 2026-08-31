@@ -52,6 +52,16 @@ class TripSnapshot {
   /// restored trips need it to put the camera back into follow mode.
   final bool routeBound;
 
+  /// Whether the recorder has stopped hearing from the location stream (see
+  /// `isGpsSilent`). Carried *in the snapshot* rather than announced on a
+  /// side channel, because it is a state and not an event: a UI that starts
+  /// mid-trip — or reattaches after its process died — has no transition
+  /// left to observe, and that is precisely the case the warning exists for.
+  /// Riding the snapshot means it reaches the UI by whichever route the
+  /// progress does, live or polled, with no extra IPC and no request/reply
+  /// race on attach.
+  final bool gpsSilent;
+
   const TripSnapshot({
     required this.status,
     required this.distanceKm,
@@ -60,6 +70,7 @@ class TripSnapshot {
     required this.updatedAt,
     required this.profile,
     required this.routeBound,
+    this.gpsSilent = false,
   });
 
   /// A trip that is about to start: zeroed, or — when resuming an
@@ -102,6 +113,7 @@ class TripSnapshot {
     double? distanceKm,
     int? steps,
     DateTime? updatedAt,
+    bool? gpsSilent,
   }) =>
       TripSnapshot(
         status: status ?? this.status,
@@ -111,6 +123,7 @@ class TripSnapshot {
         updatedAt: updatedAt ?? this.updatedAt,
         profile: profile,
         routeBound: routeBound,
+        gpsSilent: gpsSilent ?? this.gpsSilent,
       );
 
   Map<String, dynamic> toJson() => {
@@ -121,6 +134,7 @@ class TripSnapshot {
         'updatedAt': updatedAt.toUtc().toIso8601String(),
         'profile': profile.name,
         'routeBound': routeBound,
+        'gpsSilent': gpsSilent,
       };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
@@ -133,6 +147,7 @@ class TripSnapshot {
         profile: RoutingProfile.values.firstWhere((p) => p.name == j['profile'],
             orElse: () => RoutingProfile.walk),
         routeBound: j['routeBound'] as bool? ?? false,
+        gpsSilent: j['gpsSilent'] as bool? ?? false,
       );
 }
 

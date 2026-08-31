@@ -112,16 +112,19 @@ void main() {
   });
 
   testWidgets('a silent GPS raises a banner while recording', (tester) async {
+    TripSnapshot recording({bool gpsSilent = false}) => TripSnapshot(
+          status: TripStatus.recording,
+          distanceKm: 1.2,
+          steps: 1500,
+          startedAt: DateTime.utc(2026, 8, 30, 9, 30),
+          updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
+          profile: RoutingProfile.walk,
+          routeBound: false,
+          gpsSilent: gpsSilent,
+        );
+
     tracker
-      ..persisted = TripSnapshot(
-        status: TripStatus.recording,
-        distanceKm: 1.2,
-        steps: 1500,
-        startedAt: DateTime.utc(2026, 8, 30, 9, 30),
-        updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
-        profile: RoutingProfile.walk,
-        routeBound: false,
-      )
+      ..persisted = recording()
       ..running = true;
 
     final trip = await pumpShell(tester, screens: const [
@@ -131,7 +134,7 @@ void main() {
     ]);
     expect(find.textContaining('GPS silencieux'), findsNothing);
 
-    tracker.emitGpsSilent(true);
+    tracker.emit(recording(gpsSilent: true));
     // Two pumps: one to deliver the stream event to the controller, one to
     // rebuild on the notification riverpod raises from it.
     await tester.pump();
@@ -139,11 +142,37 @@ void main() {
     expect(trip.gpsSilent, isTrue, reason: 'controller state');
     expect(find.textContaining('GPS silencieux'), findsOneWidget);
 
-    tracker.emitGpsSilent(false);
+    tracker.emit(recording());
     await tester.pump();
     await tester.pump();
     expect(trip.gpsSilent, isFalse, reason: 'controller state');
     expect(find.textContaining('GPS silencieux'), findsNothing);
+  });
+
+  testWidgets('a service already silent at cold start warns immediately',
+      (tester) async {
+    tracker
+      ..persisted = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.2,
+        steps: 1500,
+        startedAt: DateTime.utc(2026, 8, 30, 9, 30),
+        updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+        gpsSilent: true,
+      )
+      ..running = true;
+
+    await pumpShell(tester, screens: const [
+      SizedBox.shrink(),
+      SizedBox.shrink(),
+      SizedBox.shrink()
+    ]);
+
+    // No transition to observe — the service went quiet while this process
+    // did not exist.
+    expect(find.textContaining('GPS silencieux'), findsOneWidget);
   });
 
   group('interrupted trip banner', () {

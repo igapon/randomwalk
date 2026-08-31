@@ -14,6 +14,7 @@ const kOpenedSettingsMessage =
     'Choisissez « Autoriser tout le temps », puis appuyez de nouveau sur Démarrer.';
 const kInterruptedTripPendingMessage =
     'Trajet interrompu en attente — reprenez-le ou terminez-le d\'abord.';
+const kAlreadyRecordingMessage = 'Un trajet est déjà en cours.';
 const kGpsSilentMessage =
     'GPS silencieux — vérifiez les autorisations de localisation.';
 
@@ -23,5 +24,6 @@ String startFailureMessage(TripStartFailure? failure) => switch (failure) {
       TripStartFailure.openedSettings => kOpenedSettingsMessage,
       TripStartFailure.interruptedTripPending =>
         kInterruptedTripPendingMessage,
+      TripStartFailure.alreadyRecording => kAlreadyRecordingMessage,
       _ => kPositionUnavailableMessage,
     };

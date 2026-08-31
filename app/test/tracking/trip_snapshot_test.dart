@@ -50,6 +50,24 @@ void main() {
       expect(restored.updatedAt.isAtSameMomentAs(local.updatedAt), isTrue);
     });
 
+    test('carries the service-side GPS silence flag', () {
+      final silent = _recording().copyWith(gpsSilent: true);
+      expect(
+        TripSnapshot.fromJson(jsonDecode(jsonEncode(silent.toJson()))).gpsSilent,
+        isTrue,
+      );
+      expect(
+        TripSnapshot.fromJson(jsonDecode(jsonEncode(_recording().toJson())))
+            .gpsSilent,
+        isFalse,
+      );
+    });
+
+    test('a document written before the flag existed reads as not silent', () {
+      final legacy = _recording().toJson()..remove('gpsSilent');
+      expect(TripSnapshot.fromJson(legacy).gpsSilent, isFalse);
+    });
+
     test('an unknown profile name degrades to walk rather than throwing', () {
       final json = _recording().toJson()..['profile'] = 'hovercraft';
       expect(TripSnapshot.fromJson(json).profile, RoutingProfile.walk);
