@@ -16,6 +16,11 @@ class ChannelRoutingEngine implements RoutingEngine {
       await _channel.invokeMethod<String>('init', {'configJson': jsonEncode(config)});
     } on PlatformException catch (e) {
       throw RoutingException(e.message ?? 'init failed');
+    } on MissingPluginException {
+      // No native implementation registered for the channel (e.g. running
+      // on a platform/test harness without it) — same user-facing outcome
+      // as any other engine failure, not an uncaught crash.
+      throw RoutingException('init failed: no native engine registered');
     }
   }
 
@@ -24,10 +29,15 @@ class ChannelRoutingEngine implements RoutingEngine {
     try {
       final resp = await _channel
           .invokeMethod<String>('route', {'request': request.toValhallaJson()});
+      if (resp == null) {
+        throw RoutingException('empty engine reply');
+      }
       return RouteResult.fromValhallaJson(
-          jsonDecode(resp!) as Map<String, dynamic>);
+          jsonDecode(resp) as Map<String, dynamic>);
     } on PlatformException catch (e) {
       throw RoutingException(e.message ?? 'route failed');
+    } on MissingPluginException {
+      throw RoutingException('route failed: no native engine registered');
     }
   }
 }

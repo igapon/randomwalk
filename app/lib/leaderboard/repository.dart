@@ -90,5 +90,8 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
   }
 }
 
-final leaderboardRepositoryProvider = Provider<LeaderboardRepository>(
-    (ref) => HttpLeaderboardRepository(http.Client()));
+final leaderboardRepositoryProvider = Provider<LeaderboardRepository>((ref) {
+  final client = http.Client();
+  ref.onDispose(client.close);
+  return HttpLeaderboardRepository(client);
+});

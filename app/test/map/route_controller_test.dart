@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:randomwalk/coverage/coverage_repository.dart';
+import 'package:randomwalk/map/geocoding.dart';
 import 'package:randomwalk/map/route_controller.dart';
 import 'package:randomwalk/valhalla/engine.dart';
 import 'package:randomwalk/valhalla/grid.dart';
@@ -33,8 +35,12 @@ void main() {
     var version = 'V1';
     final logic = RoutePlanner(
         engine: engine,
-        ensureCoverage: (lat, lon) async =>
-            (datasetVersion: version, tileDirPath: '/tiles/$version'));
+        ensureCoverage: (lat, lon) async => (
+              datasetVersion: version,
+              tileDirPath: '/tiles/$version',
+              failed: 0,
+              versionMismatch: false,
+            ));
     final r1 = await logic.plan(const RouteRequest(
         fromLat: 46.52, fromLon: 6.63, toLat: 46.53, toLon: 6.64,
         profile: RoutingProfile.walk));
@@ -98,7 +104,9 @@ void main() {
           final res = await offlineCoverage.ensureCoverage(lat, lon);
           return (
             datasetVersion: res.datasetVersion,
-            tileDirPath: res.tileDirPath
+            tileDirPath: res.tileDirPath,
+            failed: res.failed,
+            versionMismatch: res.versionMismatch,
           );
         });
 
@@ -107,5 +115,36 @@ void main() {
         profile: RoutingProfile.walk));
     expect(result.distanceKm, 2.5);
     expect(engine.initializedWith, '${root.path}/V1');
+  });
+
+  test('plan() surfaces the coverage failed count and version-mismatch flag',
+      () async {
+    final engine = FakeEngine();
+    final planner = RoutePlanner(
+        engine: engine,
+        ensureCoverage: (lat, lon) async => (
+              datasetVersion: 'V1',
+              tileDirPath: '/tiles/V1',
+              failed: 3,
+              versionMismatch: true,
+            ));
+    expect(planner.lastCoverageFailed, 0);
+    expect(planner.lastVersionMismatch, isFalse);
+    await planner.plan(const RouteRequest(
+        fromLat: 46.52, fromLon: 6.63, toLat: 46.53, toLon: 6.64,
+        profile: RoutingProfile.walk));
+    expect(planner.lastCoverageFailed, 3);
+    expect(planner.lastVersionMismatch, isTrue);
+  });
+
+  test('geocodingServiceProvider closes its owned http.Client on dispose',
+      () async {
+    final container = ProviderContainer();
+    final service =
+        container.read(geocodingServiceProvider) as PhotonGeocodingService;
+    container.dispose();
+    await expectLater(
+        service.client.get(Uri.parse('http://example.invalid')),
+        throwsA(isA<http.ClientException>()));
   });
 }

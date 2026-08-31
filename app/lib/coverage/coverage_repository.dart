@@ -20,12 +20,27 @@ class CoverageResult {
   final int downloaded;
   final int failed;
   final int total;
+  /// True when the manifest actually used this run is a stale cached copy
+  /// kept because the freshly-fetched one had a `valhalla_version` this app
+  /// build cannot use (see [DatasetVersionMismatch]). The caller should
+  /// warn the user that new coverage needs an app update.
+  final bool versionMismatch;
   const CoverageResult(
       {required this.datasetVersion,
       required this.tileDirPath,
       required this.downloaded,
       required this.failed,
-      required this.total});
+      required this.total,
+      this.versionMismatch = false});
+}
+
+/// A manifest fetch outcome: the manifest to use, plus whether it is a
+/// cached fallback kept because the fresh fetch's engine version mismatched
+/// (see [DatasetVersionMismatch]).
+class _ManifestFetch {
+  final TileManifest manifest;
+  final bool versionMismatch;
+  const _ManifestFetch(this.manifest, {required this.versionMismatch});
 }
 
 class CoverageRepository {
@@ -41,17 +56,31 @@ class CoverageRepository {
   /// back to that cached copy — from the last successful fetch, possibly by
   /// an earlier app run — so routing keeps working offline as long as a
   /// dataset was ever downloaded. Only rethrows when no cache exists either.
-  Future<TileManifest> _fetchManifest() async {
+  Future<_ManifestFetch> _fetchManifest() async {
     try {
       final resp = await client.get(Uri.parse(CoverageConfig.manifestUrl));
       if (resp.statusCode != 200) {
         throw HttpException('manifest: HTTP ${resp.statusCode}');
       }
+      final manifest =
+          TileManifest.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      if (manifest.valhallaVersion != kExpectedValhallaVersion) {
+        // Never adopt (or cache) a manifest built for an engine version this
+        // app build does not ship — routing against it could crash or
+        // silently misroute. Fall back to whatever cached manifest already
+        // exists on disk, exactly like a network failure, but flag it so
+        // the caller can tell the user new coverage needs an app update.
+        final cached = await _readManifestCache();
+        if (cached != null) {
+          return _ManifestFetch(cached, versionMismatch: true);
+        }
+        throw DatasetVersionMismatch(manifest.valhallaVersion);
+      }
       await _writeManifestCache(resp.body);
-      return TileManifest.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      return _ManifestFetch(manifest, versionMismatch: false);
     } catch (_) {
       final cached = await _readManifestCache();
-      if (cached != null) return cached;
+      if (cached != null) return _ManifestFetch(cached, versionMismatch: false);
       rethrow;
     }
   }
@@ -94,7 +123,8 @@ class CoverageRepository {
 
   Future<CoverageResult> ensureCoverage(double lat, double lon,
       {void Function(int done, int total)? onProgress}) async {
-    final manifest = await _fetchManifest();
+    final fetch = await _fetchManifest();
+    final manifest = fetch.manifest;
     final tileDir = Directory('${root.path}/${manifest.datasetVersion}');
     await tileDir.create(recursive: true);
     _sweepPartFiles(tileDir);
@@ -116,23 +146,22 @@ class CoverageRepository {
       if (have) await _touch(tileDir, path);
     }
     await _purgeLru(tileDir);
-    // Only reclaim old dataset versions once this run's downloads are
-    // fully complete: purging *before* the download loop (or after one
-    // that had failures, e.g. mid-run network loss) could delete the
-    // previous, fully-usable offline directory while leaving the new one
-    // incomplete — destroying the offline guarantee ensureCoverage/plan()
-    // otherwise provide. A partial new version is left in place too, so
-    // the next successful run can finish topping it up instead of
-    // re-downloading everything.
-    if (failed == 0) {
-      await _purgeOtherVersions(manifest.datasetVersion);
-    }
+    // Purge-by-count runs unconditionally, even when this run had failed
+    // downloads: unlike the old failed==0 gate, it never deletes the
+    // directory actually in use ([tileDir]/[manifest.datasetVersion]) — a
+    // partial new version is always left in place for a later run to
+    // finish topping it up — so it cannot destroy the offline guarantee
+    // ensureCoverage/plan() provide. It only reclaims *other* sibling
+    // version directories once more than [_keepVersionCount] of them have
+    // at least one tile on disk.
+    await _purgeByCount(manifest.datasetVersion);
     return CoverageResult(
         datasetVersion: manifest.datasetVersion,
         tileDirPath: tileDir.path,
         downloaded: downloaded,
         failed: failed,
-        total: wanted.length);
+        total: wanted.length,
+        versionMismatch: fetch.versionMismatch);
   }
 
   Future<bool> _download(TileManifest m, String path, File dest) async {
@@ -206,19 +235,55 @@ class CoverageRepository {
     }
   }
 
-  /// Deletes sibling `<root>/<otherVersion>/` directories once the manifest
-  /// resolves to [currentVersion] — old dataset releases are never routed
-  /// to again, so keeping their tiles around only wastes disk. The manifest
-  /// cache file lives directly under [root] (not inside a version dir) and
-  /// is left untouched.
-  Future<void> _purgeOtherVersions(String currentVersion) async {
+  /// How many sibling `<root>/<version>/` directories [_purgeByCount] keeps
+  /// around, [activeVersion]'s included.
+  static const _keepVersionCount = 2;
+
+  /// Disk-hygiene purge-by-count: deletes sibling `<root>/<version>/`
+  /// directories beyond the [_keepVersionCount] most recently touched ones,
+  /// so switching dataset versions repeatedly cannot grow disk usage
+  /// without bound. Runs unconditionally — including after a run whose
+  /// downloads failed (unlike the old failed==0-gated full purge this
+  /// replaces).
+  ///
+  /// [activeVersion] — the directory this very run downloaded into/read
+  /// from, i.e. the one backing the manifest cache — is never deleted,
+  /// regardless of its recency or tile contents: deleting it would break
+  /// the offline guarantee ensureCoverage/plan() provide for the version
+  /// currently in use. Sibling directories with no tile file at all (e.g.
+  /// leftover empty dirs) are swept unconditionally, since they cannot
+  /// serve any offline route anyway. The manifest cache file lives directly
+  /// under [root] (not inside a version dir) and is always left untouched.
+  Future<void> _purgeByCount(String activeVersion) async {
     if (!root.existsSync()) return;
+    final candidates = <(Directory dir, DateTime newestTile)>[];
     for (final entry in root.listSync()) {
       if (entry is! Directory) continue;
       final name = entry.path.replaceAll('\\', '/').split('/').last;
-      if (name != currentVersion) {
+      if (name == activeVersion) continue;
+      final tiles = entry
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.gph'))
+          .toList();
+      if (tiles.isEmpty) {
         await entry.delete(recursive: true);
+        continue;
       }
+      // Recency of a version dir is that of its most recently touched tile
+      // file — a directory's own mtime is not reliably updated by every
+      // platform/filesystem when a child file changes.
+      final newest = tiles
+          .map((f) => f.lastModifiedSync())
+          .reduce((a, b) => a.isAfter(b) ? a : b);
+      candidates.add((entry, newest));
+    }
+    // The active version always occupies one of the kept slots.
+    final otherSlots = _keepVersionCount - 1;
+    if (candidates.length <= otherSlots) return;
+    candidates.sort((a, b) => b.$2.compareTo(a.$2));
+    for (final (dir, _) in candidates.skip(otherSlots)) {
+      await dir.delete(recursive: true);
     }
   }
 }
