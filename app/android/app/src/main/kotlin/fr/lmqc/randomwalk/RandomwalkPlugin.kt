@@ -41,6 +41,9 @@ class RandomwalkPlugin : FlutterPlugin {
         valhallaChannel = null
         deviceChannel?.dispose()
         deviceChannel = null
+        // Symmetric with the attach breadcrumb — lets QA confirm the background service's engine
+        // was actually detached from (and not just attached to) during teardown.
+        Log.i(TAG, "detached from engine")
     }
 
     private companion object {
