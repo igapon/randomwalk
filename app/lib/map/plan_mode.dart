@@ -1,14 +1,17 @@
-/// Pure state for the map's plan-mode selector (« Itinéraire » / « Boucle »
-/// / « Durée » — task 6). Everything here is Flutter- and async-free (save
-/// for [PlanModeStore], a thin `shared_preferences` wrapper mirroring
-/// `trip_controller.dart`'s profile persistence): mode transitions, slider
-/// clamping/stepping, the duration→distance conversion via
-/// `SpeedHistoryStore`, candidate seed stepping and selection, and the small
-/// per-candidate display helpers the bottom sheet reads (gap badge,
-/// repeated-segment hint).
+/// Pure state for the map's plan-mode selector (« Itinéraire » / « Distance »
+/// / « Durée » — task 6, renamed from « Boucle » per the device-QA brief:
+/// a loop is simply the no-destination case of the same distance target).
+/// Everything here is Flutter- and async-free (save for [PlanModeStore], a
+/// thin `shared_preferences` wrapper mirroring `trip_controller.dart`'s
+/// profile persistence): mode transitions, slider clamping/stepping, the
+/// duration→distance conversion via `SpeedHistoryStore`, candidate seed
+/// stepping and selection, the small per-candidate display helpers the
+/// compact selection row reads (gap badge, repeated-segment hint), and the
+/// top-overlay/panel visibility rules for the device-QA fullscreen-selection
+/// overhaul (task 8).
 ///
-/// The widgets themselves (`map_screen.dart`, `candidates_sheet.dart`) hold
-/// no planning logic of their own — they call into this file and render
+/// The widgets themselves (`map_screen.dart`, `candidate_chips_bar.dart`)
+/// hold no planning logic of their own — they call into this file and render
 /// whatever it returns, the same split `replan_line.dart` and
 /// `nav_camera_state.dart` already use for their own pure decisions.
 library;
@@ -120,8 +123,12 @@ int nextSeed(int seed) => seed + 1;
 /// Builds the [LoopRequest] for the current mode, or `null` for
 /// [PlanMode.itinerary] (which never plans a loop — the existing A→B flow
 /// owns that entirely). [destination] is the long-press/search pin, if any:
-/// in [PlanMode.duration] its presence is what switches the request from a
-/// loop to a fixed-duration A→B ([PlanKind.toDestination]).
+/// its presence is what switches the request from a closed loop to a
+/// fixed-target A→B ([PlanKind.toDestination]) — task-8 brief point 3 makes
+/// this true for **both** [PlanMode.loop] and [PlanMode.duration], not just
+/// Durée: a distance-mode walker who also drops a pin wants that distance
+/// spent getting *there*, the same way a duration-mode one already could. A
+/// loop (no pin) is simply the other case of the same target.
 ///
 /// [targetKm] is asserted positive rather than left for [LoopRequest]'s own
 /// `ArgumentError` to catch: the slider/duration clamps above already
@@ -144,9 +151,8 @@ LoopRequest? buildLoopRequest({
       : durationToTargetKm(durationTarget, speedKmh);
   assert(targetKm > 0, 'targetKm must be positive');
 
-  final kind = mode == PlanMode.duration && destination != null
-      ? PlanKind.toDestination
-      : PlanKind.loop;
+  final kind =
+      destination != null ? PlanKind.toDestination : PlanKind.loop;
 
   return LoopRequest(
     kind: kind,
@@ -197,6 +203,53 @@ bool shouldClearDestinationOnModeSwitch({
 String formatDestinationLabel((double, double) point) {
   final (lat, lon) = point;
   return '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}';
+}
+
+/// Whether the clearable destination chip should be shown in the plan-target
+/// panel — task-8 brief point 3: a pinned destination is honoured (and must
+/// stay visible/clearable) in **both** [PlanMode.loop] and
+/// [PlanMode.duration], not only Durée. [PlanMode.itinerary] has its own
+/// result banner/✕ for a routed destination and never reaches this panel at
+/// all, but the check is still explicit here rather than assumed by the
+/// caller, so the rule is the same single tested fact
+/// [shouldClearDestinationOnModeSwitch] already is.
+bool shouldShowPlanDestinationChip({
+  required PlanMode mode,
+  required bool hasDestination,
+}) =>
+    mode != PlanMode.itinerary && hasDestination;
+
+// ---- Fullscreen candidate selection (task 8) --------------------------------
+
+/// Task-8 brief point 1: the instant there are candidates to choose from, the
+/// mode selector, search bar, profile picker and plan-target panel all step
+/// aside for a fullscreen map with only the compact selection row at the
+/// bottom — the owner's own words were "cache les menus... pour mieux voir
+/// la carte". A single tested fact rather than a scattered `if` in `build()`.
+bool shouldShowPlanningTopOverlay({required bool hasCandidates}) =>
+    !hasCandidates;
+
+/// « Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ » — the plan-target panel's
+/// collapsed line (task-8 brief point 2). Uses the renamed « Distance »
+/// label (point 3) even though [PlanMode.loop] is the underlying identifier
+/// (kept stable for [PlanModeStore] persistence compatibility).
+String planPanelCollapsedLabel({
+  required PlanMode mode,
+  required double loopTargetKm,
+  required Duration durationTarget,
+}) {
+  if (mode == PlanMode.loop) {
+    final km = loopTargetKm.toStringAsFixed(1).replaceAll('.', ',');
+    return 'Distance · $km km ▸';
+  }
+  final hours = durationTarget.inHours;
+  final minutes = durationTarget.inMinutes % 60;
+  final label = hours <= 0
+      ? '$minutes min'
+      : minutes == 0
+          ? '$hours h'
+          : '$hours h $minutes';
+  return 'Durée · $label ▸';
 }
 
 // ---- Candidate selection ----------------------------------------------------

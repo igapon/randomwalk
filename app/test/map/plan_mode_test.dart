@@ -162,7 +162,8 @@ void main() {
       expect(request, isNull);
     });
 
-    test('loop mode builds a closed loop from loopTargetKm', () {
+    test('loop mode with no destination builds a closed loop from '
+        'loopTargetKm', () {
       final request = buildLoopRequest(
         mode: PlanMode.loop,
         loopTargetKm: 7.5,
@@ -170,7 +171,6 @@ void main() {
         speedKmh: 4.5,
         profile: RoutingProfile.walk,
         start: start,
-        destination: destination, // ignored for Boucle mode
         seed: 3,
       );
       expect(request, isNotNull);
@@ -180,6 +180,28 @@ void main() {
       expect(request.end, isNull);
       expect(request.seed, 3);
       expect(request.profile, RoutingProfile.walk);
+    });
+
+    test(
+        'loop mode with a destination builds a fixed-target A->B request '
+        '(task-8 brief point 3: "il faut que pour A-B on puisse sélectionner '
+        'une distance") with loopTargetKm as the target', () {
+      final request = buildLoopRequest(
+        mode: PlanMode.loop,
+        loopTargetKm: 7.5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        destination: destination,
+        seed: 3,
+      );
+      expect(request, isNotNull);
+      expect(request!.kind, PlanKind.toDestination);
+      expect(request.end, destination);
+      expect(request.targetKm, 7.5);
+      expect(request.start, start);
+      expect(request.seed, 3);
     });
 
     test('duration mode with no destination builds a loop from the '
@@ -424,6 +446,105 @@ void main() {
     test('at/above the threshold reads as "quelques allers-retours"', () {
       expect(repeatedRatioHint(0.15), 'quelques allers-retours');
       expect(repeatedRatioHint(0.9), 'quelques allers-retours');
+    });
+  });
+
+  group('shouldShowPlanDestinationChip (task-8 point 3)', () {
+    test('shown in Boucle/Distance mode with a pinned destination', () {
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.loop, hasDestination: true),
+        isTrue,
+      );
+    });
+
+    test('shown in Durée mode with a pinned destination', () {
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.duration, hasDestination: true),
+        isTrue,
+      );
+    });
+
+    test('hidden with no pinned destination, in either mode', () {
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.loop, hasDestination: false),
+        isFalse,
+      );
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.duration, hasDestination: false),
+        isFalse,
+      );
+    });
+
+    test('never shown in Itinéraire — the result banner owns that ✕', () {
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.itinerary, hasDestination: true),
+        isFalse,
+      );
+    });
+  });
+
+  group('shouldShowPlanningTopOverlay (task-8 point 1: fullscreen selection)',
+      () {
+    test('shown with no candidates', () {
+      expect(shouldShowPlanningTopOverlay(hasCandidates: false), isTrue);
+    });
+
+    test('hidden the instant candidates exist', () {
+      expect(shouldShowPlanningTopOverlay(hasCandidates: true), isFalse);
+    });
+  });
+
+  group('planPanelCollapsedLabel (task-8 point 2)', () {
+    test('Distance mode: "Distance · X,X km ▸"', () {
+      expect(
+        planPanelCollapsedLabel(
+            mode: PlanMode.loop,
+            loopTargetKm: 5.0,
+            durationTarget: kDurationTargetDefault),
+        'Distance · 5,0 km ▸',
+      );
+      expect(
+        planPanelCollapsedLabel(
+            mode: PlanMode.loop,
+            loopTargetKm: 12.5,
+            durationTarget: kDurationTargetDefault),
+        'Distance · 12,5 km ▸',
+      );
+    });
+
+    test('Durée mode with hours and minutes: "Durée · H h MM ▸"', () {
+      expect(
+        planPanelCollapsedLabel(
+            mode: PlanMode.duration,
+            loopTargetKm: 5.0,
+            durationTarget: const Duration(hours: 1, minutes: 30)),
+        'Durée · 1 h 30 ▸',
+      );
+    });
+
+    test('Durée mode on an exact hour omits the minutes', () {
+      expect(
+        planPanelCollapsedLabel(
+            mode: PlanMode.duration,
+            loopTargetKm: 5.0,
+            durationTarget: const Duration(hours: 2)),
+        'Durée · 2 h ▸',
+      );
+    });
+
+    test('Durée mode under an hour: "Durée · MM min ▸"', () {
+      expect(
+        planPanelCollapsedLabel(
+            mode: PlanMode.duration,
+            loopTargetKm: 5.0,
+            durationTarget: const Duration(minutes: 45)),
+        'Durée · 45 min ▸',
+      );
     });
   });
 

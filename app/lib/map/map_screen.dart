@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
-import 'candidates_sheet.dart';
+import 'candidate_chips_bar.dart';
 import 'geocoding.dart';
 import 'initial_camera.dart';
 import 'latest_only.dart';
@@ -115,7 +115,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// destination.
   bool _armSetDeparture = false;
 
-  // ---- Task 6: plan mode (Itinéraire / Boucle / Durée) --------------------
+  // ---- Task 6: plan mode (Itinéraire / Distance / Durée) --------------------
 
   final _planModeStore = PlanModeStore();
   final _speedHistory = SpeedHistoryStore();
@@ -128,6 +128,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// Null until the first async load resolves; recomputed whenever the
   /// profile changes.
   double? _speedKmh;
+
+  /// Whether the plan-target panel's slider is expanded, or collapsed to a
+  /// single tappable line (task-8 brief point 2: « Distance · 5,0 km ▸ » /
+  /// « Durée · 1 h 30 ▸ »). Starts collapsed; reset to collapsed on every
+  /// mode switch and the instant « Proposer » is pressed, so the walker
+  /// never has to manually re-collapse it before the next glance at the map.
+  bool _planPanelExpanded = false;
 
   int _planSeed = initialSeed(DateTime.now());
   LoopPlanResult? _candidateResult;
@@ -526,15 +533,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// Départ/destination long-press — mode-aware since task 6:
   ///   * an armed départ (see [_armDepartureChange]) always sets the
   ///     departure, in every mode — "départ manuel armé, mécanique
-  ///     existante" is exactly this, reused as-is for Boucle/Durée.
+  ///     existante" is exactly this, reused as-is for Distance/Durée.
   ///   * [PlanMode.itinerary] keeps its original behaviour: sets the
   ///     destination and immediately plans the standard A→B route.
-  ///   * [PlanMode.loop] has no destination concept (a closed loop has
-  ///     nothing to pin) — the long-press is a no-op past arming départ.
-  ///   * [PlanMode.duration] records the destination — that presence is what
-  ///     later makes « Proposer » build a fixed-duration A→B request instead
-  ///     of a loop (see [buildLoopRequest]) — without auto-planning, since
-  ///     the actual plan only happens on « Proposer ».
+  ///   * [PlanMode.loop] and [PlanMode.duration] both just record the
+  ///     destination — task-8 brief point 3: a pin dropped in either mode is
+  ///     honoured by the next « Proposer » as a fixed-target A→B request
+  ///     instead of a closed loop (see [buildLoopRequest]) — without
+  ///     auto-planning, since the actual plan only happens on « Proposer ».
+  ///     A loop is simply what either mode plans when there is no pin.
   Future<void> _onMapLongClick(Point<double> point, LatLng coords) async {
     final trip = ref.read(tripControllerProvider);
     if (_armSetDeparture) {
@@ -547,7 +554,6 @@ class MapScreenState extends ConsumerState<MapScreen> {
       }
       return;
     }
-    if (_planMode == PlanMode.loop) return;
     await trip.saveActiveRoute(_plan(trip).copyWith(
         destination: (coords.latitude, coords.longitude), clearRoute: true));
     if (_planMode == PlanMode.itinerary) {
@@ -737,8 +743,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
     await controller?.animateCamera(
         CameraUpdate.newLatLng(LatLng(result.lat, result.lon)));
     // Mode-aware in the same way [_onMapLongClick] is: itinerary plans
-    // immediately, Durée just records the pin for the next « Proposer », and
-    // Boucle has no use for a destination at all (still harmless to record).
+    // immediately; Distance and Durée both just record the pin for the next
+    // « Proposer » to honour as a fixed-target A→B request (task-8 point 3).
     if (_planMode == PlanMode.itinerary) {
       await _planRoute();
     } else {
@@ -812,7 +818,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     unawaited(_refreshSpeedKmh());
   }
 
-  // ---- Task 6: plan mode (Itinéraire / Boucle / Durée) --------------------
+  // ---- Task 6: plan mode (Itinéraire / Distance / Durée) --------------------
 
   Future<void> _loadPlanMode() async {
     final mode = await _planModeStore.load();
@@ -845,10 +851,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
     setState(() {
       _planMode = mode;
       _armSetDeparture = false;
+      // Task 8: every mode switch starts the plan-target panel collapsed —
+      // an expanded slider carried over from the mode just left makes no
+      // sense in the one just entered.
+      _planPanelExpanded = false;
       if (wasItinerary && mode != PlanMode.itinerary) {
-        // Entering Boucle/Durée fresh from Itinéraire: seed the slider from
-        // the profile default rather than carrying over a value from a
-        // previous Boucle/Durée session that may no longer make sense.
+        // Entering Distance/Durée fresh from Itinéraire: seed the slider
+        // from the profile default rather than carrying over a value from a
+        // previous Distance/Durée session that may no longer make sense.
         _loopTargetKm = defaultLoopTargetKm(trip.profile);
       }
     });
@@ -889,6 +899,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
     _clearCandidates();
   }
 
+  /// Task-8 brief point 2: tap on the collapsed « Distance · 5,0 km ▸ » /
+  /// « Durée · 1 h 30 ▸ » line expands the slider.
+  void _onTogglePlanPanelExpanded() {
+    setState(() => _planPanelExpanded = !_planPanelExpanded);
+  }
+
   void _onLoopTargetChanged(double km) {
     setState(() => _loopTargetKm = clampLoopTargetKm(km));
   }
@@ -916,6 +932,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
     setState(() {
       _candidatePlanning = true;
       _downloadProgress = null;
+      // Task-8 brief point 2: the plan-target panel collapses the instant
+      // « Proposer » is pressed, not only once results land — and the
+      // fullscreen selection UI (task-8 point 1) is about to replace the top
+      // overlay entirely anyway once candidates arrive.
+      _planPanelExpanded = false;
     });
 
     final trip = ref.read(tripControllerProvider);
@@ -1224,7 +1245,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
               onCancel: _cancelCandidatePlanning,
               progress: _downloadProgress);
     } else if (candidateResult != null) {
-      bottomBanner = CandidatesSheet(
+      // Task 8: fullscreen selection — the compact chip row replaces the old
+      // full-size candidate cards, and (below) the top overlay steps aside
+      // entirely for as long as this branch is showing.
+      bottomBanner = CandidateChipsBar(
         result: candidateResult,
         selectedIndex: _selectedCandidateIndex,
         // Set by _proposeCandidates just before this result ever exists;
@@ -1248,9 +1272,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
       // Final review item 3: the « Démarrer » pill (a free session — no
       // route, no target) is shown in *every* plan mode, not only Itinéraire.
       // The owner's one-tap rule is about the app, not about which planning
-      // panel happens to be selected: a walker who opened Boucle, thought
+      // panel happens to be selected: a walker who opened Distance, thought
       // better of it and just wants to start walking must not have to switch
-      // tabs back to find the button. Boucle/Durée's own controls (slider,
+      // tabs back to find the button. Distance/Durée's own controls (slider,
       // « Proposer ») live in the top overlay, so there is no conflict — and
       // the moment a plan or candidates exist, the branches above take over.
       bottomBanner = _StartPill(onStart: _startFreeTrip);
@@ -1280,6 +1304,16 @@ class MapScreenState extends ConsumerState<MapScreen> {
       } else {
         topOverlay = const SizedBox.shrink();
       }
+    } else if (!shouldShowPlanningTopOverlay(
+        hasCandidates: candidateResult != null)) {
+      // Task 8, brief point 1 — the owner's own words: « pendant la
+      // sélection… cache les menus… pour mieux voir la carte ». The instant
+      // there are candidates to choose from, the mode selector, search bar,
+      // profile picker and plan-target panel all disappear so the map is
+      // fullscreen behind the compact chip row (built into `bottomBanner`
+      // above); the ✕ on that row (`_clearCandidates`) is what brings this
+      // branch back.
+      topOverlay = const SizedBox.shrink();
     } else {
       // Fix-round-1: search results and the plan-target panel (slider +
       // Proposer) are never shown together. Both can be tall (results up to
@@ -1300,7 +1334,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
             segments: const [
               ButtonSegment(
                   value: PlanMode.itinerary, label: Text('Itinéraire')),
-              ButtonSegment(value: PlanMode.loop, label: Text('Boucle')),
+              ButtonSegment(value: PlanMode.loop, label: Text('Distance')),
               ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
             ],
             selected: {_planMode},
@@ -1346,6 +1380,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
               planning: _candidatePlanning,
               enabled: !trip.isRecording,
               destination: _plan(trip).destination,
+              expanded: _planPanelExpanded,
+              onToggleExpanded: _onTogglePlanPanelExpanded,
               onLoopTargetChanged: _onLoopTargetChanged,
               onDurationTargetChanged: _onDurationTargetChanged,
               onPropose: _proposeCandidates,
@@ -1549,7 +1585,7 @@ class _ProgressBanner extends StatelessWidget {
   }
 }
 
-/// « Proposer » in flight, for Boucle/Durée (task 6) — a spinner with a
+/// « Proposer » in flight, for Distance/Durée (task 6) — a spinner with a
 /// cancel ✕, distinct from [_ProgressBanner]: this one is cancellable
 /// (LoopPlanner's router-call budget can legitimately take a few seconds),
 /// where the standard A→B tile-download progress banner is not.
@@ -1597,9 +1633,16 @@ class _CandidateProgressBanner extends StatelessWidget {
   }
 }
 
-/// Boucle/Durée's mode-specific controls (task 6): the distance or duration
-/// slider, the duration→distance conversion label, and « Proposer ». Lives
-/// in the top overlay, below the Marche/Vélo picker.
+/// Distance/Durée's mode-specific controls (task 6, redesigned by task 8
+/// point 2 — the owner's own words: « l'écran est très cramped »): a
+/// destination chip (shared by both modes — brief point 3), and either a
+/// single collapsed line (« Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ »,
+/// tap to expand) or the full slider + « Proposer », so the map stays
+/// visible behind more of the screen than the old always-expanded panel
+/// left it. Lives in the top overlay, below the Marche/Vélo picker; that
+/// whole overlay disappears once there are candidates to choose from (task
+/// 8 point 1), so this panel's own expand state does not need to account
+/// for that case.
 class _PlanTargetPanel extends StatelessWidget {
   const _PlanTargetPanel({
     required this.mode,
@@ -1609,6 +1652,8 @@ class _PlanTargetPanel extends StatelessWidget {
     required this.planning,
     required this.enabled,
     required this.destination,
+    required this.expanded,
+    required this.onToggleExpanded,
     required this.onLoopTargetChanged,
     required this.onDurationTargetChanged,
     required this.onPropose,
@@ -1627,9 +1672,15 @@ class _PlanTargetPanel extends StatelessWidget {
   /// picker already has (fix-round-1, point 5).
   final bool enabled;
 
-  /// The pinned destination, if any — shown (Durée only) as a clearable
-  /// chip so a destination set earlier is never silently in effect.
+  /// The pinned destination, if any — shown, in *either* mode (task-8 point
+  /// 3), as a clearable chip so a destination set earlier is never silently
+  /// in effect.
   final (double, double)? destination;
+
+  /// Whether the slider is expanded, or collapsed to the single tappable
+  /// line — see [MapScreenState._planPanelExpanded].
+  final bool expanded;
+  final VoidCallback onToggleExpanded;
   final ValueChanged<double> onLoopTargetChanged;
   final ValueChanged<Duration> onDurationTargetChanged;
   final VoidCallback onPropose;
@@ -1638,14 +1689,41 @@ class _PlanTargetPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final Widget sliderRow;
-    if (mode == PlanMode.loop) {
-      final km = loopTargetKm.toStringAsFixed(1).replaceAll('.', ',');
-      sliderRow = Column(
+    final pinnedDestination = destination;
+
+    final Widget body;
+    if (!expanded) {
+      body = InkWell(
+        onTap: enabled ? onToggleExpanded : null,
+        borderRadius: BorderRadius.circular(AppRadii.card),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  planPanelCollapsedLabel(
+                    mode: mode,
+                    loopTargetKm: loopTargetKm,
+                    durationTarget: durationTarget,
+                  ),
+                  style: theme.textTheme.bodyMedium,
+                ),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+        ),
+      );
+    } else if (mode == PlanMode.loop) {
+      body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('Distance : $km km', style: theme.textTheme.bodyMedium),
+          Text(
+              'Distance : '
+              '${loopTargetKm.toStringAsFixed(1).replaceAll('.', ',')} km',
+              style: theme.textTheme.bodyMedium),
           Slider(
             min: kLoopTargetMinKm,
             max: kLoopTargetMaxKm,
@@ -1654,6 +1732,11 @@ class _PlanTargetPanel extends StatelessWidget {
                     .round(),
             value: loopTargetKm,
             onChanged: enabled ? onLoopTargetChanged : null,
+          ),
+          const SizedBox(height: 4),
+          ElevatedButton(
+            onPressed: (enabled && !planning) ? onPropose : null,
+            child: const Text('Proposer'),
           ),
         ],
       );
@@ -1667,33 +1750,10 @@ class _PlanTargetPanel extends StatelessWidget {
       final conversionLabel = speed == null
           ? null
           : formatConversionLabel(durationToTargetKm(durationTarget, speed));
-      final pinnedDestination = destination;
-      sliderRow = Column(
+      body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (pinnedDestination != null) ...[
-            Row(
-              children: [
-                const Icon(Icons.flag, size: 16),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'Destination : ${formatDestinationLabel(pinnedDestination)}',
-                    style: theme.textTheme.bodySmall,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  iconSize: 18,
-                  tooltip: 'Effacer la destination',
-                  onPressed: enabled ? onClearDestination : null,
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-          ],
           Text('Durée : $durationLabel', style: theme.textTheme.bodyMedium),
           Slider(
             min: kDurationTargetMin.inMinutes.toDouble(),
@@ -1709,6 +1769,11 @@ class _PlanTargetPanel extends StatelessWidget {
           ),
           if (conversionLabel != null)
             Text(conversionLabel, style: theme.textTheme.bodySmall),
+          const SizedBox(height: 4),
+          ElevatedButton(
+            onPressed: (enabled && !planning) ? onPropose : null,
+            child: const Text('Proposer'),
+          ),
         ],
       );
     }
@@ -1720,12 +1785,29 @@ class _PlanTargetPanel extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            sliderRow,
-            const SizedBox(height: 4),
-            ElevatedButton(
-              onPressed: (enabled && !planning) ? onPropose : null,
-              child: const Text('Proposer'),
-            ),
+            if (pinnedDestination != null) ...[
+              Row(
+                children: [
+                  const Icon(Icons.flag, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Destination : ${formatDestinationLabel(pinnedDestination)}',
+                      style: theme.textTheme.bodySmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    iconSize: 18,
+                    tooltip: 'Effacer la destination',
+                    onPressed: enabled ? onClearDestination : null,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
+            body,
           ],
         ),
       ),
