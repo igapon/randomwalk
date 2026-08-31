@@ -66,6 +66,24 @@ android {
             signingConfig = if (keystorePropertiesFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
+                // Item 6: this fallback is silent-by-default and produces an
+                // APK that installs and runs fine, which is exactly what
+                // makes it dangerous — a debug-signed "release" build handed
+                // to a real device (or, worse, uploaded somewhere) looks
+                // indistinguishable from the real thing until the Play Store
+                // (or `apksigner verify`) rejects the mismatched signature.
+                // `println` (not `logger.warn`, which most `./gradlew`
+                // invocations swallow below `--info`) so the fallback is
+                // impossible to miss in ordinary build output — every
+                // `flutter build apk --release`/`flutter run --release` in
+                // CI hits this branch too, and that is expected: CI never
+                // has key.properties (see above), so it should keep saying so
+                // on every run, not just the first one a developer forgets.
+                println(
+                    "WARNING: no key.properties found — release build is " +
+                        "signed with the DEBUG keystore, not an upload key. " +
+                        "See docs/release-signing.md."
+                )
                 signingConfigs.getByName("debug")
             }
         }
