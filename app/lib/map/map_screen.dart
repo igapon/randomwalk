@@ -820,7 +820,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   Future<void> _onPlanModeChanged(PlanMode mode) async {
     if (mode == _planMode) return;
+    final trip = ref.read(tripControllerProvider);
     final wasItinerary = _planMode == PlanMode.itinerary;
+    // Fix-round-1: drop a destination pinned in Itinéraire that never turned
+    // into a route before it can leak into Durée as an invisible A->B
+    // target — see [shouldClearDestinationOnModeSwitch].
+    final dropDestination = shouldClearDestinationOnModeSwitch(
+        from: _planMode, to: mode, hasRoute: trip.route != null);
     setState(() {
       _planMode = mode;
       _armSetDeparture = false;
@@ -828,12 +834,28 @@ class MapScreenState extends ConsumerState<MapScreen> {
         // Entering Boucle/Durée fresh from Itinéraire: seed the slider from
         // the profile default rather than carrying over a value from a
         // previous Boucle/Durée session that may no longer make sense.
-        _loopTargetKm =
-            defaultLoopTargetKm(ref.read(tripControllerProvider).profile);
+        _loopTargetKm = defaultLoopTargetKm(trip.profile);
       }
     });
+    if (dropDestination && trip.activeRoute?.destination != null) {
+      await trip
+          .saveActiveRoute(_plan(trip).copyWith(clearDestination: true));
+    }
     _clearCandidates();
     await _planModeStore.save(mode);
+  }
+
+  /// ✕ on the Durée destination chip — drops the pinned destination (and any
+  /// route computed for it), so « Proposer » goes back to loop semantics.
+  /// Also drops any candidates already shown for the old A→B target, since
+  /// they no longer match what « Proposer » would build next.
+  Future<void> _clearPlanDestination() async {
+    final trip = ref.read(tripControllerProvider);
+    final plan = _plan(trip);
+    if (plan.destination == null) return;
+    await trip.saveActiveRoute(
+        plan.copyWith(clearDestination: true, clearRoute: true));
+    _clearCandidates();
   }
 
   void _onLoopTargetChanged(double km) {
@@ -849,20 +871,31 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// coverage->init->routeMulti orchestration mirroring [_planRoute]'s own
   /// pipeline for the standard A→B planner.
   Future<void> _proposeCandidates() async {
+    // Fix-round-1: a synchronous re-entry guard against a double-tap landing
+    // before the button's own disabled state has had a chance to rebuild —
+    // `_candidatePlanning` used to only flip true *after* the GPS wait
+    // below, leaving a window where two taps could each start their own
+    // full request series. Setting it here, before the first `await`, closes
+    // that window (setState's callback runs synchronously).
+    if (_candidatePlanning) return;
+    final gen = _candidateGeneration.start();
+    setState(() => _candidatePlanning = true);
+
     final trip = ref.read(tripControllerProvider);
     final plan = _plan(trip);
     final pinned = plan.departure;
     final departure = pinned != null
         ? LatLng(pinned.$1, pinned.$2)
         : await _currentPositionOrNull();
-    if (!mounted) return;
+    if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
     if (departure == null) {
+      setState(() => _candidatePlanning = false);
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text(kPositionUnavailableMessage)));
       return;
     }
     final speedKmh = _speedKmh ?? await _speedHistory.speedKmh(trip.profile);
-    if (!mounted) return;
+    if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
     setState(() => _speedKmh = speedKmh);
 
     final request = buildLoopRequest(
@@ -875,10 +908,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
       destination: plan.destination,
       seed: _planSeed,
     );
-    if (request == null) return; // PlanMode.itinerary never reaches here.
+    if (request == null) {
+      // PlanMode.itinerary never reaches here (Proposer isn't shown), but
+      // stays defensive rather than leaving the spinner stuck on.
+      setState(() => _candidatePlanning = false);
+      return;
+    }
 
-    final gen = _candidateGeneration.start();
-    setState(() => _candidatePlanning = true);
     try {
       final orchestrator = await ref.read(loopPlannerProvider.future);
       final result = await orchestrator.plan(request);
@@ -1163,6 +1199,19 @@ class MapScreenState extends ConsumerState<MapScreen> {
         topOverlay = const SizedBox.shrink();
       }
     } else {
+      // Fix-round-1: search results and the plan-target panel (slider +
+      // Proposer) are never shown together. Both can be tall (results up to
+      // 50% of the screen height; the panel has its own slider + button),
+      // and stacking them atop the mode selector, search bar and profile
+      // picker could push Proposer off-screen with no scroll affordance.
+      // Search results only appear while the user is actively typing/has
+      // just searched — exactly the moment picking a destination, not
+      // proposing, is the point — so the lighter fix is mutual exclusion
+      // rather than a ConstrainedBox+ScrollView: the panel simply steps
+      // aside until the search box is dismissed or a result is picked
+      // (which already clears `_searchResults`).
+      final showSearchResults =
+          _searching || _searchError != null || _searchResults.isNotEmpty;
       topOverlay = Column(
         children: [
           SegmentedButton<PlanMode>(
@@ -1173,14 +1222,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
               ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
             ],
             selected: {_planMode},
-            onSelectionChanged: (s) => _onPlanModeChanged(s.first),
+            onSelectionChanged:
+                trip.isRecording ? null : (s) => _onPlanModeChanged(s.first),
           ),
           const SizedBox(height: 8),
           _SearchBar(
             controller: _searchController,
             onChanged: _onSearchChanged,
           ),
-          if (_searching || _searchError != null || _searchResults.isNotEmpty)
+          if (showSearchResults)
             _SearchResultsPanel(
               searching: _searching,
               error: _searchError,
@@ -1204,7 +1254,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
             onSelectionChanged:
                 trip.isRecording ? null : (s) => _onProfileChanged(s.first),
           ),
-          if (_planMode != PlanMode.itinerary) ...[
+          if (_planMode != PlanMode.itinerary && !showSearchResults) ...[
             const SizedBox(height: 12),
             _PlanTargetPanel(
               mode: _planMode,
@@ -1212,9 +1262,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
               durationTarget: _durationTarget,
               speedKmh: _speedKmh,
               planning: _candidatePlanning,
+              enabled: !trip.isRecording,
+              destination: _plan(trip).destination,
               onLoopTargetChanged: _onLoopTargetChanged,
               onDurationTargetChanged: _onDurationTargetChanged,
               onPropose: _proposeCandidates,
+              onClearDestination: _clearPlanDestination,
             ),
           ],
         ],
@@ -1458,9 +1511,12 @@ class _PlanTargetPanel extends StatelessWidget {
     required this.durationTarget,
     required this.speedKmh,
     required this.planning,
+    required this.enabled,
+    required this.destination,
     required this.onLoopTargetChanged,
     required this.onDurationTargetChanged,
     required this.onPropose,
+    required this.onClearDestination,
   });
 
   final PlanMode mode;
@@ -1468,9 +1524,20 @@ class _PlanTargetPanel extends StatelessWidget {
   final Duration durationTarget;
   final double? speedKmh;
   final bool planning;
+
+  /// False while `trip.isRecording` — a free (non-route-bound) recording
+  /// trip still shows this top overlay, so the slider/Proposer/destination
+  /// chip need the same "can't touch this mid-trip" guard the Marche/Vélo
+  /// picker already has (fix-round-1, point 5).
+  final bool enabled;
+
+  /// The pinned destination, if any — shown (Durée only) as a clearable
+  /// chip so a destination set earlier is never silently in effect.
+  final (double, double)? destination;
   final ValueChanged<double> onLoopTargetChanged;
   final ValueChanged<Duration> onDurationTargetChanged;
   final VoidCallback onPropose;
+  final VoidCallback onClearDestination;
 
   @override
   Widget build(BuildContext context) {
@@ -1490,7 +1557,7 @@ class _PlanTargetPanel extends StatelessWidget {
                 ((kLoopTargetMaxKm - kLoopTargetMinKm) / kLoopTargetStepKm)
                     .round(),
             value: loopTargetKm,
-            onChanged: onLoopTargetChanged,
+            onChanged: enabled ? onLoopTargetChanged : null,
           ),
         ],
       );
@@ -1504,10 +1571,33 @@ class _PlanTargetPanel extends StatelessWidget {
       final conversionLabel = speed == null
           ? null
           : formatConversionLabel(durationToTargetKm(durationTarget, speed));
+      final pinnedDestination = destination;
       sliderRow = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (pinnedDestination != null) ...[
+            Row(
+              children: [
+                const Icon(Icons.flag, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Destination : ${formatDestinationLabel(pinnedDestination)}',
+                    style: theme.textTheme.bodySmall,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  iconSize: 18,
+                  tooltip: 'Effacer la destination',
+                  onPressed: enabled ? onClearDestination : null,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+          ],
           Text('Durée : $durationLabel', style: theme.textTheme.bodyMedium),
           Slider(
             min: kDurationTargetMin.inMinutes.toDouble(),
@@ -1516,8 +1606,10 @@ class _PlanTargetPanel extends StatelessWidget {
                 (kDurationTargetMax.inMinutes - kDurationTargetMin.inMinutes) ~/
                     kDurationTargetStep.inMinutes,
             value: durationTarget.inMinutes.toDouble(),
-            onChanged: (minutes) =>
-                onDurationTargetChanged(Duration(minutes: minutes.round())),
+            onChanged: enabled
+                ? (minutes) => onDurationTargetChanged(
+                    Duration(minutes: minutes.round()))
+                : null,
           ),
           if (conversionLabel != null)
             Text(conversionLabel, style: theme.textTheme.bodySmall),
@@ -1535,7 +1627,7 @@ class _PlanTargetPanel extends StatelessWidget {
             sliderRow,
             const SizedBox(height: 4),
             ElevatedButton(
-              onPressed: planning ? null : onPropose,
+              onPressed: (enabled && !planning) ? onPropose : null,
               child: const Text('Proposer'),
             ),
           ],

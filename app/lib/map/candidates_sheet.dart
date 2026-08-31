@@ -12,10 +12,14 @@ import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
 import 'plan_mode.dart';
 
-/// Inset-safe: wraps its content in a [SafeArea] and adds the bottom system
-/// inset itself, so callers (typically `showModalBottomSheet`) don't have to
-/// special-case gesture vs. 3-button navigation — same rule `map_screen.dart`
-/// follows for its own bottom banner.
+/// Self-pads *nothing* for the bottom system inset — deliberately, since
+/// fix-round-1 found this widget triple-counting it: this sheet used to wrap
+/// itself in a [SafeArea] *and* add `viewPadding.bottom` again on top of
+/// that, stacked on the single outer `Positioned`/`Padding` in
+/// `map_screen.dart` (`bottomInset + 16`) that already owns the inset for
+/// every bottom banner — ~172 px of dead space on a 3-button-nav phone.
+/// This widget now matches `_ResultBanner`: a plain [Card] with its own
+/// fixed content padding, relying entirely on that one outer rule.
 class CandidatesSheet extends StatelessWidget {
   const CandidatesSheet({
     super.key,
@@ -38,12 +42,11 @@ class CandidatesSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final index = clampSelection(selectedIndex, result.candidates.length);
-    return SafeArea(
-      top: false,
+    return Card(
       child: Padding(
-        padding: EdgeInsets.fromLTRB(16, 12, 16, bottomInset + 12),
+        key: const Key('candidatesSheetPadding'),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -118,7 +121,11 @@ class _CandidateCard extends StatelessWidget {
     final badge = gapBadgeLabel(candidate);
     final hint = repeatedRatioHint(candidate.repeatedRatio);
     final km = distanceKm.toStringAsFixed(1).replaceAll('.', ',');
-    final minutes = duration.inMinutes;
+    // Rounded, not truncated (fix-round-1) — matches _formatResult's own
+    // `(r.duration.inSeconds / 60).round()` so a route whose estimate lands
+    // at, say, 66m40s reads as "67 min" here too, not "66 min" from
+    // `Duration.inMinutes` silently dropping the trailing seconds.
+    final minutes = (duration.inSeconds / 60).round();
 
     return Card(
       color: selected ? theme.colorScheme.primaryContainer : null,

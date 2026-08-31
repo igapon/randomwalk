@@ -194,6 +194,81 @@ void main() {
     });
   });
 
+  group('shouldClearDestinationOnModeSwitch', () {
+    test('clears when leaving Itinéraire for Boucle with no route on screen',
+        () {
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.itinerary, to: PlanMode.loop, hasRoute: false),
+        isTrue,
+      );
+    });
+
+    test('clears when leaving Itinéraire for Durée with no route on screen',
+        () {
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.itinerary,
+            to: PlanMode.duration,
+            hasRoute: false),
+        isTrue,
+      );
+    });
+
+    test('never clears when a route is already on screen', () {
+      // The result banner's own ✕ is the way to clear it in that case —
+      // this must not race or duplicate that.
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.itinerary, to: PlanMode.loop, hasRoute: true),
+        isFalse,
+      );
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.itinerary,
+            to: PlanMode.duration,
+            hasRoute: true),
+        isFalse,
+      );
+    });
+
+    test('never clears between Boucle and Durée (neither is Itinéraire)', () {
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.loop, to: PlanMode.duration, hasRoute: false),
+        isFalse,
+      );
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.duration, to: PlanMode.loop, hasRoute: false),
+        isFalse,
+      );
+    });
+
+    test('never clears when switching into Itinéraire', () {
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.loop, to: PlanMode.itinerary, hasRoute: false),
+        isFalse,
+      );
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.duration,
+            to: PlanMode.itinerary,
+            hasRoute: false),
+        isFalse,
+      );
+    });
+  });
+
+  group('formatDestinationLabel', () {
+    test('four decimals, comma-separated', () {
+      expect(formatDestinationLabel((46.52, 6.63)), '46.5200, 6.6300');
+      expect(formatDestinationLabel((46.520001, 6.629999)),
+          '46.5200, 6.6300');
+    });
+  });
+
   group('clampSelection', () {
     test('keeps a valid index unchanged', () {
       expect(clampSelection(1, 3), 1);

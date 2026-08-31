@@ -61,8 +61,8 @@ void main() {
       );
       await pump(tester, result: result);
 
-      expect(find.text('5,0 km · ~66 min'), findsOneWidget);
-      expect(find.text('5,6 km · ~74 min'), findsOneWidget);
+      expect(find.text('5,0 km · ~67 min'), findsOneWidget);
+      expect(find.text('5,6 km · ~75 min'), findsOneWidget);
     });
 
     testWidgets('shows a signed gap badge only for the off-target candidate',
@@ -109,7 +109,7 @@ void main() {
       int? selected;
       await pump(tester, result: result, onSelect: (i) => selected = i);
 
-      await tester.tap(find.text('5,6 km · ~74 min'));
+      await tester.tap(find.text('5,6 km · ~75 min'));
       expect(selected, 1);
     });
 
@@ -159,7 +159,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('is inset-safe at a large bottom viewPadding (gesture nav)',
+    testWidgets(
+        'does not self-pad for the bottom system inset — the single outer '
+        'Positioned/Padding in map_screen.dart owns it (fix-round-1)',
         (tester) async {
       await tester.binding.setSurfaceSize(const Size(400, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -168,24 +170,42 @@ void main() {
         targetMet: true,
         bestGapRatio: 0.0,
       );
-      await tester.pumpWidget(MaterialApp(
-        theme: AppTheme.light,
-        home: MediaQuery(
-          data: const MediaQueryData(padding: EdgeInsets.only(bottom: 48)),
-          child: Scaffold(
-            body: CandidatesSheet(
-              result: result,
-              selectedIndex: 0,
-              speedKmh: 4.5,
-              onSelect: (_) {},
-              onStart: () {},
-              onOtherProposals: () {},
-              onClose: () {},
+
+      Future<EdgeInsets> pumpAndMeasure(double viewPaddingBottom) async {
+        await tester.pumpWidget(MaterialApp(
+          theme: AppTheme.light,
+          home: MediaQuery(
+            data: MediaQueryData(
+                padding: EdgeInsets.only(bottom: viewPaddingBottom)),
+            child: Scaffold(
+              body: CandidatesSheet(
+                result: result,
+                selectedIndex: 0,
+                speedKmh: 4.5,
+                onSelect: (_) {},
+                onStart: () {},
+                onOtherProposals: () {},
+                onClose: () {},
+              ),
             ),
           ),
-        ),
-      ));
-      expect(tester.takeException(), isNull);
+        ));
+        expect(tester.takeException(), isNull);
+        final padding = tester
+            .widget<Padding>(find.byKey(const Key('candidatesSheetPadding')))
+            .padding
+            .resolve(TextDirection.ltr);
+        return padding;
+      }
+
+      // A 0dp inset (gesture nav's own case, or an unrelated screen) and a
+      // 48dp one (typical 3-button nav bar) must produce the *same* padding
+      // out of this widget: it must never read `viewPadding.bottom` itself.
+      final noInset = await pumpAndMeasure(0);
+      final withInset = await pumpAndMeasure(48);
+      expect(noInset, withInset);
+      expect(noInset.bottom, 12);
+      expect(find.byType(SafeArea), findsNothing);
     });
   });
 }

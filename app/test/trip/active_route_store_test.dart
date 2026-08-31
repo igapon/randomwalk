@@ -35,6 +35,45 @@ void main() {
   FileActiveRouteStore store() =>
       FileActiveRouteStore(File('${dir.path}/active_route.json'));
 
+  group('ActiveRoute.copyWith — clearDestination (fix-round-1)', () {
+    test('drops the destination, leaving everything else untouched', () {
+      final route = _activeRoute();
+      final cleared = route.copyWith(clearDestination: true);
+
+      expect(cleared.destination, isNull);
+      expect(cleared.departure, route.departure);
+      expect(cleared.route, route.route);
+      expect(cleared.profile, route.profile);
+    });
+
+    test('clearDestination wins even if a replacement destination is also '
+        'passed', () {
+      final route = _activeRoute();
+      final cleared = route.copyWith(
+          destination: const (0, 0), clearDestination: true);
+
+      expect(cleared.destination, isNull);
+    });
+
+    test('clearDestination and clearDeparture compose', () {
+      final route = _activeRoute();
+      final cleared =
+          route.copyWith(clearDestination: true, clearDeparture: true);
+
+      expect(cleared.destination, isNull);
+      expect(cleared.departure, isNull);
+      expect(cleared.route, route.route);
+    });
+
+    test('defaults to false — an ordinary copyWith call keeps the '
+        'destination', () {
+      final route = _activeRoute();
+      final copy = route.copyWith(profile: RoutingProfile.walk);
+
+      expect(copy.destination, route.destination);
+    });
+  });
+
   test('load returns null when nothing was ever persisted', () async {
     expect(await store().load(), isNull);
   });

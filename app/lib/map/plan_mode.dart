@@ -135,6 +135,36 @@ LoopRequest? buildLoopRequest({
   );
 }
 
+// ---- Destination pinning across mode switches -------------------------------
+
+/// Fix-round-1 finding: a destination pinned while in [PlanMode.itinerary]
+/// (long-press/search) that never turned into a route — a failed plan, or
+/// simply one still in flight — used to survive a switch into Boucle/Durée
+/// invisibly, silently turning Durée's next « Proposer » into a
+/// fixed-duration A→B against a pin the walker never chose for that mode,
+/// with no control on screen to see or clear it.
+///
+/// Only an Itinéraire->(Boucle|Durée) transition with no route on screen is
+/// affected: a destination set *while already in* Durée (long-press/search
+/// there) is intentional and shown/clearable in the target panel instead
+/// (see `map_screen.dart`'s destination chip), and Boucle never reads the
+/// destination at all regardless of how it got there.
+bool shouldClearDestinationOnModeSwitch({
+  required PlanMode from,
+  required PlanMode to,
+  required bool hasRoute,
+}) =>
+    from == PlanMode.itinerary && to != PlanMode.itinerary && !hasRoute;
+
+/// Coordinate fallback label for a pinned destination the UI has no
+/// reverse-geocoded name for (a long-press pin, or a search result whose
+/// label wasn't kept past selection) — four decimals is ~11 m of precision,
+/// plenty for an "is this the pin I meant" glance at the Durée chip.
+String formatDestinationLabel((double, double) point) {
+  final (lat, lon) = point;
+  return '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}';
+}
+
 // ---- Candidate selection ----------------------------------------------------
 
 /// Clamps a candidate-card selection to the current candidate list, falling

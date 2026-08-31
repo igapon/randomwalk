@@ -36,13 +36,15 @@ class ActiveRoute {
     RouteResult? route,
     bool clearRoute = false,
     (double, double)? destination,
+    bool clearDestination = false,
     (double, double)? departure,
     bool clearDeparture = false,
     RoutingProfile? profile,
   }) =>
       ActiveRoute(
         route: clearRoute ? null : (route ?? this.route),
-        destination: destination ?? this.destination,
+        destination:
+            clearDestination ? null : (destination ?? this.destination),
         departure: clearDeparture ? null : (departure ?? this.departure),
         profile: profile ?? this.profile,
       );
