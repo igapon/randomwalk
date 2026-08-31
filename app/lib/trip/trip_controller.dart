@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../loop/speed_history.dart';
 import '../nav/nav_fields.dart';
 import '../session/recorder.dart';
 import '../settings/alert_settings.dart';
@@ -80,6 +81,7 @@ class TripController extends ChangeNotifier {
   final Future<TripPermissions> Function() ensurePermissions;
   final SessionStepCounter Function(int seed) _createStepCounter;
   final FinalisedTripMemory _finalisedTrips;
+  final SpeedHistoryStore _speedHistory;
   final Future<TrackingMode> Function()? readTrackingMode;
   final DateTime Function() _clock;
   final Future<void> Function(RoutingProfile profile) _persistProfile;
@@ -127,6 +129,7 @@ class TripController extends ChangeNotifier {
     required TotalDistanceStore totalStore,
     required this.ensurePermissions,
     FinalisedTripMemory? finalisedTrips,
+    SpeedHistoryStore? speedHistory,
     SessionStepCounter Function(int seed)? createStepCounter,
     this.readTrackingMode,
     DateTime Function()? clock,
@@ -137,6 +140,7 @@ class TripController extends ChangeNotifier {
     AlertSettingsStore? alertSettings,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
+        _speedHistory = speedHistory ?? SpeedHistoryStore(),
         _createStepCounter = createStepCounter ??
             ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
         _clock = clock ?? DateTime.now,
@@ -466,6 +470,20 @@ class TripController extends ChangeNotifier {
       await _finalisedTrips.markFinalised(snapshot.startedAt);
     }
     final totalKm = await _totals.addAndGetTotalKm(distanceKm);
+    // The session's own distance and duration, not the cumulative total
+    // above — the speed history is per-trip pace, not a running sum. Elapsed
+    // is measured from the snapshot's *original* `startedAt`: a resumed
+    // interrupted trip (see [resumeInterrupted]) keeps that timestamp across
+    // the gap it was interrupted for, so this counts wall-clock time
+    // including the pause rather than only time spent actively recording.
+    // That is a deliberate approximation — accepted here rather than
+    // plumbing "moving time" through the snapshot — because a resumed trip
+    // is the uncommon case and the EMA already damps any one session's
+    // effect on the estimate.
+    if (snapshot != null) {
+      await _speedHistory.recordSession(
+          snapshot.profile, distanceKm, _clock().difference(snapshot.startedAt));
+    }
     await tracker.clearSnapshot();
 
     _state = TripState.idle;
