@@ -9,6 +9,16 @@ abstract class TtsSpeaker {
   Future<void> speak(String text);
 }
 
+/// A [TtsSpeaker] that must be asked to [init] before it is any use — the
+/// contract [NativeTtsSpeaker] implements. Factored out so
+/// `TripTaskHandler` can point its speaker construction at a fake for tests
+/// (`TripTaskHandler.speakerFactory`) instead of the real native channel —
+/// in particular a fake whose [init] never completes, the hang scenario
+/// `TtsChannel.startEngine`'s own timeout exists for on the native side.
+abstract class InitializableTtsSpeaker implements TtsSpeaker {
+  Future<bool> init();
+}
+
 /// Does nothing. Used whenever « Guidage vocal » is off, or the device has
 /// no usable French TTS — see [NativeTtsSpeaker]'s doc comment for how that
 /// is determined.
@@ -60,7 +70,7 @@ class NoopTtsSpeaker implements TtsSpeaker {
 /// the *same* underlying platform call instead of starting a second one:
 /// whoever asks first is the only one who actually reaches
 /// `TtsChannel.init` on the native side.
-class NativeTtsSpeaker implements TtsSpeaker {
+class NativeTtsSpeaker implements InitializableTtsSpeaker {
   /// Exposed for tests, which mock this exact channel via
   /// `TestDefaultBinaryMessengerBinding` rather than injecting a fake —
   /// there is nothing behind a `MethodChannel` worth faking separately.
@@ -81,6 +91,7 @@ class NativeTtsSpeaker implements TtsSpeaker {
   /// number of instances at once (see the class doc comment): all of them
   /// resolve to the one true answer, and the platform channel sees exactly
   /// one `init` call for the whole overlapping group.
+  @override
   Future<bool> init() async {
     final inFlight = _pendingInit;
     final future = inFlight ?? _startInit();

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
@@ -406,6 +407,15 @@ class TripTaskHandler extends TaskHandler {
   /// TTS. Stays [NoopTtsSpeaker] on a device with none.
   TtsSpeaker _speaker = const NoopTtsSpeaker();
 
+  /// Builds the speaker [_initSpeaker] tries to bind. A static, swappable
+  /// field rather than a constructor parameter — `flutter_foreground_task`
+  /// instantiates [TripTaskHandler] itself, this class is never constructed
+  /// by application code — so tests reassign it to a fake instead of the
+  /// real native TTS channel. Reset it in `tearDown` after overriding.
+  @visibleForTesting
+  static InitializableTtsSpeaker Function() speakerFactory =
+      NativeTtsSpeaker.new;
+
   FlutterLocalNotificationsPlugin? _notifications;
   bool _notificationsReady = false;
 
@@ -428,6 +438,12 @@ class TripTaskHandler extends TaskHandler {
   /// The notification line last published, so a fix that does not change
   /// what the guidance *says* costs nothing (see [_publish]).
   String? _lastNotificationText;
+
+  /// Whether the recorder actually started. Exposed for tests only — asserts
+  /// that a hung TTS init ([speakerFactory]) never blocks [onStart] from
+  /// getting the GPS subscription going.
+  @visibleForTesting
+  bool get debugIsRecording => _session?.isRecording ?? false;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -465,7 +481,6 @@ class TripTaskHandler extends TaskHandler {
             true;
     _ttsEnabled =
         await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ?? true;
-    if (_ttsEnabled) await _initSpeaker();
 
     final session = SessionController(
       store: _PassThroughDistanceStore(),
@@ -490,6 +505,16 @@ class TripTaskHandler extends TaskHandler {
     _session = session;
     _recordingSince = timestamp;
     await session.start();
+
+    // Free sessions never bind a speaker at all (see `_nav`'s doc comment on
+    // the free-session-identity constraint). And this must not be awaited:
+    // `init()` talks to a native `TextToSpeech` whose `OnInitListener` can
+    // simply never fire (see `TtsChannel.startEngine`'s ~5s synthetic
+    // timeout for the usual cause) — awaiting it here would block GPS
+    // subscription indefinitely, recording zero kilometres for the whole
+    // trip. It runs in the background and swaps `_speaker` in once (if)
+    // it resolves.
+    if (_nav != null && _ttsEnabled) unawaited(_initSpeaker());
   }
 
   @override
@@ -625,7 +650,7 @@ class TripTaskHandler extends TaskHandler {
   /// fr-FR, or no TTS engine on the device at all): [init]'s whole point is
   /// answering that question honestly rather than throwing.
   Future<void> _initSpeaker() async {
-    final speaker = NativeTtsSpeaker();
+    final speaker = speakerFactory();
     final available = await speaker.init();
     _speaker = available ? speaker : const NoopTtsSpeaker();
   }
@@ -719,8 +744,12 @@ class TripTaskHandler extends TaskHandler {
       // Fire-and-forget: onReceiveData is synchronous, and until init()
       // resolves _speaker simply stays whatever it already was (Noop, most
       // likely) — harmless, since _maybeAlert only ever calls it while
-      // _ttsEnabled is true and it is always safe to call.
-      if (enabled && _speaker is NoopTtsSpeaker) unawaited(_initSpeaker());
+      // _ttsEnabled is true and it is always safe to call. Gated on _nav:
+      // a free session must never bind a speaker at all (free-session-
+      // identity constraint), regardless of what the settings toggle says.
+      if (_nav != null && enabled && _speaker is NoopTtsSpeaker) {
+        unawaited(_initSpeaker());
+      }
     }
   }
 

@@ -1,8 +1,43 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/nav/nav_fields.dart';
+import 'package:randomwalk/nav/tts.dart';
+import 'package:randomwalk/tracking/adaptive_gps.dart';
+import 'package:randomwalk/tracking/nav_seed.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/valhalla/models.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../support/trip_fakes.dart';
+
+/// The `flutter_foreground_task` prefix every `getData`/`saveData` key is
+/// stored under (see that package's `_kPrefsKeyPrefix`, private to it) — not
+/// exported, so the literal is duplicated here to seed `SharedPreferences`
+/// the same way the plugin itself reads it back.
+const _prefsPrefix = 'com.pravera.flutter_foreground_task.prefs.';
+
+/// A speaker whose [init] is fully controlled by the test: either resolves
+/// immediately with [available], or — with [hang] — never resolves at all,
+/// standing in for a wedged native `OnInitListener` (see
+/// `TtsChannel.startEngine`'s doc comment on the native side of this bug).
+class FakeInitializableTtsSpeaker implements InitializableTtsSpeaker {
+  FakeInitializableTtsSpeaker({this.available = true, this.hang = false});
+
+  final bool available;
+  final bool hang;
+
+  @override
+  Future<bool> init() =>
+      hang ? Completer<bool>().future : Future.value(available);
+
+  @override
+  Future<void> speak(String text) async {}
+}
 
 TripSnapshot snapshot({
   TripStatus status = TripStatus.recording,
@@ -161,6 +196,89 @@ void main() {
       expect(free.navInstruction, isNull);
       expect(free.distanceKm, closeTo(2.4, 1e-9));
       expect(free.updatedAt, snapshot().updatedAt);
+    });
+  });
+
+  group('TripTaskHandler.onStart — TTS binding (item 1 regression)', () {
+    late Directory tempDir;
+
+    setUpAll(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_tts_onstart_test');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+      TripTaskHandler.speakerFactory = NativeTtsSpeaker.new;
+    });
+
+    Future<void> seedPrefs({
+      required bool routeBound,
+      NavSeed? navSeed,
+    }) async {
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: routeBound,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
+        '$_prefsPrefix' 'randomwalk_snapshot_path':
+            '${tempDir.path}/snapshot.json',
+        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
+        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+        if (navSeed != null)
+          '$_prefsPrefix' 'randomwalk_nav_seed': jsonEncode(navSeed.toJson()),
+      });
+    }
+
+    test('a free session never constructs a speaker at all', () async {
+      var constructed = 0;
+      TripTaskHandler.speakerFactory = () {
+        constructed++;
+        return FakeInitializableTtsSpeaker();
+      };
+      await seedPrefs(routeBound: false);
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+
+      expect(constructed, 0);
+      expect(handler.debugIsRecording, isTrue);
+    });
+
+    test(
+        'a hung speaker init on a route-bound trip never blocks the GPS '
+        'subscription from starting',
+        () async {
+      TripTaskHandler.speakerFactory = () =>
+          FakeInitializableTtsSpeaker(hang: true);
+      final route = fakeRoute();
+      await seedPrefs(
+        routeBound: true,
+        navSeed: NavSeed(
+          route: route,
+          destLat: route.shape.last.$1,
+          destLon: route.shape.last.$2,
+          profile: RoutingProfile.walk,
+          tileDirPath: null,
+        ),
+      );
+
+      final handler = TripTaskHandler();
+      // Before the fix, `await _initSpeaker()` ran ahead of
+      // `session.start()` and a hung `init()` (the native-side defect item
+      // 1 also fixes) would wedge this forever. Bounding it here turns a
+      // regression into a failing test instead of a hung test run.
+      await handler
+          .onStart(DateTime.utc(2026, 8, 31, 9), TaskStarter.developer)
+          .timeout(const Duration(seconds: 5));
+
+      expect(handler.debugIsRecording, isTrue);
     });
   });
 }

@@ -87,6 +87,20 @@ class TtsChannel(private val context: Context) {
     private val nextUtteranceId = AtomicInteger(0)
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * How long [startEngine] waits for `OnInitListener` before giving up on its own. A
+     * cold-start TextToSpeech service can simply never call back — no success, no error,
+     * nothing (a real-world Android quirk, not hypothetical) — and without a bound, [state]
+     * is wedged at [State.PENDING] forever: every later `init()` call, this trip's or the
+     * next one's, just queues onto [pendingInitResults] behind a listener that is never
+     * coming, and no trip ever gets GPS subscribed (see `TrackingService.onStart`, which
+     * used to `await` this).
+     */
+    private val initTimeoutMs = 5_000L
+
+    /** The pending timeout for the current [State.PENDING] engine, if any; see [startEngine]. */
+    private var initTimeoutRunnable: Runnable? = null
+
     fun register(messenger: BinaryMessenger) {
         val methodChannel = MethodChannel(messenger, "randomwalk/tts")
         channel = methodChannel
@@ -151,12 +165,26 @@ class TtsChannel(private val context: Context) {
         tts = TextToSpeech(context) { status ->
             mainHandler.post { onEngineInitialized(generation, status) }
         }
+        // See [initTimeoutMs]'s doc comment: synthesize a failure if the real listener
+        // hasn't answered by then. Cancelled by [onEngineInitialized] the moment either
+        // side actually answers first.
+        val timeout = Runnable { onEngineInitialized(generation, TextToSpeech.ERROR) }
+        initTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, initTimeoutMs)
     }
 
     private fun onEngineInitialized(generation: Int, status: Int) {
         // Superseded by a shutdown() (and possibly a fresh init()) that ran before this
         // callback arrived — nothing here is still relevant to the current engine, if any.
-        if (generation != initGeneration) return
+        // The `state != PENDING` half guards the other direction: the real listener and
+        // the [initTimeoutMs] timeout can both eventually call this for the same
+        // generation (a late real callback arriving after the synthetic timeout already
+        // gave up, or vice versa) — whichever lands first moves state off PENDING, and
+        // the second arrival is a no-op rather than re-deciding an already-settled answer.
+        if (generation != initGeneration || state != State.PENDING) return
+
+        initTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        initTimeoutRunnable = null
 
         val engine = tts
         val succeeded = status == TextToSpeech.SUCCESS && engine != null
@@ -196,6 +224,8 @@ class TtsChannel(private val context: Context) {
     }
 
     private fun shutdown() {
+        initTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        initTimeoutRunnable = null
         tts?.stop()
         tts?.shutdown()
         tts = null
