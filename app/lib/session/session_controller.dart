@@ -30,6 +30,16 @@ class SessionController {
   /// Invoked with an optional error message.
   Future<void> Function(String? errorMessage)? onSessionError;
 
+  /// Invoked for every fix accurate enough to be acted on (see
+  /// [kMaxFixAccuracyM]), right after the recorder has consumed it.
+  ///
+  /// Exists so a second consumer — turn-by-turn navigation, running in the
+  /// same isolate — can be driven by the same stream instead of opening a
+  /// second GPS subscription, which on Android would double the fix rate and
+  /// the battery cost of a screen-off trip. Fire-and-forget by design: the
+  /// recording must not wait on anything the callback does.
+  void Function(GpsSample sample)? onFix;
+
   SessionController({
     required this._store,
     Stream<Position> Function(LocationSettings)? getPositionStream,
@@ -38,6 +48,7 @@ class SessionController {
     LocationSettings? locationSettings,
     this.onSessionEnded,
     this.onSessionError,
+    this.onFix,
   })  : _locationSettings = locationSettings ??
             const LocationSettings(
                 accuracy: LocationAccuracy.best, distanceFilter: 3),
@@ -105,6 +116,7 @@ class SessionController {
             time: position.timestamp,
           );
           _recorder?.add(sample);
+          if (sample.accuracyM <= kMaxFixAccuracyM) onFix?.call(sample);
         },
         onError: (e) {
           // Finish session on stream error, persisting partial distance.

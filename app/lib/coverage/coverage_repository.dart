@@ -73,6 +73,20 @@ class CoverageRepository {
     }
   }
 
+  /// The tile directory of the dataset already on disk, or null if there is
+  /// none. Touches neither the network nor the tiles themselves.
+  ///
+  /// Exists for the tracking service, which is handed this path at trip
+  /// start and routes against it offline for the rest of the walk (see
+  /// `NavSeed`). Deliberately *not* [ensureCoverage]: that one downloads,
+  /// and a foreground service has no way to tell a user it is doing so.
+  Future<String?> cachedTileDirPath() async {
+    final manifest = await _readManifestCache();
+    if (manifest == null) return null;
+    final dir = Directory('${root.path}/${manifest.datasetVersion}');
+    return await dir.exists() ? dir.path : null;
+  }
+
   List<String> neededPaths(double lat, double lon) => [
         for (final e in CoverageConfig.radiiKmByLevel.entries)
           for (final t in tilesCoveringCircle(e.key, lat, lon, e.value)) t.path

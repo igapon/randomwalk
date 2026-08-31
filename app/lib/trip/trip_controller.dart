@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../session/recorder.dart';
+import '../tracking/nav_seed.dart';
 import '../tracking/permissions.dart';
 import '../tracking/steps.dart';
 import '../tracking/tracking_service.dart';
@@ -82,6 +83,12 @@ class TripController extends ChangeNotifier {
   final Future<void> Function(RoutingProfile profile) _persistProfile;
   final Future<RoutingProfile?> Function() _loadProfile;
 
+  /// Where the offline tiles already on disk live, so the tracking service
+  /// can recalculate a route without this process (or any network) being
+  /// around. Null — or absent — simply means a trip whose route cannot be
+  /// recalculated; it never stops one from starting.
+  final Future<String?> Function()? resolveTileDir;
+
   /// Notified when the map should turn its "follow me" camera mode on
   /// (route-bound trip start) or off (trip stop / manual pan elsewhere).
   /// Mutable so the map screen — the only widget holding the actual
@@ -122,6 +129,7 @@ class TripController extends ChangeNotifier {
     DateTime Function()? clock,
     Future<void> Function(RoutingProfile profile)? persistProfile,
     Future<RoutingProfile?> Function()? loadProfile,
+    this.resolveTileDir,
     this.onCameraFollowChanged,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
@@ -250,11 +258,45 @@ class TripController extends ChangeNotifier {
       _profile = await _loadProfile() ?? _profile;
     }
 
-    return _launch(TripSnapshot.starting(
-      startedAt: _clock(),
+    return _launch(
+      TripSnapshot.starting(
+        startedAt: _clock(),
+        profile: _profile,
+        routeBound: route != null,
+      ),
+      nav: await _navSeedFor(route),
+    );
+  }
+
+  /// The navigation handover for a route-bound trip: the route itself, where
+  /// it is going, and the tiles a service-side replan may need. Null for a
+  /// free trip, and for a route too degenerate to follow.
+  ///
+  /// Built here, in the UI isolate, because this is the only side that knows
+  /// what the user planned and where the tiles were downloaded — the service
+  /// has neither the route store nor `path_provider`.
+  Future<NavSeed?> _navSeedFor(RouteResult? route) async {
+    if (route == null || route.shape.length < 2) return null;
+    final destination = _activeRoute?.destination ?? route.shape.last;
+    return NavSeed(
+      route: route,
+      destLat: destination.$1,
+      destLon: destination.$2,
       profile: _profile,
-      routeBound: route != null,
-    ));
+      tileDirPath: await _tileDirPath(),
+    );
+  }
+
+  Future<String?> _tileDirPath() async {
+    final resolve = resolveTileDir;
+    if (resolve == null) return null;
+    try {
+      return await resolve();
+      // Losing the ability to recalculate is worth a trip without guidance
+      // updates, never a trip that refuses to start.
+    } catch (_) {
+      return null;
+    }
   }
 
   /// « Reprendre » on the interrupted-trip banner: restarts the service
@@ -267,10 +309,16 @@ class TripController extends ChangeNotifier {
     // stream, and the service re-derives it from the new one's first repeat
     // event. Carrying it would flash the warning for the couple of seconds
     // before that arrives.
-    return _launch(snapshot.copyWith(
-        status: TripStatus.recording,
-        updatedAt: _clock(),
-        gpsSilent: false));
+    return _launch(
+      snapshot.copyWith(
+          status: TripStatus.recording,
+          updatedAt: _clock(),
+          gpsSilent: false),
+      // A resumed route-bound trip is re-seeded from the planned route
+      // (which outlives the trip, see [ActiveRouteStore]); without this,
+      // « Reprendre » would silently come back without guidance.
+      nav: snapshot.routeBound ? await _navSeedFor(_activeRoute?.route) : null,
+    );
   }
 
   /// « Terminer » on the interrupted-trip banner: banks what was recorded
@@ -294,7 +342,7 @@ class TripController extends ChangeNotifier {
     return _finalise(_freshest(persisted, snapshot));
   }
 
-  Future<bool> _launch(TripSnapshot seed) async {
+  Future<bool> _launch(TripSnapshot seed, {NavSeed? nav}) async {
     _starting = true;
     try {
       final permissions = await ensurePermissions();
@@ -306,7 +354,7 @@ class TripController extends ChangeNotifier {
         return false;
       }
 
-      if (!await tracker.start(seed)) {
+      if (!await tracker.start(seed, nav: nav)) {
         _lastStartFailure = TripStartFailure.serviceUnavailable;
         notifyListeners();
         return false;

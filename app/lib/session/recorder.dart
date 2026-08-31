@@ -23,8 +23,16 @@ double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   return 2 * r * math.asin(math.sqrt(a.toDouble()));
 }
 
+/// A fix reported as vaguer than this is not trusted to move anything: it
+/// neither adds distance nor advances turn-by-turn guidance.
+///
+/// Public because the recorder is no longer the only consumer of the GPS
+/// stream — navigation runs off the same fixes (see `SessionController.onFix`)
+/// and must apply the same gate, rather than announcing a turn from a
+/// position the distance maths just refused.
+const kMaxFixAccuracyM = 25.0;
+
 class SessionRecorder {
-  static const _maxAccuracyM = 25.0;
   static const _minStepM = 3.0;
   static const _maxSpeedKmh = 90.0;
 
@@ -37,7 +45,7 @@ class SessionRecorder {
       _startedAt == null ? Duration.zero : now.difference(_startedAt!);
 
   void add(GpsSample sample) {
-    if (sample.accuracyM > _maxAccuracyM) return;
+    if (sample.accuracyM > kMaxFixAccuracyM) return;
     _startedAt ??= sample.time;
     final last = _last;
     if (last == null) {

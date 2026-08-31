@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:randomwalk/session/recorder.dart';
+import 'package:randomwalk/tracking/nav_seed.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
@@ -64,6 +65,10 @@ class FakeTripTracker implements TripTracker {
   bool startSucceeds = true;
   bool attached = false;
   final startedWith = <TripSnapshot>[];
+
+  /// The navigation handover each start was given, positionally matching
+  /// [startedWith] — null for a free trip.
+  final startedNav = <NavSeed?>[];
   final publishedSteps = <int>[];
   int stops = 0;
   int clears = 0;
@@ -105,9 +110,10 @@ class FakeTripTracker implements TripTracker {
   }
 
   @override
-  Future<bool> start(TripSnapshot seed) async {
+  Future<bool> start(TripSnapshot seed, {NavSeed? nav}) async {
     if (!startSucceeds) return false;
     startedWith.add(seed);
+    startedNav.add(nav);
     persisted = seed;
     running = true;
     attached = true;

@@ -2,7 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:randomwalk/coverage/coverage_repository.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/map/map_screen.dart';
@@ -43,6 +45,11 @@ Future<void> main() async {
 
 Future<TripController> _buildTripController() async {
   final dir = await getApplicationSupportDirectory();
+  // Same root the routing providers use (see `coverageRepositoryProvider`);
+  // built here too because the trip controller exists before the
+  // ProviderScope does, and only needs the read-only lookup.
+  final coverage = CoverageRepository(
+      root: Directory('${dir.path}/tiles'), client: http.Client());
   final permissions = TripPermissionCoordinator(
     PluginPermissionService(),
     showBackgroundRationale: () async {
@@ -58,6 +65,7 @@ Future<TripController> _buildTripController() async {
     totalStore: TotalDistanceStore(),
     ensurePermissions: permissions.ensureForTrip,
     readTrackingMode: permissions.currentTrackingMode,
+    resolveTileDir: coverage.cachedTileDirPath,
   );
 }
 

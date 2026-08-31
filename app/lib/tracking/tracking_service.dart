@@ -5,8 +5,14 @@ import 'dart:io';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../nav/nav_fields.dart';
+import '../nav/navigation_runtime.dart';
+import '../nav/route_follower.dart';
 import '../session/recorder.dart';
 import '../session/session_controller.dart';
+import '../valhalla/engine_channel.dart';
+import '../valhalla/models.dart';
+import 'nav_seed.dart';
 import 'trip_snapshot.dart';
 
 /// The seam between the trip's state machine and whatever is actually
@@ -30,7 +36,12 @@ abstract class TripTracker {
 
   /// Starts recording from [seed] — zeroed for a new trip, or carrying the
   /// distance/steps of an interrupted one being resumed.
-  Future<bool> start(TripSnapshot seed);
+  ///
+  /// [nav] is present exactly for route-bound trips: it is what lets the
+  /// service run turn-by-turn guidance (and recalculate the route) on its
+  /// own, with the app dead and the screen off. A free trip passes none and
+  /// records exactly as it did before navigation existed.
+  Future<bool> start(TripSnapshot seed, {NavSeed? nav});
 
   /// Stops recording and returns the last snapshot the tracker produced.
   Future<TripSnapshot?> stop();
@@ -76,6 +87,7 @@ const _kChannelId = 'randomwalk_trip';
 const _kServiceId = 4211;
 const _kSnapshotPathKey = 'randomwalk_snapshot_path';
 const _kSeedKey = 'randomwalk_seed_snapshot';
+const _kNavSeedKey = 'randomwalk_nav_seed';
 const _kGpsErrorKey = 'gpsError';
 
 /// How long a recording trip may go without a single position before the UI
@@ -149,7 +161,7 @@ class ForegroundServiceTripTracker implements TripTracker {
   Future<void> clearSnapshot() => _store.clear();
 
   @override
-  Future<bool> start(TripSnapshot seed) async {
+  Future<bool> start(TripSnapshot seed, {NavSeed? nav}) async {
     _configure();
     await attach();
 
@@ -161,6 +173,11 @@ class ForegroundServiceTripTracker implements TripTracker {
         key: _kSnapshotPathKey, value: snapshotFile.path);
     await FlutterForegroundTask.saveData(
         key: _kSeedKey, value: jsonEncode(seed.toJson()));
+    // Overwritten (or blanked) on every start, never left over: a free trip
+    // started after a route-bound one must not inherit its itinerary — this
+    // store outlives both the service and the process.
+    await FlutterForegroundTask.saveData(
+        key: _kNavSeedKey, value: nav == null ? '' : jsonEncode(nav.toJson()));
 
     final result = await FlutterForegroundTask.startService(
       serviceId: _kServiceId,
@@ -282,6 +299,22 @@ class TripTaskHandler extends TaskHandler {
   int _steps = 0;
   DateTime? _recordingSince;
 
+  /// Turn-by-turn state, for route-bound trips only. Null for a free trip,
+  /// which then behaves exactly as it did before navigation existed.
+  NavSeed? _navSeed;
+  NavigationRuntime? _nav;
+  NavFields? _navFields;
+
+  /// Built on the first replan, not at start-up: a trip that never leaves
+  /// its route never pays for loading a routing engine into this isolate.
+  ChannelRoutingEngine? _engine;
+
+  /// One fix at a time through the runtime. A replan is a round trip to
+  /// Valhalla over a method channel and can easily outlast the ~2 s between
+  /// fixes; fixes arriving meanwhile still count for distance, they just do
+  /// not queue up behind guidance.
+  bool _navBusy = false;
+
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     final path = await FlutterForegroundTask.getData<String>(
@@ -295,6 +328,20 @@ class TripTaskHandler extends TaskHandler {
     _steps = seed.steps;
     _writer = ThrottledSnapshotWriter(store);
 
+    // Note that an Android-restarted service (allowAutoRestart) rebuilds the
+    // follower from the *planned* route, not from a route a previous
+    // incarnation had replanned onto — that one exists nowhere but in the
+    // dead isolate. Self-correcting rather than lost: the first fixes after
+    // the restart read as off-route and trigger a fresh replan.
+    final navSeed = seed.routeBound ? await _readNavSeed() : null;
+    _navSeed = navSeed;
+    if (navSeed != null && navSeed.route.shape.length >= 2) {
+      _nav = NavigationRuntime(
+        follower: RouteFollower(navSeed.route),
+        replan: _replanFrom,
+      );
+    }
+
     final session = SessionController(
       store: _PassThroughDistanceStore(),
       checkPermissions: () async => true,
@@ -306,6 +353,9 @@ class TripTaskHandler extends TaskHandler {
       onSessionEnded: _bank,
       onSessionError: (message) async => FlutterForegroundTask.sendDataToMain(
           jsonEncode({_kGpsErrorKey: message})),
+      // Guidance rides the recording's own GPS subscription: a second one
+      // would double the fix rate the OS bills a screen-off trip for.
+      onFix: _nav == null ? null : _onNavFix,
       locationSettings: AndroidSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 3,
@@ -334,12 +384,77 @@ class TripTaskHandler extends TaskHandler {
       _recordingSince = timestamp;
     }
 
-    final snapshot = _snapshotAt(timestamp);
+    _publish(timestamp);
+  }
+
+  /// Writes the current state everywhere it is read from: the persisted
+  /// snapshot (throttled), the notification, and the UI's live channel.
+  ///
+  /// Called on every repeat event *and* on every navigated fix — a walker
+  /// approaching a turn should not have to wait out the tick for the
+  /// notification to say so.
+  void _publish(DateTime now) {
+    final snapshot = _snapshotAt(now);
     if (snapshot == null) return;
     _writer?.submit(snapshot);
     FlutterForegroundTask.updateService(
-        notificationText: tripNotificationText(snapshot, timestamp));
+        notificationText: _notificationText(snapshot, now));
     FlutterForegroundTask.sendDataToMain(jsonEncode(snapshot.toJson()));
+  }
+
+  String _notificationText(TripSnapshot snapshot, DateTime now) {
+    final fields = _navFields;
+    return fields == null
+        ? tripNotificationText(snapshot, now)
+        : navNotificationText(fields);
+  }
+
+  /// One accepted GPS fix, run through turn-by-turn navigation.
+  ///
+  /// Deliberately swallows everything: guidance is an addition to a
+  /// recording trip, never a way to end one.
+  Future<void> _onNavFix(GpsSample sample) async {
+    final nav = _nav;
+    if (nav == null || _navBusy) return;
+    _navBusy = true;
+    try {
+      _navFields = await nav.onFix(
+          sample.lat, sample.lon, sample.speedMps, sample.time);
+    } catch (_) {
+      return;
+    } finally {
+      _navBusy = false;
+    }
+    _publish(DateTime.now());
+  }
+
+  /// The recalculation [NavigationRuntime] calls when the walker has left
+  /// the route. Throwing is a legitimate outcome here — the runtime reads it
+  /// as "no route available" and keeps following the old one.
+  ///
+  /// Never downloads tiles: the service has no UI to show progress in, and
+  /// the walker who most needs a replan is the one least likely to have
+  /// connectivity. It routes against whatever was on disk when the trip
+  /// started, and reports failure outside that.
+  Future<RouteResult?> _replanFrom(double lat, double lon) async {
+    final seed = _navSeed;
+    final tileDirPath = seed?.tileDirPath;
+    if (seed == null || tileDirPath == null) return null;
+    var engine = _engine;
+    if (engine == null) {
+      engine = ChannelRoutingEngine();
+      // Assigned only once init succeeds, so a failed init is retried on the
+      // next replan rather than cached as a working engine.
+      await engine.init(tileDirPath);
+      _engine = engine;
+    }
+    return engine.route(RouteRequest(
+      fromLat: lat,
+      fromLon: lon,
+      toLat: seed.destLat,
+      toLon: seed.destLon,
+      profile: seed.profile,
+    ));
   }
 
   /// The UI hands us the step count it sampled from the hardware sensor;
@@ -375,6 +490,18 @@ class TripTaskHandler extends TaskHandler {
     _seed = seed.copyWith(distanceKm: seed.distanceKm + sessionKm);
   }
 
+  /// The navigation handover written by the UI at trip start. Absent, empty
+  /// or unreadable all mean the same thing: record the trip, guide nothing.
+  Future<NavSeed?> _readNavSeed() async {
+    final raw = await FlutterForegroundTask.getData<String>(key: _kNavSeedKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return NavSeed.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<TripSnapshot?> _resumePoint(TripSnapshotStore store) async {
     final raw = await FlutterForegroundTask.getData<String>(key: _kSeedKey);
     return resumePoint(
@@ -394,6 +521,7 @@ class TripTaskHandler extends TaskHandler {
       steps: _steps,
       updatedAt: now,
       gpsSilent: _isGpsSilentAt(now),
+      nav: _navFields,
     );
   }
 }
