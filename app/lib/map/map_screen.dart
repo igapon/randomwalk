@@ -6,13 +6,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'candidates_sheet.dart';
 import 'geocoding.dart';
 import 'initial_camera.dart';
 import 'latest_only.dart';
 import 'nav_camera_state.dart';
+import 'plan_mode.dart';
 import 'replan_line.dart';
 import 'route_controller.dart';
 import '../coverage/manifest.dart' show DatasetVersionMismatch;
+import '../loop/loop_planner.dart';
+import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
 import '../nav/nav_fields.dart' show formatDistance;
 import '../theme/tokens.dart';
@@ -105,6 +109,39 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// destination.
   bool _armSetDeparture = false;
 
+  // ---- Task 6: plan mode (Itinéraire / Boucle / Durée) --------------------
+
+  final _planModeStore = PlanModeStore();
+  final _speedHistory = SpeedHistoryStore();
+  PlanMode _planMode = PlanMode.itinerary;
+  double _loopTargetKm = defaultLoopTargetKm(RoutingProfile.walk);
+  Duration _durationTarget = kDurationTargetDefault;
+
+  /// The walker's own learned pace for the current profile — drives both the
+  /// Durée conversion label and every candidate card's "durée estimée".
+  /// Null until the first async load resolves; recomputed whenever the
+  /// profile changes.
+  double? _speedKmh;
+
+  int _planSeed = initialSeed(DateTime.now());
+  LoopPlanResult? _candidateResult;
+
+  /// The [PlanKind] the currently shown [_candidateResult] was planned for —
+  /// kept alongside it (rather than re-derived from the live [_planMode]
+  /// state, which may have moved on) so [_startCandidate] promotes it with
+  /// the destination it actually belongs to.
+  PlanKind? _candidateKind;
+  int _selectedCandidateIndex = 0;
+  bool _candidatePlanning = false;
+  final _candidateGeneration = LatestOnly();
+
+  /// Native line handles for the up-to-3 drawn candidate polylines — see
+  /// [_drawCandidateLines]. Separate from [_routeLine]/[_routeLineCasing]
+  /// (the *planned* route line): candidates are a preview, never overlap
+  /// with the standard route-drawing pipeline, and are torn down as soon as
+  /// one is promoted (via « C'est parti ») or the sheet is dismissed.
+  final List<Line> _candidateLines = [];
+
   final _searchController = TextEditingController();
   Timer? _searchDebounce;
   final _searchGeneration = LatestOnly();
@@ -131,6 +168,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
         _onCameraFollowChanged;
     unawaited(_resolveInitialCamera());
     unawaited(_checkExistingLocationPermission());
+    unawaited(_loadPlanMode());
+    unawaited(_refreshSpeedKmh());
   }
 
   @override
@@ -241,6 +280,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     _departureMarker = null;
     _destinationMarker = null;
     _drawn = null;
+    // Same story as the route line above: these handles are dead too, and
+    // must be dropped (not removed — there is nothing left to remove them
+    // from) rather than leaked as stale references.
+    _candidateLines.clear();
     // Forces [_maybeSyncReplannedRoute] to re-check on the next frame: the
     // base draw below redraws the *planned* route, which is stale if a
     // replan had already happened before this remount (a theme flip
@@ -251,6 +294,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _onStyleLoaded() async {
     await _registerWaymarkIcons();
     await _redrawAfterRemount();
+    if (_candidateResult != null) await _drawCandidateLines();
   }
 
   /// Re-adds whatever route/markers/camera-follow the app state says are
@@ -473,23 +517,44 @@ class MapScreenState extends ConsumerState<MapScreen> {
     await controller?.animateCamera(CameraUpdate.newLatLngZoom(pos, 15));
   }
 
+  /// Départ/destination long-press — mode-aware since task 6:
+  ///   * an armed départ (see [_armDepartureChange]) always sets the
+  ///     departure, in every mode — "départ manuel armé, mécanique
+  ///     existante" is exactly this, reused as-is for Boucle/Durée.
+  ///   * [PlanMode.itinerary] keeps its original behaviour: sets the
+  ///     destination and immediately plans the standard A→B route.
+  ///   * [PlanMode.loop] has no destination concept (a closed loop has
+  ///     nothing to pin) — the long-press is a no-op past arming départ.
+  ///   * [PlanMode.duration] records the destination — that presence is what
+  ///     later makes « Proposer » build a fixed-duration A→B request instead
+  ///     of a loop (see [buildLoopRequest]) — without auto-planning, since
+  ///     the actual plan only happens on « Proposer ».
   Future<void> _onMapLongClick(Point<double> point, LatLng coords) async {
     final trip = ref.read(tripControllerProvider);
     if (_armSetDeparture) {
       setState(() => _armSetDeparture = false);
       await trip.saveActiveRoute(
           _plan(trip).copyWith(departure: (coords.latitude, coords.longitude)));
-      if (trip.activeRoute?.destination != null) await _planRoute();
+      if (_planMode == PlanMode.itinerary &&
+          trip.activeRoute?.destination != null) {
+        await _planRoute();
+      }
       return;
     }
+    if (_planMode == PlanMode.loop) return;
     await trip.saveActiveRoute(_plan(trip).copyWith(
         destination: (coords.latitude, coords.longitude), clearRoute: true));
-    await _planRoute();
+    if (_planMode == PlanMode.itinerary) {
+      await _planRoute();
+    } else {
+      _clearCandidates();
+    }
   }
 
   Future<void> _clearRoute() async {
     setState(() => _armSetDeparture = false);
     await ref.read(tripControllerProvider).clearActiveRoute();
+    _clearCandidates();
   }
 
   void _armDepartureChange() {
@@ -658,7 +723,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
         .copyWith(destination: (result.lat, result.lon), clearRoute: true));
     await controller?.animateCamera(
         CameraUpdate.newLatLng(LatLng(result.lat, result.lon)));
-    await _planRoute();
+    // Mode-aware in the same way [_onMapLongClick] is: itinerary plans
+    // immediately, Durée just records the pin for the next « Proposer », and
+    // Boucle has no use for a destination at all (still harmless to record).
+    if (_planMode == PlanMode.itinerary) {
+      await _planRoute();
+    } else {
+      _clearCandidates();
+    }
   }
 
   String _formatResult(RouteResult r) {
@@ -719,7 +791,251 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _onProfileChanged(RoutingProfile profile) async {
     final trip = ref.read(tripControllerProvider);
     await trip.setProfile(profile);
-    if (trip.activeRoute?.destination != null) await _planRoute();
+    if (_planMode == PlanMode.itinerary) {
+      if (trip.activeRoute?.destination != null) await _planRoute();
+    } else {
+      _clearCandidates(); // a walker's loop is not a cyclist's loop.
+    }
+    unawaited(_refreshSpeedKmh());
+  }
+
+  // ---- Task 6: plan mode (Itinéraire / Boucle / Durée) --------------------
+
+  Future<void> _loadPlanMode() async {
+    final mode = await _planModeStore.load();
+    if (!mounted) return;
+    setState(() => _planMode = mode);
+  }
+
+  /// Refreshes [_speedKmh] for the current profile — called at startup and
+  /// on every profile change, so the Durée conversion label and each
+  /// candidate card's estimated duration always reflect the walker's own
+  /// learned pace rather than a stale one from a previous profile.
+  Future<void> _refreshSpeedKmh() async {
+    final profile = ref.read(tripControllerProvider).profile;
+    final speed = await _speedHistory.speedKmh(profile);
+    if (!mounted) return;
+    setState(() => _speedKmh = speed);
+  }
+
+  Future<void> _onPlanModeChanged(PlanMode mode) async {
+    if (mode == _planMode) return;
+    final wasItinerary = _planMode == PlanMode.itinerary;
+    setState(() {
+      _planMode = mode;
+      _armSetDeparture = false;
+      if (wasItinerary && mode != PlanMode.itinerary) {
+        // Entering Boucle/Durée fresh from Itinéraire: seed the slider from
+        // the profile default rather than carrying over a value from a
+        // previous Boucle/Durée session that may no longer make sense.
+        _loopTargetKm =
+            defaultLoopTargetKm(ref.read(tripControllerProvider).profile);
+      }
+    });
+    _clearCandidates();
+    await _planModeStore.save(mode);
+  }
+
+  void _onLoopTargetChanged(double km) {
+    setState(() => _loopTargetKm = clampLoopTargetKm(km));
+  }
+
+  void _onDurationTargetChanged(Duration duration) {
+    setState(() => _durationTarget = clampDurationTarget(duration));
+  }
+
+  /// « Proposer » — builds the request for the current mode (see
+  /// [buildLoopRequest]) and runs it through [loopPlannerProvider], the
+  /// coverage->init->routeMulti orchestration mirroring [_planRoute]'s own
+  /// pipeline for the standard A→B planner.
+  Future<void> _proposeCandidates() async {
+    final trip = ref.read(tripControllerProvider);
+    final plan = _plan(trip);
+    final pinned = plan.departure;
+    final departure = pinned != null
+        ? LatLng(pinned.$1, pinned.$2)
+        : await _currentPositionOrNull();
+    if (!mounted) return;
+    if (departure == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(kPositionUnavailableMessage)));
+      return;
+    }
+    final speedKmh = _speedKmh ?? await _speedHistory.speedKmh(trip.profile);
+    if (!mounted) return;
+    setState(() => _speedKmh = speedKmh);
+
+    final request = buildLoopRequest(
+      mode: _planMode,
+      loopTargetKm: _loopTargetKm,
+      durationTarget: _durationTarget,
+      speedKmh: speedKmh,
+      profile: trip.profile,
+      start: (departure.latitude, departure.longitude),
+      destination: plan.destination,
+      seed: _planSeed,
+    );
+    if (request == null) return; // PlanMode.itinerary never reaches here.
+
+    final gen = _candidateGeneration.start();
+    setState(() => _candidatePlanning = true);
+    try {
+      final orchestrator = await ref.read(loopPlannerProvider.future);
+      final result = await orchestrator.plan(request);
+      if (!mounted || !_candidateGeneration.isCurrent(gen)) {
+        return; // cancelled (✕) or superseded while awaiting.
+      }
+      if (orchestrator.lastVersionMismatch) _showUpdateRequired();
+      if (orchestrator.lastCoverageFailed > 0 && !_coverageWarningShown) {
+        _coverageWarningShown = true;
+        _showCoverageIncomplete();
+      }
+      if (result.candidates.isEmpty) {
+        setState(() {
+          _candidateResult = null;
+          _candidateKind = null;
+        });
+        await _removeCandidateLines();
+        _showNoLoopCandidates();
+        return;
+      }
+      setState(() {
+        _candidateResult = result;
+        _candidateKind = request.kind;
+        _selectedCandidateIndex = 0;
+      });
+      await _drawCandidateLines();
+    } on DatasetVersionMismatch {
+      _showUpdateRequired();
+    } on RoutingException {
+      _showRouteUnavailable();
+    } on SocketException {
+      _showRouteUnavailable();
+    } on HttpException {
+      _showRouteUnavailable();
+    } on http.ClientException {
+      _showRouteUnavailable();
+    } finally {
+      if (mounted && _candidateGeneration.isCurrent(gen)) {
+        setState(() => _candidatePlanning = false);
+      }
+    }
+  }
+
+  /// ✕ on the spinner: invalidates the in-flight [_proposeCandidates] call
+  /// (its result, once it lands, is simply dropped — see the generation
+  /// check above) and drops the spinner immediately rather than waiting for
+  /// a router call budget that can legitimately take a while.
+  void _cancelCandidatePlanning() {
+    _candidateGeneration.start();
+    setState(() => _candidatePlanning = false);
+  }
+
+  /// « Autres propositions »: same request, next seed.
+  Future<void> _otherProposals() async {
+    setState(() => _planSeed = nextSeed(_planSeed));
+    await _proposeCandidates();
+  }
+
+  void _selectCandidate(int index) {
+    final result = _candidateResult;
+    if (result == null) return;
+    setState(() => _selectedCandidateIndex =
+        clampSelection(index, result.candidates.length));
+    unawaited(_drawCandidateLines());
+  }
+
+  /// ✕ on the sheet: drops the candidates and their preview lines, leaving
+  /// whatever was planned before untouched.
+  void _clearCandidates() {
+    if (_candidateResult == null && !_candidatePlanning) return;
+    _candidateGeneration.start();
+    setState(() {
+      _candidateResult = null;
+      _candidateKind = null;
+      _candidatePlanning = false;
+    });
+    unawaited(_removeCandidateLines());
+  }
+
+  /// « C'est parti »: the selected candidate becomes the standard planned
+  /// route — same [ActiveRoute]/[TripController.saveActiveRoute] path a
+  /// plain A→B plan result takes today, so the result banner, the
+  /// « Démarrer » pill and M2's navigation are all untouched by where the
+  /// route actually came from.
+  Future<void> _startCandidate() async {
+    final result = _candidateResult;
+    if (result == null || result.candidates.isEmpty) return;
+    final index =
+        clampSelection(_selectedCandidateIndex, result.candidates.length);
+    final candidate = result.candidates[index];
+    final trip = ref.read(tripControllerProvider);
+    final plan = _plan(trip);
+    // A loop has no destination — start and end are the same point, already
+    // implied by the route's own closed shape — so only a fixed-duration
+    // A->B candidate keeps the pin the user set.
+    final destination =
+        _candidateKind == PlanKind.toDestination ? plan.destination : null;
+
+    await _removeCandidateLines();
+    await trip.saveActiveRoute(ActiveRoute(
+      route: candidate.route,
+      departure: plan.departure,
+      destination: destination,
+      profile: trip.profile,
+    ));
+    setState(() {
+      _candidateResult = null;
+      _candidateKind = null;
+    });
+  }
+
+  /// Draws every candidate's polyline: the selected one in the standard
+  /// waymark yellow-on-ink casing (matching [_drawOverlays]'s planned-route
+  /// styling exactly), the others in hydro at 40% opacity — brief's own
+  /// "selected vs. others" spec for the candidates sheet.
+  Future<void> _drawCandidateLines() async {
+    await _removeCandidateLines();
+    final result = _candidateResult;
+    if (result == null || controller == null) return;
+    final selected =
+        clampSelection(_selectedCandidateIndex, result.candidates.length);
+    for (var i = 0; i < result.candidates.length; i++) {
+      final geometry = [
+        for (final (lat, lon) in result.candidates[i].route.shape)
+          LatLng(lat, lon)
+      ];
+      if (i == selected) {
+        _candidateLines.add(await controller!.addLine(LineOptions(
+            geometry: geometry,
+            lineColor: AppColors.routeLineCasingHex,
+            lineWidth: 7,
+            lineOpacity: 1.0)));
+        _candidateLines.add(await controller!.addLine(LineOptions(
+            geometry: geometry,
+            lineColor: AppColors.routeLineHex,
+            lineWidth: 4.5)));
+      } else {
+        _candidateLines.add(await controller!.addLine(LineOptions(
+            geometry: geometry,
+            lineColor: AppColors.hydroHex,
+            lineWidth: 3,
+            lineOpacity: 0.4)));
+      }
+    }
+  }
+
+  Future<void> _removeCandidateLines() async {
+    for (final line in _candidateLines) {
+      await controller?.removeLine(line);
+    }
+    _candidateLines.clear();
+  }
+
+  void _showNoLoopCandidates() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text(kNoLoopCandidatesMessage)));
   }
 
   /// Everything that redraws map geometry from app state, run together in
@@ -782,6 +1098,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
         brightness == Brightness.dark ? kMapStyleUrlDark : kMapStyleUrlLight;
     final result = trip.route;
 
+    final candidateResult = _candidateResult;
+
     Widget? bottomBanner;
     if (_planning) {
       bottomBanner = _ProgressBanner(progress: _downloadProgress);
@@ -793,6 +1111,23 @@ class MapScreenState extends ConsumerState<MapScreen> {
         arrived: trip.isRouteBound && (snapshot?.navArrived ?? false),
         onStop: _stopTrip,
       );
+    } else if (_candidatePlanning) {
+      bottomBanner =
+          _CandidateProgressBanner(onCancel: _cancelCandidatePlanning);
+    } else if (candidateResult != null) {
+      bottomBanner = CandidatesSheet(
+        result: candidateResult,
+        selectedIndex: _selectedCandidateIndex,
+        // Set by _proposeCandidates just before this result ever exists;
+        // the literal fallback is an unreachable last resort, never a real
+        // per-profile default (avoids a hard dependency on
+        // SpeedHistoryStore's own private defaults from this widget).
+        speedKmh: _speedKmh ?? 4.5,
+        onSelect: _selectCandidate,
+        onStart: _startCandidate,
+        onOtherProposals: _otherProposals,
+        onClose: _clearCandidates,
+      );
     } else if (result != null) {
       bottomBanner = _ResultBanner(
         text: _formatResult(result),
@@ -800,6 +1135,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
         onClear: _clearRoute,
         onStart: _startRouteTrip,
       );
+    } else if (_planMode != PlanMode.itinerary) {
+      // Boucle/Durée: the mode-specific controls (slider, « Proposer ») live
+      // in the top overlay; the bottom banner stays empty until a plan
+      // exists, same as Itinéraire before any destination is picked.
+      bottomBanner = const SizedBox.shrink();
     } else {
       bottomBanner = _StartPill(onStart: _startFreeTrip);
     }
@@ -825,6 +1165,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
     } else {
       topOverlay = Column(
         children: [
+          SegmentedButton<PlanMode>(
+            segments: const [
+              ButtonSegment(
+                  value: PlanMode.itinerary, label: Text('Itinéraire')),
+              ButtonSegment(value: PlanMode.loop, label: Text('Boucle')),
+              ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
+            ],
+            selected: {_planMode},
+            onSelectionChanged: (s) => _onPlanModeChanged(s.first),
+          ),
+          const SizedBox(height: 8),
           _SearchBar(
             controller: _searchController,
             onChanged: _onSearchChanged,
@@ -853,6 +1204,19 @@ class MapScreenState extends ConsumerState<MapScreen> {
             onSelectionChanged:
                 trip.isRecording ? null : (s) => _onProfileChanged(s.first),
           ),
+          if (_planMode != PlanMode.itinerary) ...[
+            const SizedBox(height: 12),
+            _PlanTargetPanel(
+              mode: _planMode,
+              loopTargetKm: _loopTargetKm,
+              durationTarget: _durationTarget,
+              speedKmh: _speedKmh,
+              planning: _candidatePlanning,
+              onLoopTargetChanged: _onLoopTargetChanged,
+              onDurationTargetChanged: _onDurationTargetChanged,
+              onPropose: _proposeCandidates,
+            ),
+          ],
         ],
       );
     }
@@ -1043,6 +1407,137 @@ class _ProgressBanner extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2)),
             const SizedBox(width: 12),
             Expanded(child: Text(label, style: Theme.of(context).textTheme.bodyMedium)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// « Proposer » in flight, for Boucle/Durée (task 6) — a spinner with a
+/// cancel ✕, distinct from [_ProgressBanner]: this one is cancellable
+/// (LoopPlanner's router-call budget can legitimately take a few seconds),
+/// where the standard A→B tile-download progress banner is not.
+class _CandidateProgressBanner extends StatelessWidget {
+  const _CandidateProgressBanner({required this.onCancel});
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) => Card(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text('Recherche de boucles…',
+                    style: Theme.of(context).textTheme.bodyMedium),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: 'Annuler',
+                onPressed: onCancel,
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+/// Boucle/Durée's mode-specific controls (task 6): the distance or duration
+/// slider, the duration→distance conversion label, and « Proposer ». Lives
+/// in the top overlay, below the Marche/Vélo picker.
+class _PlanTargetPanel extends StatelessWidget {
+  const _PlanTargetPanel({
+    required this.mode,
+    required this.loopTargetKm,
+    required this.durationTarget,
+    required this.speedKmh,
+    required this.planning,
+    required this.onLoopTargetChanged,
+    required this.onDurationTargetChanged,
+    required this.onPropose,
+  });
+
+  final PlanMode mode;
+  final double loopTargetKm;
+  final Duration durationTarget;
+  final double? speedKmh;
+  final bool planning;
+  final ValueChanged<double> onLoopTargetChanged;
+  final ValueChanged<Duration> onDurationTargetChanged;
+  final VoidCallback onPropose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final Widget sliderRow;
+    if (mode == PlanMode.loop) {
+      final km = loopTargetKm.toStringAsFixed(1).replaceAll('.', ',');
+      sliderRow = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Distance : $km km', style: theme.textTheme.bodyMedium),
+          Slider(
+            min: kLoopTargetMinKm,
+            max: kLoopTargetMaxKm,
+            divisions:
+                ((kLoopTargetMaxKm - kLoopTargetMinKm) / kLoopTargetStepKm)
+                    .round(),
+            value: loopTargetKm,
+            onChanged: onLoopTargetChanged,
+          ),
+        ],
+      );
+    } else {
+      final hours = durationTarget.inHours;
+      final minutes = durationTarget.inMinutes % 60;
+      final durationLabel = hours > 0
+          ? '${hours}h ${minutes.toString().padLeft(2, '0')}'
+          : '${minutes}min';
+      final speed = speedKmh;
+      final conversionLabel = speed == null
+          ? null
+          : formatConversionLabel(durationToTargetKm(durationTarget, speed));
+      sliderRow = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Durée : $durationLabel', style: theme.textTheme.bodyMedium),
+          Slider(
+            min: kDurationTargetMin.inMinutes.toDouble(),
+            max: kDurationTargetMax.inMinutes.toDouble(),
+            divisions:
+                (kDurationTargetMax.inMinutes - kDurationTargetMin.inMinutes) ~/
+                    kDurationTargetStep.inMinutes,
+            value: durationTarget.inMinutes.toDouble(),
+            onChanged: (minutes) =>
+                onDurationTargetChanged(Duration(minutes: minutes.round())),
+          ),
+          if (conversionLabel != null)
+            Text(conversionLabel, style: theme.textTheme.bodySmall),
+        ],
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            sliderRow,
+            const SizedBox(height: 4),
+            ElevatedButton(
+              onPressed: planning ? null : onPropose,
+              child: const Text('Proposer'),
+            ),
           ],
         ),
       ),
