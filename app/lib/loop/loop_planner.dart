@@ -17,6 +17,8 @@
 ///   * That parameter is then bisected against the distance the router
 ///     actually reports, with a hard budget of
 ///     [LoopPlanner.maxRouterCallsPerCandidate] router calls per candidate.
+///   * Surviving candidates are scored, sorted, and near-duplicates are
+///     collapsed — so a plan can come back with fewer than three offers.
 ///
 /// "Not found" is never an exception: a request the router cannot satisfy
 /// comes back as an empty candidate list (or as candidates with
@@ -104,16 +106,35 @@ class LoopCandidate {
 
 class LoopPlanResult {
   /// Candidates sorted by ascending [LoopCandidate.score] (best first).
-  /// Empty only when the router refused every geometry we tried.
+  ///
+  /// May hold *fewer* than [LoopPlanner.candidateCount] entries: near
+  /// duplicates are collapsed (see [LoopPlanner.plan]), and candidates the
+  /// router refused are simply absent. Empty only when the router refused
+  /// every geometry we tried.
   final List<LoopCandidate> candidates;
 
-  /// True when at least one candidate landed within
-  /// [LoopPlanner.targetTolerance] of the target. False (with a non-empty
-  /// [candidates]) means "here is the closest we could get" — the UI shows
-  /// the real gap.
+  /// True when the candidate the UI shows first — `candidates.first` — is
+  /// within [LoopPlanner.targetTolerance] of the target.
+  ///
+  /// Deliberately *not* "some candidate is on target": the best-scoring
+  /// candidate can be a slightly-off-distance route that avoids retracing
+  /// itself, and claiming "target met" while showing that route would lie
+  /// about the number the user actually sees. When this is false the UI
+  /// shows the real gap, and [bestGapRatio] says how close any candidate
+  /// got.
   final bool targetMet;
 
-  const LoopPlanResult({required this.candidates, required this.targetMet});
+  /// Smallest |[LoopCandidate.gapRatio]| across [candidates] — a magnitude,
+  /// so always >= 0 — or null when there are none. Display-only: lets the UI
+  /// say "closest we found: 8.4 km" even when the top-scored candidate is not
+  /// the closest one.
+  final double? bestGapRatio;
+
+  const LoopPlanResult({
+    required this.candidates,
+    required this.targetMet,
+    required this.bestGapRatio,
+  });
 }
 
 class LoopPlanner {
@@ -127,11 +148,13 @@ class LoopPlanner {
   /// expansions and post-failure retries alike.
   static const int maxRouterCallsPerCandidate = 4;
 
-  /// Consecutive routing failures tolerated before abandoning a candidate.
+  /// Consecutive routing failures that abandon a candidate. At 2, a
+  /// candidate gets exactly *one* shrink-and-retry: the first failure shrinks
+  /// the geometry and retries, and a second failure in a row gives up.
   static const int maxConsecutiveFailures = 2;
 
   /// A routing failure means "too big to fit on the local network here", so
-  /// the search parameter is shrunk by this factor before retrying.
+  /// the search parameter is shrunk by this factor before the single retry.
   static const double failureShrinkFactor = 0.7;
 
   /// Growth factor used while the bracket has no upper bound yet.
@@ -139,6 +162,21 @@ class LoopPlanner {
 
   /// |gapRatio| at or below which a candidate counts as on-target.
   static const double targetTolerance = 0.10;
+
+  /// Two candidates whose distances differ by less than this fraction *and*
+  /// whose [LoopCandidate.repeatedRatio] differ by less than
+  /// [dedupRepeatedTolerance] are the same offer as far as the user is
+  /// concerned; only the better-scored one is returned.
+  static const double dedupDistanceTolerance = 0.02;
+  static const double dedupRepeatedTolerance = 0.05;
+
+  /// `repeatedSegmentRatio`'s grid cell, in metres, is scaled to the target
+  /// distance: a fixed 25 m cell makes every sub-kilometre loop look like an
+  /// out-and-back, because consecutive polyline points land in the same
+  /// cell. One fortieth of the target (≈ the spacing of a 40-point route),
+  /// clamped to this range.
+  static const double minRepeatedCellM = 5.0;
+  static const double maxRepeatedCellM = 25.0;
 
   final LoopRouter router;
   final math.Random Function(int seed) _rng;
@@ -175,10 +213,20 @@ class LoopPlanner {
       }
     }
 
-    final candidates = _scoreAndSort(request.kind, request.targetKm, routes);
-    final targetMet = candidates
-        .any((c) => c.gapRatio.abs() <= targetTolerance + _epsilon);
-    return LoopPlanResult(candidates: candidates, targetMet: targetMet);
+    final candidates =
+        _dedup(_scoreAndSort(request.kind, request.targetKm, routes));
+    final targetMet = candidates.isNotEmpty &&
+        candidates.first.gapRatio.abs() <= targetTolerance + _epsilon;
+    final bestGapRatio = candidates.isEmpty
+        ? null
+        : candidates
+            .map((c) => c.gapRatio.abs())
+            .reduce((a, b) => a < b ? a : b);
+    return LoopPlanResult(
+      candidates: candidates,
+      targetMet: targetMet,
+      bestGapRatio: bestGapRatio,
+    );
   }
 
   /// Guards against a candidate that lands exactly on the tolerance being
@@ -202,15 +250,14 @@ class LoopPlanner {
   Future<RouteResult?> _searchCandidate(LoopRequest request, int index) async {
     final targetM = request.targetKm * 1000;
     // One draw per candidate, from a generator seeded by the request seed
-    // plus the candidate index — so candidates differ from each other and
-    // the whole plan is reproducible.
+    // and the candidate index — so candidates differ from each other and the
+    // whole plan is reproducible.
     //
-    // Caveat for callers: because the sub-seed is `seed + index`, two
-    // requests whose seeds differ by less than [candidateCount] share
-    // candidates (seed 1 -> {1,2,3}, seed 2 -> {2,3,4}). A "give me other
-    // options" affordance should therefore step the seed by at least
-    // [candidateCount], not by 1.
-    final draw = _rng(request.seed + index).nextDouble();
+    // The sub-seeds are spaced by [candidateCount] rather than being
+    // `seed + index`: that keeps consecutive request seeds' candidate sets
+    // disjoint, so a UI that offers "other options" by incrementing the seed
+    // by 1 gets three genuinely new candidates instead of two of the old ones.
+    final draw = _rng(request.seed * candidateCount + index).nextDouble();
 
     var param = _initialParam(request, draw);
     var low = 0.0;
@@ -307,10 +354,13 @@ class LoopPlanner {
     double targetKm,
     List<RouteResult> routes,
   ) {
+    final cellM = (targetKm * 1000 / 40)
+        .clamp(minRepeatedCellM, maxRepeatedCellM)
+        .toDouble();
     final scored = <LoopCandidate>[];
     for (final route in routes) {
       final gapRatio = (route.distanceKm - targetKm) / targetKm;
-      final repeatedRatio = repeatedSegmentRatio(route.shape);
+      final repeatedRatio = repeatedSegmentRatio(route.shape, cellM: cellM);
       scored.add(LoopCandidate(
         route: route,
         gapRatio: gapRatio,
@@ -326,5 +376,27 @@ class LoopPlanner {
       return byScore != 0 ? byScore : a.compareTo(b);
     });
     return [for (final i in order) scored[i]];
+  }
+
+  /// Drops candidates that are, for a user picking between offers, the same
+  /// route as one already kept: same length to within
+  /// [dedupDistanceTolerance] and the same amount of retracing to within
+  /// [dedupRepeatedTolerance]. Expects [sorted] in score order, so the
+  /// survivor of a duplicate pair is always the better-scored one.
+  List<LoopCandidate> _dedup(List<LoopCandidate> sorted) {
+    final kept = <LoopCandidate>[];
+    for (final candidate in sorted) {
+      final duplicate = kept.any((k) {
+        final distanceDelta =
+            (candidate.route.distanceKm - k.route.distanceKm).abs();
+        final relative =
+            k.route.distanceKm == 0 ? 0.0 : distanceDelta / k.route.distanceKm;
+        return relative < dedupDistanceTolerance &&
+            (candidate.repeatedRatio - k.repeatedRatio).abs() <
+                dedupRepeatedTolerance;
+      });
+      if (!duplicate) kept.add(candidate);
+    }
+    return kept;
   }
 }
