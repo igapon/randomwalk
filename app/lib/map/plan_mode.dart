@@ -99,8 +99,8 @@ String formatConversionLabel(double km) {
   final bound = km >= kLoopTargetMaxKm
       ? ' (maximum)'
       : km <= kLoopTargetMinKm
-          ? ' (minimum)'
-          : '';
+      ? ' (minimum)'
+      : '';
   return '≈ $formatted km$bound à votre rythme';
 }
 
@@ -151,8 +151,7 @@ LoopRequest? buildLoopRequest({
       : durationToTargetKm(durationTarget, speedKmh);
   assert(targetKm > 0, 'targetKm must be positive');
 
-  final kind =
-      destination != null ? PlanKind.toDestination : PlanKind.loop;
+  final kind = destination != null ? PlanKind.toDestination : PlanKind.loop;
 
   return LoopRequest(
     kind: kind,
@@ -163,6 +162,39 @@ LoopRequest? buildLoopRequest({
     seed: seed,
   );
 }
+
+/// Distance-mode slider floor for a pinned destination — fix-round-1, point
+/// 3: a target *below* the direct start→destination distance builds a
+/// [PlanKind.toDestination] request with a non-positive detour budget (see
+/// `LoopPlanner._surplusM`), so the planner has nothing to pad the route
+/// with — it hands back the direct route itself as the only candidate,
+/// badged a wildly off-target `+140 %`-style gap, with "Autres propositions"
+/// a deterministic no-op on the same seed-less direct geometry (see
+/// [shouldHideOtherProposals], which hides it for exactly this case).
+///
+/// Returns the loop-slider target [_proposeCandidates] should seed before
+/// building the request: [directKm] itself, rounded *up* to the nearest
+/// [kLoopTargetStepKm] and clamped to the slider's bounds, whenever
+/// [currentTargetKm] sits below it — [currentTargetKm] unchanged otherwise
+/// (already enough budget for a real detour). `null` when [directKm] itself
+/// exceeds [kLoopTargetMaxKm]: no slider position can express a target that
+/// far, so the caller shows "Destination trop éloignée pour ce mode" and
+/// skips planning entirely rather than seeding a value the slider could
+/// never actually reach.
+double? loopTargetFloorForDestination({
+  required double directKm,
+  required double currentTargetKm,
+}) {
+  if (directKm > kLoopTargetMaxKm) return null;
+  if (directKm <= currentTargetKm) return currentTargetKm;
+  final stepped = (directKm / kLoopTargetStepKm).ceil() * kLoopTargetStepKm;
+  return stepped.clamp(kLoopTargetMinKm, kLoopTargetMaxKm);
+}
+
+/// « Destination trop éloignée pour ce mode » — shown instead of planning
+/// when [loopTargetFloorForDestination] returns `null` (fix-round-1, point
+/// 3).
+const kDestinationTooFarMessage = 'Destination trop éloignée pour ce mode';
 
 // ---- Destination pinning across mode switches -------------------------------
 
@@ -193,8 +225,7 @@ bool shouldClearDestinationOnModeSwitch({
   required PlanMode from,
   required PlanMode to,
   required bool hasRoute,
-}) =>
-    from != to && !hasRoute;
+}) => from != to && !hasRoute;
 
 /// Coordinate fallback label for a pinned destination the UI has no
 /// reverse-geocoded name for (a long-press pin, or a search result whose
@@ -216,8 +247,7 @@ String formatDestinationLabel((double, double) point) {
 bool shouldShowPlanDestinationChip({
   required PlanMode mode,
   required bool hasDestination,
-}) =>
-    mode != PlanMode.itinerary && hasDestination;
+}) => mode != PlanMode.itinerary && hasDestination;
 
 // ---- Fullscreen candidate selection (task 8) --------------------------------
 
@@ -228,6 +258,32 @@ bool shouldShowPlanDestinationChip({
 /// la carte". A single tested fact rather than a scattered `if` in `build()`.
 bool shouldShowPlanningTopOverlay({required bool hasCandidates}) =>
     !hasCandidates;
+
+/// Fix-round-1, point 1: `MapScreen` stays mounted behind an `IndexedStack`
+/// tab switch, so a walker can propose loop/duration candidates, flip to the
+/// Session tab and start a *free* trip there, then come back to the Map tab
+/// with a recording already running — while the stale candidates (and their
+/// preview polylines) are still sitting on screen with no ✕ reachable to
+/// dismiss them until the trip ends (the compact row that owns that ✕ only
+/// shows when [shouldShowCandidateChips] says so, and a recording always
+/// wins that check). A recording session takes priority: this is the signal
+/// `map_screen.dart`'s `build()` uses to clear them itself, the same way
+/// `_clearCandidates` (the ✕ handler) already would.
+bool shouldClearCandidatesForRecording({
+  required bool isRecording,
+  required bool hasCandidates,
+}) => isRecording && hasCandidates;
+
+/// The single flag both the compact candidate row (`bottomBanner`) and the
+/// top overlay's "hide everything" branch key off — fix-round-1, point 1:
+/// keeps the two in lockstep so a recording trip can never show one without
+/// the other (a `StatsBanner` with a blank top, or the fullscreen selection
+/// UI with the recording pill nowhere to be seen). `hasCandidates` alone,
+/// without the `!isRecording` guard, is exactly the bug this replaces.
+bool shouldShowCandidateChips({
+  required bool hasCandidates,
+  required bool isRecording,
+}) => hasCandidates && !isRecording;
 
 /// « Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ » — the plan-target panel's
 /// collapsed line (task-8 brief point 2). Uses the renamed « Distance »
@@ -247,8 +303,8 @@ String planPanelCollapsedLabel({
   final label = hours <= 0
       ? '$minutes min'
       : minutes == 0
-          ? '$hours h'
-          : '$hours h $minutes';
+      ? '$hours h'
+      : '$hours h $minutes';
   return 'Durée · $label ▸';
 }
 
@@ -283,8 +339,9 @@ Duration estimatedDuration(double distanceKm, double speedKmh) {
 /// durée affichée soit la vôtre, pas celle de Valhalla").
 String formatRouteResultLabel(RouteResult r, double? speedKmh) {
   final km = r.distanceKm.toStringAsFixed(1).replaceAll('.', ',');
-  final duration =
-      speedKmh == null ? r.duration : estimatedDuration(r.distanceKm, speedKmh);
+  final duration = speedKmh == null
+      ? r.duration
+      : estimatedDuration(r.distanceKm, speedKmh);
   final min = (duration.inSeconds / 60).round();
   return '$km km · ~$min min';
 }
@@ -306,15 +363,16 @@ String? gapBadgeLabel(LoopCandidate candidate) {
   return '$sign$percent %';
 }
 
-/// Below this fraction of self-retracing, a route reads as "barely any
-/// out-and-back" rather than "a fair bit of it" — the brief's own two
-/// examples for the mini-indicator.
-const double kRepeatedRatioNoticeable = 0.15;
-
-String repeatedRatioHint(double repeatedRatio) =>
-    repeatedRatio < kRepeatedRatioNoticeable
-        ? "peu d'allers-retours"
-        : 'quelques allers-retours';
+/// Whether "Autres propositions" should be hidden from the compact row —
+/// fix-round-1, point 3: a single [PlanKind.toDestination] candidate is the
+/// direct route the planner fell back to when it had no detour budget to
+/// work with (see [loopTargetFloorForDestination]'s doc comment) — asking
+/// again would deterministically hand back the exact same route, so the
+/// action is hidden rather than offered as a no-op.
+bool shouldHideOtherProposals({
+  required int candidateCount,
+  required PlanKind kind,
+}) => candidateCount == 1 && kind == PlanKind.toDestination;
 
 // ---- Mode persistence --------------------------------------------------------
 

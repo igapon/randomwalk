@@ -20,8 +20,8 @@ class ActiveRoute {
   final (double, double)? departure;
   final RoutingProfile profile;
 
-  /// True when [route] is a closed loop (M3 « Boucle », or a « Durée » plan
-  /// with no pinned destination) rather than an A→B itinerary.
+  /// True when [route] is a closed loop (M3 « Distance », or a « Durée »
+  /// plan with no pinned destination) rather than an A→B itinerary.
   ///
   /// Carried all the way into the tracking service (via `NavSeed`) because a
   /// loop has *no destination*: nothing downstream can infer loop-ness from

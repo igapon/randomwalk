@@ -33,7 +33,7 @@ class NavigationRuntime {
   final Future<RouteResult?> Function(double lat, double lon) _requestRoute;
   final DateTime Function() _now;
 
-  /// The route being followed is a closed loop (M3 « Boucle » / « Durée »
+  /// The route being followed is a closed loop (M3 « Distance » / « Durée »
   /// without a pinned destination — see `ActiveRoute.isLoop`), and must
   /// therefore never be recalculated.
   ///

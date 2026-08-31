@@ -2,10 +2,11 @@
 /// device-QA overhaul of task 6's candidates sheet). The owner's own words:
 /// « pendant la sélection… cache les menus et mets les alternatives en petit
 /// en bas pour mieux voir la carte » — so this replaces the old full-size
-/// [CandidatesSheet] cards with a single compact, horizontally-scrollable row
-/// of vignettes (≤ ~96 px tall) plus a normal-size « C'est parti » pill and a
-/// ✕ to leave selection (which restores the top menus — see
-/// `map_screen.dart`'s `shouldShowPlanningTopOverlay`).
+/// `CandidatesSheet` cards (task 6, since removed) with a single compact,
+/// horizontally-scrollable row of vignettes (≤ ~96 px tall) plus a
+/// normal-size « C'est parti » pill and a ✕ to leave selection (which
+/// restores the top menus — see `map_screen.dart`'s
+/// `shouldShowPlanningTopOverlay`).
 ///
 /// All display logic beyond simple string interpolation still lives in
 /// `plan_mode.dart` — this file is purely the widget, same split the old
@@ -24,10 +25,14 @@ import 'plan_mode.dart';
 const double kCandidateChipRowHeight = 88.0;
 
 /// Self-pads *nothing* for the bottom system inset, matching the old
-/// [CandidatesSheet]'s convention (fix-round-1 finding it replaced): the
+/// `CandidatesSheet`'s convention (fix-round-1 finding it replaced): the
 /// single outer `Positioned`/`Padding` in `map_screen.dart` already owns
 /// `viewPadding.bottom` for every bottom banner, so this widget must never
-/// add its own on top of that.
+/// add its own on top of that — enforced by wrapping in an explicit
+/// [EdgeInsets.zero] `Padding` (keyed for the widget test) rather than just
+/// leaving the root un-padded, so a future edit that reaches for padding
+/// here trips the test instead of silently reintroducing the double-count
+/// fix-round-1 fixed.
 class CandidateChipsBar extends StatelessWidget {
   const CandidateChipsBar({
     super.key,
@@ -38,6 +43,7 @@ class CandidateChipsBar extends StatelessWidget {
     required this.onStart,
     required this.onOtherProposals,
     required this.onClose,
+    this.kind,
   });
 
   final LoopPlanResult result;
@@ -48,53 +54,72 @@ class CandidateChipsBar extends StatelessWidget {
   final VoidCallback onOtherProposals;
   final VoidCallback onClose;
 
+  /// The kind of plan [result] answers — fix-round-1 point 3: a single
+  /// [PlanKind.toDestination] candidate is the direct route with no detour
+  /// budget to work with (see `loopTargetFloorForDestination`'s doc
+  /// comment); "Autres propositions" would be a deterministic no-op, so it
+  /// is hidden rather than offered. `null` (defensive default) shows it, the
+  /// same as every other kind/count combination.
+  final PlanKind? kind;
+
   @override
   Widget build(BuildContext context) {
     final index = clampSelection(selectedIndex, result.candidates.length);
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: result.candidates.isEmpty ? null : onStart,
-                icon: const WaymarkDiamond(size: 12, color: AppColors.ink),
-                label: const Text("C'est parti"),
+    final hideOtherProposals =
+        kind != null &&
+        shouldHideOtherProposals(
+          candidateCount: result.candidates.length,
+          kind: kind!,
+        );
+    return Padding(
+      key: const Key('candidateChipsBarPadding'),
+      padding: EdgeInsets.zero,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: result.candidates.isEmpty ? null : onStart,
+                  icon: const WaymarkDiamond(size: 12, color: AppColors.ink),
+                  label: const Text("C'est parti"),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              icon: const Icon(Icons.close),
-              tooltip: 'Fermer',
-              onPressed: onClose,
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          key: const Key('candidateChipsRow'),
-          height: kCandidateChipRowHeight,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: EdgeInsets.zero,
-            itemCount: result.candidates.length + 1,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, i) {
-              if (i == result.candidates.length) {
-                return _OtherProposalsChip(onTap: onOtherProposals);
-              }
-              return _CandidateChip(
-                candidate: result.candidates[i],
-                speedKmh: speedKmh,
-                selected: i == index,
-                onTap: () => onSelect(i),
-              );
-            },
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: 'Fermer',
+                onPressed: onClose,
+              ),
+            ],
           ),
-        ),
-      ],
+          const SizedBox(height: 8),
+          SizedBox(
+            key: const Key('candidateChipsRow'),
+            height: kCandidateChipRowHeight,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.zero,
+              itemCount:
+                  result.candidates.length + (hideOtherProposals ? 0 : 1),
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                if (i == result.candidates.length) {
+                  return _OtherProposalsChip(onTap: onOtherProposals);
+                }
+                return _CandidateChip(
+                  candidate: result.candidates[i],
+                  speedKmh: speedKmh,
+                  selected: i == index,
+                  onTap: () => onSelect(i),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -147,9 +172,11 @@ class _CandidateChip extends StatelessWidget {
                     ),
                     const SizedBox(width: 4),
                     Expanded(
-                      child: Text('$km km · ~$minutes min',
-                          style: theme.textTheme.labelLarge,
-                          overflow: TextOverflow.ellipsis),
+                      child: Text(
+                        '$km km · ~$minutes min',
+                        style: theme.textTheme.labelLarge,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ],
                 ),
@@ -157,14 +184,19 @@ class _CandidateChip extends StatelessWidget {
                   const SizedBox(height: 4),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: theme.colorScheme.errorContainer,
                       borderRadius: BorderRadius.circular(AppRadii.stadium),
                     ),
-                    child: Text(badge,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.onErrorContainer)),
+                    child: Text(
+                      badge,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onErrorContainer,
+                      ),
+                    ),
                   ),
                 ],
               ],
@@ -184,20 +216,20 @@ class _OtherProposalsChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: 96,
-        child: OutlinedButton(
-          onPressed: onTap,
-          style: OutlinedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-          ),
-          child: const Text(
-            'Autres propositions',
-            textAlign: TextAlign.center,
-            maxLines: 3,
-            style: TextStyle(fontSize: 11),
-          ),
-        ),
-      );
+    width: 96,
+    child: OutlinedButton(
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+      ),
+      child: const Text(
+        'Autres propositions',
+        textAlign: TextAlign.center,
+        maxLines: 3,
+        style: TextStyle(fontSize: 11),
+      ),
+    ),
+  );
 }
 
 /// The `SnackBar` shown when a plan request came back with no routable

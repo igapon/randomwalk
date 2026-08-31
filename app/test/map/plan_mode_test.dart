@@ -437,15 +437,38 @@ void main() {
     });
   });
 
-  group('repeatedRatioHint', () {
-    test('low repetition reads as "peu d\'allers-retours"', () {
-      expect(repeatedRatioHint(0.0), "peu d'allers-retours");
-      expect(repeatedRatioHint(0.14), "peu d'allers-retours");
+  group('shouldHideOtherProposals (fix-round-1, point 3)', () {
+    test('hidden for a single direct-route toDestination candidate', () {
+      expect(
+        shouldHideOtherProposals(
+            candidateCount: 1, kind: PlanKind.toDestination),
+        isTrue,
+      );
     });
 
-    test('at/above the threshold reads as "quelques allers-retours"', () {
-      expect(repeatedRatioHint(0.15), 'quelques allers-retours');
-      expect(repeatedRatioHint(0.9), 'quelques allers-retours');
+    test('shown for more than one toDestination candidate', () {
+      expect(
+        shouldHideOtherProposals(
+            candidateCount: 2, kind: PlanKind.toDestination),
+        isFalse,
+      );
+    });
+
+    test('shown for a single loop candidate — loops always vary with seed',
+        () {
+      expect(
+        shouldHideOtherProposals(candidateCount: 1, kind: PlanKind.loop),
+        isFalse,
+      );
+    });
+
+    test('shown for zero candidates (defensive — never actually reached)',
+        () {
+      expect(
+        shouldHideOtherProposals(
+            candidateCount: 0, kind: PlanKind.toDestination),
+        isFalse,
+      );
     });
   });
 
@@ -496,6 +519,140 @@ void main() {
 
     test('hidden the instant candidates exist', () {
       expect(shouldShowPlanningTopOverlay(hasCandidates: true), isFalse);
+    });
+  });
+
+  group('shouldClearCandidatesForRecording (fix-round-1, point 1)', () {
+    test('clears stale candidates the instant a recording starts', () {
+      expect(
+        shouldClearCandidatesForRecording(
+            isRecording: true, hasCandidates: true),
+        isTrue,
+      );
+    });
+
+    test('no candidates to clear — nothing to do even while recording', () {
+      expect(
+        shouldClearCandidatesForRecording(
+            isRecording: true, hasCandidates: false),
+        isFalse,
+      );
+    });
+
+    test('candidates with no recording are left alone', () {
+      expect(
+        shouldClearCandidatesForRecording(
+            isRecording: false, hasCandidates: true),
+        isFalse,
+      );
+    });
+  });
+
+  group('shouldShowCandidateChips (fix-round-1, point 1: banner/overlay '
+      'lockstep)', () {
+    test('shown with candidates and no recording', () {
+      expect(
+        shouldShowCandidateChips(hasCandidates: true, isRecording: false),
+        isTrue,
+      );
+    });
+
+    test('hidden the instant a recording starts, even with candidates still '
+        'in state — the bug this replaces was hasCandidates alone', () {
+      expect(
+        shouldShowCandidateChips(hasCandidates: true, isRecording: true),
+        isFalse,
+      );
+    });
+
+    test('hidden with no candidates, recording or not', () {
+      expect(
+        shouldShowCandidateChips(hasCandidates: false, isRecording: false),
+        isFalse,
+      );
+      expect(
+        shouldShowCandidateChips(hasCandidates: false, isRecording: true),
+        isFalse,
+      );
+    });
+  });
+
+  group('loopTargetFloorForDestination (fix-round-1, point 3: far-pin '
+      'distance floor)', () {
+    test('current target already covers the direct distance — untouched',
+        () {
+      expect(
+        loopTargetFloorForDestination(directKm: 3.0, currentTargetKm: 5.0),
+        5.0,
+      );
+    });
+
+    test('exactly equal to the current target — untouched', () {
+      expect(
+        loopTargetFloorForDestination(directKm: 5.0, currentTargetKm: 5.0),
+        5.0,
+      );
+    });
+
+    test('direct distance above the current target is rounded up to the '
+        'nearest step', () {
+      expect(
+        loopTargetFloorForDestination(directKm: 5.1, currentTargetKm: 5.0),
+        5.5,
+      );
+      expect(
+        loopTargetFloorForDestination(directKm: 5.5, currentTargetKm: 1.0),
+        5.5,
+      );
+    });
+
+    test('the floor is clamped to the slider minimum', () {
+      expect(
+        loopTargetFloorForDestination(directKm: 0.2, currentTargetKm: 0.1),
+        kLoopTargetMinKm,
+      );
+    });
+
+    test('the floor is clamped to the slider maximum', () {
+      expect(
+        loopTargetFloorForDestination(directKm: 29.9, currentTargetKm: 1.0),
+        kLoopTargetMaxKm,
+      );
+    });
+
+    test('null when the direct distance itself exceeds the slider maximum '
+        '— no slider position can express it', () {
+      expect(
+        loopTargetFloorForDestination(directKm: 31.0, currentTargetKm: 5.0),
+        isNull,
+      );
+      expect(
+        loopTargetFloorForDestination(
+            directKm: kLoopTargetMaxKm + 0.01, currentTargetKm: 5.0),
+        isNull,
+      );
+    });
+
+    test('exactly at the slider maximum is still expressible', () {
+      expect(
+        loopTargetFloorForDestination(
+            directKm: kLoopTargetMaxKm, currentTargetKm: 1.0),
+        kLoopTargetMaxKm,
+      );
+    });
+
+    test('the result is always a legal, positive LoopRequest target when '
+        'non-null', () {
+      for (final direct in [0.01, 1.0, 5.5, 12.3, 29.99, 30.0]) {
+        for (final current in [kLoopTargetMinKm, 5.0, kLoopTargetMaxKm]) {
+          final floor =
+              loopTargetFloorForDestination(
+                  directKm: direct, currentTargetKm: current);
+          expect(floor, isNotNull);
+          expect(floor!, greaterThanOrEqualTo(kLoopTargetMinKm));
+          expect(floor, lessThanOrEqualTo(kLoopTargetMaxKm));
+        }
+      }
     });
   });
 

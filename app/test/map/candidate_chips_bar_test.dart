@@ -27,6 +27,7 @@ void main() {
     required LoopPlanResult result,
     int selectedIndex = 0,
     double speedKmh = 4.5,
+    PlanKind? kind,
     ValueChanged<int>? onSelect,
     VoidCallback? onStart,
     VoidCallback? onOtherProposals,
@@ -44,6 +45,7 @@ void main() {
               result: result,
               selectedIndex: selectedIndex,
               speedKmh: speedKmh,
+              kind: kind,
               onSelect: onSelect ?? (_) {},
               onStart: onStart ?? () {},
               onOtherProposals: onOtherProposals ?? () {},
@@ -135,6 +137,51 @@ void main() {
       expect(otherTapped, isTrue);
     });
 
+    testWidgets(
+        'hides "Autres propositions" for a single direct-route '
+        'toDestination candidate (fix-round-1, point 3: deterministic '
+        'no-op)', (tester) async {
+      await pump(
+        tester,
+        result: resultWith([candidate(distanceKm: 12.0, gapRatio: 1.4)]),
+        kind: PlanKind.toDestination,
+      );
+
+      expect(
+        find.descendant(
+            of: find.byKey(const Key('candidateChipsRow')),
+            matching: find.text('Autres propositions')),
+        findsNothing,
+      );
+    });
+
+    testWidgets(
+        'still shows "Autres propositions" for multiple toDestination '
+        'candidates', (tester) async {
+      await pump(
+        tester,
+        result: resultWith([
+          candidate(distanceKm: 12.0, gapRatio: 0.0),
+          candidate(distanceKm: 13.0, gapRatio: 0.08),
+        ]),
+        kind: PlanKind.toDestination,
+      );
+
+      expect(find.text('Autres propositions'), findsOneWidget);
+    });
+
+    testWidgets(
+        'still shows "Autres propositions" for a single loop candidate — '
+        'loops vary with seed, never a deterministic no-op', (tester) async {
+      await pump(
+        tester,
+        result: resultWith([candidate(distanceKm: 5.0, gapRatio: 0.0)]),
+        kind: PlanKind.loop,
+      );
+
+      expect(find.text('Autres propositions'), findsOneWidget);
+    });
+
     testWidgets("C'est parti and the close ✕ sit outside the compact row",
         (tester) async {
       var startTapped = false;
@@ -165,18 +212,28 @@ void main() {
         'Positioned/Padding in map_screen.dart owns it', (tester) async {
       final result = resultWith([candidate(distanceKm: 5.0, gapRatio: 0.0)]);
 
-      await pump(tester, result: result, viewPaddingBottom: 0);
-      expect(tester.takeException(), isNull);
-      final noInset =
-          tester.getSize(find.byType(CandidateChipsBar)).height;
+      Future<EdgeInsets> pumpAndMeasurePadding(double viewPaddingBottom) async {
+        await pump(tester, result: result, viewPaddingBottom: viewPaddingBottom);
+        expect(tester.takeException(), isNull);
+        return tester
+            .widget<Padding>(
+                find.byKey(const Key('candidateChipsBarPadding')))
+            .padding
+            .resolve(TextDirection.ltr);
+      }
+
+      // A 0dp inset (gesture nav, or an unrelated screen) and a 48dp one
+      // (typical 3-button nav bar) must produce the *exact same*, and
+      // exactly zero, padding out of this widget: it must never read
+      // `viewPadding.bottom` itself — asserting the literal value (not just
+      // equality between the two configs) is what actually catches a future
+      // edit that reaches for padding here and reintroduces the
+      // double-counted inset fix-round-1 fixed for the old CandidatesSheet.
+      final noInset = await pumpAndMeasurePadding(0);
+      final withInset = await pumpAndMeasurePadding(48);
+      expect(noInset, EdgeInsets.zero);
+      expect(withInset, EdgeInsets.zero);
       expect(find.byType(SafeArea), findsNothing);
-
-      await pump(tester, result: result, viewPaddingBottom: 48);
-      expect(tester.takeException(), isNull);
-      final withInset =
-          tester.getSize(find.byType(CandidateChipsBar)).height;
-
-      expect(noInset, withInset);
     });
 
     testWidgets('scrolls horizontally with more candidates than fit on a '

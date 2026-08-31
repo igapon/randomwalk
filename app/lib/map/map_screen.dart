@@ -19,6 +19,7 @@ import '../loop/loop_planner.dart';
 import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
 import '../nav/nav_fields.dart' show formatDistance;
+import '../nav/polyline_math.dart' show metersBetween;
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
 import '../trip/active_route_store.dart';
@@ -954,6 +955,29 @@ class MapScreenState extends ConsumerState<MapScreen> {
           const SnackBar(content: Text(kPositionUnavailableMessage)));
       return;
     }
+    // Fix-round-1, point 3: Distance mode + a far pin. A slider left below
+    // the direct start→destination distance builds a request with no detour
+    // budget (see [loopTargetFloorForDestination]'s doc comment) — the
+    // planner then hands back only the direct route, badged a wild,
+    // deterministic gap that "Autres propositions" cannot improve on. Seed
+    // the slider up to the direct distance before the request is built, or
+    // — when even the slider's own maximum cannot reach it — refuse to plan
+    // at all rather than repeat the same degenerate result.
+    final pinnedDestination = plan.destination;
+    if (_planMode == PlanMode.loop && pinnedDestination != null) {
+      final directKm = metersBetween(departure.latitude, departure.longitude,
+              pinnedDestination.$1, pinnedDestination.$2) /
+          1000;
+      final floor = loopTargetFloorForDestination(
+          directKm: directKm, currentTargetKm: _loopTargetKm);
+      if (floor == null) {
+        setState(() => _candidatePlanning = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text(kDestinationTooFarMessage)));
+        return;
+      }
+      if (floor != _loopTargetKm) setState(() => _loopTargetKm = floor);
+    }
     final speedKmh = _speedKmh ?? await _speedHistory.speedKmh(trip.profile);
     if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
     setState(() => _speedKmh = speedKmh);
@@ -1230,6 +1254,21 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
     final candidateResult = _candidateResult;
 
+    // Fix-round-1, point 1: `MapScreen` stays mounted behind the tab
+    // `IndexedStack`, so a recording can start from the Session tab while
+    // stale loop/duration candidates (and their preview polylines) are still
+    // sitting here. A recording always wins — `showChips` is the single flag
+    // both `bottomBanner` and `topOverlay` below key off, so the two can
+    // never disagree about whether the fullscreen selection UI is showing.
+    // The candidates themselves (and their polylines) are dropped via the
+    // same `_clearCandidates` the ✕ uses, once per frame this is true.
+    final showChips = shouldShowCandidateChips(
+        hasCandidates: candidateResult != null, isRecording: trip.isRecording);
+    if (shouldClearCandidatesForRecording(
+        isRecording: trip.isRecording, hasCandidates: candidateResult != null)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _clearCandidates());
+    }
+
     Widget? bottomBanner;
     if (_planning) {
       bottomBanner = _ProgressBanner(progress: _downloadProgress);
@@ -1246,7 +1285,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
           _CandidateProgressBanner(
               onCancel: _cancelCandidatePlanning,
               progress: _downloadProgress);
-    } else if (candidateResult != null) {
+    } else if (showChips && candidateResult != null) {
       // Task 8: fullscreen selection — the compact chip row replaces the old
       // full-size candidate cards, and (below) the top overlay steps aside
       // entirely for as long as this branch is showing.
@@ -1258,6 +1297,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
         // per-profile default (avoids a hard dependency on
         // SpeedHistoryStore's own private defaults from this widget).
         speedKmh: _speedKmh ?? 4.5,
+        kind: _candidateKind,
         onSelect: _selectCandidate,
         onStart: _startCandidate,
         onOtherProposals: _otherProposals,
@@ -1306,8 +1346,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
       } else {
         topOverlay = const SizedBox.shrink();
       }
-    } else if (!shouldShowPlanningTopOverlay(
-        hasCandidates: candidateResult != null)) {
+    } else if (!shouldShowPlanningTopOverlay(hasCandidates: showChips)) {
       // Task 8, brief point 1 — the owner's own words: « pendant la
       // sélection… cache les menus… pour mieux voir la carte ». The instant
       // there are candidates to choose from, the mode selector, search bar,
@@ -1397,78 +1436,98 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final showRecenter = shouldShowRecenterButton(
         isNavigating: trip.isRouteBound, trackingReleased: _trackingReleased);
 
-    return Scaffold(
-      body: Stack(
-        children: [
-          MapLibreMap(
-            key: ValueKey(styleUrl),
-            styleString: styleUrl,
-            initialCameraPosition:
-                CameraPosition(target: initialCenter, zoom: 13),
-            myLocationEnabled: _myLocationEnabled,
-            myLocationTrackingMode: MyLocationTrackingMode.none,
-            attributionButtonPosition: AttributionButtonPosition.bottomLeft,
-            onMapCreated: _onMapCreated,
-            // addImage/addSymbol must wait for the style to finish loading
-            // (see maplibre_map.dart's onStyleLoadedCallback doc).
-            onStyleLoadedCallback: _onStyleLoaded,
-            onMapLongClick: _onMapLongClick,
-            // Device-QA addendum, point 3: any user gesture releases the
-            // camera from following the walker during navigation.
-            onCameraTrackingDismissed: _onCameraTrackingDismissed,
-          ),
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: SafeArea(
-              bottom: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: topOverlay,
-              ),
-            ),
-          ),
-          // Anchored above the system nav insets (project rule), gesture
-          // and 3-button navigation alike.
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: Padding(
-              padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // A row of its own above the bottom banner (not
-                  // overlapping it, e.g. the full-width "Démarrer" pill) —
-                  // see task-8 brief point 7.
-                  const MapAttribution(),
-                  const SizedBox(height: 6),
-                  bottomBanner,
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: Padding(
-        // Lifted clear of the bottom banner/pill.
-        padding: const EdgeInsets.only(bottom: 88),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    return PopScope(
+      // Fix-round-1, point 2: Android's system back gesture/button during
+      // fullscreen candidate selection used to fall through to the OS
+      // (backgrounding the app instead of leaving selection) since nothing
+      // on this screen intercepted it. Blocking `canPop` whenever there is
+      // something to back out of first — candidates on screen, or a
+      // « Proposer » request still in flight — makes back == leave
+      // selection == the same ✕ the chip row/spinner already offer, and
+      // only a real "no candidates, nothing planning" state actually pops
+      // the route (or exits the app).
+      canPop: candidateResult == null && !_candidatePlanning,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_candidatePlanning) {
+          _cancelCandidatePlanning();
+        } else {
+          _clearCandidates();
+        }
+      },
+      child: Scaffold(
+        body: Stack(
           children: [
-            if (showRecenter) ...[
-              RecenterButton(onPressed: _recenterOnTrack),
-              const SizedBox(height: 12),
-            ],
-            FloatingActionButton(
-              heroTag: 'myLocation',
-              onPressed: _centerOnUser,
-              child: const Icon(Icons.my_location),
+            MapLibreMap(
+              key: ValueKey(styleUrl),
+              styleString: styleUrl,
+              initialCameraPosition:
+                  CameraPosition(target: initialCenter, zoom: 13),
+              myLocationEnabled: _myLocationEnabled,
+              myLocationTrackingMode: MyLocationTrackingMode.none,
+              attributionButtonPosition: AttributionButtonPosition.bottomLeft,
+              onMapCreated: _onMapCreated,
+              // addImage/addSymbol must wait for the style to finish loading
+              // (see maplibre_map.dart's onStyleLoadedCallback doc).
+              onStyleLoadedCallback: _onStyleLoaded,
+              onMapLongClick: _onMapLongClick,
+              // Device-QA addendum, point 3: any user gesture releases the
+              // camera from following the walker during navigation.
+              onCameraTrackingDismissed: _onCameraTrackingDismissed,
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                  child: topOverlay,
+                ),
+              ),
+            ),
+            // Anchored above the system nav insets (project rule), gesture
+            // and 3-button navigation alike.
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Padding(
+                padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // A row of its own above the bottom banner (not
+                    // overlapping it, e.g. the full-width "Démarrer" pill) —
+                    // see task-8 brief point 7.
+                    const MapAttribution(),
+                    const SizedBox(height: 6),
+                    bottomBanner,
+                  ],
+                ),
+              ),
             ),
           ],
+        ),
+        floatingActionButton: Padding(
+          // Lifted clear of the bottom banner/pill.
+          padding: const EdgeInsets.only(bottom: 88),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (showRecenter) ...[
+                RecenterButton(onPressed: _recenterOnTrack),
+                const SizedBox(height: 12),
+              ],
+              FloatingActionButton(
+                heroTag: 'myLocation',
+                onPressed: _centerOnUser,
+                child: const Icon(Icons.my_location),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1787,14 +1846,15 @@ class _PlanTargetPanel extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (pinnedDestination != null) ...[
+            if (shouldShowPlanDestinationChip(
+                mode: mode, hasDestination: pinnedDestination != null)) ...[
               Row(
                 children: [
                   const Icon(Icons.flag, size: 16),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Destination : ${formatDestinationLabel(pinnedDestination)}',
+                      'Destination : ${formatDestinationLabel(pinnedDestination!)}',
                       style: theme.textTheme.bodySmall,
                       overflow: TextOverflow.ellipsis,
                     ),
