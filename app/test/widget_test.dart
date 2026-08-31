@@ -24,6 +24,7 @@ void main() {
         tracker: tracker,
         routeStore: MemoryRouteStore(),
         totalStore: totals,
+        finalisedTrips: MemoryFinalisedTripMemory(),
         ensurePermissions: () async => const TripPermissions(
             outcome: TripPermissionOutcome.ready,
             mode: TrackingMode.background),
@@ -108,6 +109,41 @@ void main() {
     // scratch (and its native surface not recreated) on every glance at
     // another tab.
     expect(_CountingScreen.initCount, 1);
+  });
+
+  testWidgets('a silent GPS raises a banner while recording', (tester) async {
+    tracker
+      ..persisted = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.2,
+        steps: 1500,
+        startedAt: DateTime.utc(2026, 8, 30, 9, 30),
+        updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      )
+      ..running = true;
+
+    final trip = await pumpShell(tester, screens: const [
+      SizedBox.shrink(),
+      SizedBox.shrink(),
+      SizedBox.shrink()
+    ]);
+    expect(find.textContaining('GPS silencieux'), findsNothing);
+
+    tracker.emitGpsSilent(true);
+    // Two pumps: one to deliver the stream event to the controller, one to
+    // rebuild on the notification riverpod raises from it.
+    await tester.pump();
+    await tester.pump();
+    expect(trip.gpsSilent, isTrue, reason: 'controller state');
+    expect(find.textContaining('GPS silencieux'), findsOneWidget);
+
+    tracker.emitGpsSilent(false);
+    await tester.pump();
+    await tester.pump();
+    expect(trip.gpsSilent, isFalse, reason: 'controller state');
+    expect(find.textContaining('GPS silencieux'), findsNothing);
   });
 
   group('interrupted trip banner', () {

@@ -458,7 +458,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (route == null) return;
     if (!await trip.startTrip(route: route) && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(startFailureMessage(trip.lastOutcome))));
+          SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
     }
   }
 
@@ -475,7 +475,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final trip = ref.read(tripControllerProvider);
     if (!await trip.startTrip(profile: profile) && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(startFailureMessage(trip.lastOutcome))));
+          SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
     }
   }
 

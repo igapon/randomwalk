@@ -17,6 +17,7 @@ import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/trip/active_route_store.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
+import 'package:randomwalk/trip/trip_messages.dart';
 
 /// Needed by the permission flow: the "Autoriser tout le temps" rationale
 /// is raised by [TripController], which has no `BuildContext` of its own.
@@ -167,6 +168,7 @@ class _HomeShellState extends ConsumerState<HomeShell>
           if (trip.isInterrupted) const InterruptedTripBanner(),
           if (trip.isRecording && trip.trackingMode == TrackingMode.foregroundOnly)
             const ForegroundOnlyBanner(),
+          if (trip.isRecording && trip.gpsSilent) const GpsSilentBanner(),
           // IndexedStack, not `screens[_tab]`: every screen stays mounted
           // across tab switches, so the map keeps its native surface (and
           // everything drawn on it) instead of being rebuilt from scratch
@@ -244,6 +246,40 @@ class _InterruptedTripBannerState
               child: const Text('Reprendre'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The recorder has gone a full minute without a position (see
+/// [isGpsSilent]). Worth its own banner because it is the only tracking
+/// failure with no other symptom: the trip looks like it is recording and
+/// measures nothing, so without this the first the user hears of it is a
+/// walk that came out at 0,00 km.
+class GpsSilentBanner extends StatelessWidget {
+  const GpsSilentBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.errorContainer,
+      child: InkWell(
+        onTap: () => PluginPermissionService().openSettings(),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+          child: Row(
+            children: [
+              const Icon(Icons.gps_off, size: 18),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(kGpsSilentMessage,
+                    style: theme.textTheme.bodySmall),
+              ),
+            ],
+          ),
         ),
       ),
     );

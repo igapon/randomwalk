@@ -40,7 +40,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     final trip = ref.read(tripControllerProvider);
     if (!await trip.startTrip(profile: trip.profile) && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(startFailureMessage(trip.lastOutcome))));
+          SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
     }
   }
 
@@ -111,7 +111,11 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     style: textTheme.headlineSmall,
                   ),
                   const SizedBox(height: AppSpacing.sm),
-                  Text('${trip.steps} pas', style: textTheme.titleMedium),
+                  // Hidden rather than shown as a permanent zero when the
+                  // step sensor is unavailable (permission refused, or no
+                  // hardware counter).
+                  if (trip.stepsAvailable)
+                    Text('${trip.steps} pas', style: textTheme.titleMedium),
                   if (trip.needsReview)
                     Padding(
                       padding: const EdgeInsets.only(top: AppSpacing.xs),

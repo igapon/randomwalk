@@ -3,6 +3,7 @@ import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
+import 'package:randomwalk/trip/trip_messages.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
 import '../support/trip_fakes.dart';
@@ -12,6 +13,7 @@ void main() {
   late MemoryRouteStore routes;
   late FakeTotalDistanceStore totals;
   late FakeStepSensor sensor;
+  late MemoryFinalisedTripMemory banked;
   late TripPermissions permissions;
   late int permissionCalls;
   late DateTime now;
@@ -26,6 +28,7 @@ void main() {
         tracker: tracker,
         routeStore: routes,
         totalStore: totals,
+        finalisedTrips: banked,
         ensurePermissions: () async {
           permissionCalls++;
           return permissions;
@@ -43,6 +46,7 @@ void main() {
     routes = MemoryRouteStore();
     totals = FakeTotalDistanceStore();
     sensor = FakeStepSensor();
+    banked = MemoryFinalisedTripMemory();
     permissionCalls = 0;
     permissions = const TripPermissions(
         outcome: TripPermissionOutcome.ready,
@@ -93,6 +97,33 @@ void main() {
       expect(trip.state, TripState.recording);
       expect(trip.distanceKm, closeTo(2.4, 1e-9));
       expect(trip.steps, 3100);
+    });
+
+    test('adopting a live service reattaches to its live updates', () async {
+      tracker
+        ..persisted = recordingSnapshot()
+        ..running = true;
+      final trip = build();
+      await trip.restore();
+
+      // The service is running and the UI has just come back to it. Without
+      // an explicit reattach the plugin's task-data callback is never
+      // registered, and the distance sits frozen at its cold-start value for
+      // the rest of the trip - silently, because the total banked at stop
+      // still comes from the snapshot file.
+      tracker.emit(recordingSnapshot(distanceKm: 5.1));
+      await pumpEventQueue();
+
+      expect(trip.distanceKm, closeTo(5.1, 1e-9));
+    });
+
+    test('an interrupted trip does not reattach to anything', () async {
+      tracker
+        ..persisted = recordingSnapshot()
+        ..running = false;
+      final trip = build();
+      await trip.restore();
+      expect(tracker.attaches, 0);
     });
 
     test('a recording snapshot with no service means the process was killed',
@@ -179,7 +210,7 @@ void main() {
 
       expect(await trip.startTrip(), isFalse);
       expect(trip.state, TripState.idle);
-      expect(trip.lastOutcome, TripPermissionOutcome.locationDenied);
+      expect(trip.lastStartFailure, TripStartFailure.locationDenied);
       expect(tracker.startedWith, isEmpty);
     });
 
@@ -190,7 +221,7 @@ void main() {
       final trip = build();
 
       expect(await trip.startTrip(), isFalse);
-      expect(trip.lastOutcome, TripPermissionOutcome.openedSettings);
+      expect(trip.lastStartFailure, TripStartFailure.openedSettings);
       expect(tracker.startedWith, isEmpty);
     });
 
@@ -204,6 +235,23 @@ void main() {
       expect(await trip.startTrip(), isTrue);
       expect(trip.trackingMode, TrackingMode.foregroundOnly);
       expect(trip.state, TripState.recording);
+    });
+
+    test('a refused step permission means no sensor is started', () async {
+      permissions = const TripPermissions(
+          outcome: TripPermissionOutcome.ready,
+          mode: TrackingMode.background,
+          stepsAvailable: false);
+      sensor.value = 1000;
+      final trip = build();
+      await trip.startTrip();
+
+      sensor.value = 1200;
+      await trip.tick();
+
+      expect(trip.stepsAvailable, isFalse);
+      expect(trip.steps, 0);
+      expect(tracker.publishedSteps, isEmpty);
     });
 
     test('a service that refuses to start leaves the app idle', () async {
@@ -261,6 +309,36 @@ void main() {
       expect(tracker.publishedSteps.last, 120);
     });
 
+    test('a tick picks up service progress even while detached', () async {
+      final trip = build();
+      await trip.startTrip();
+      tracker.attached = false;
+
+      // The live channel is the fast path, never the only one: the plugin's
+      // data port can be down (a reattach, a dropped callback) while the
+      // service keeps writing perfectly good snapshots to disk.
+      tracker.persisted = recordingSnapshot(distanceKm: 3.9)
+          .copyWith(updatedAt: DateTime.utc(2026, 8, 30, 10, 30));
+      await trip.tick();
+
+      expect(trip.distanceKm, closeTo(3.9, 1e-9));
+    });
+
+    test('a tick never rewinds to a staler snapshot than the live one',
+        () async {
+      final trip = build();
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 4.0)
+          .copyWith(updatedAt: DateTime.utc(2026, 8, 30, 10, 30)));
+      await pumpEventQueue();
+
+      tracker.persisted = recordingSnapshot(distanceKm: 1.0)
+          .copyWith(updatedAt: DateTime.utc(2026, 8, 30, 10, 10));
+      await trip.tick();
+
+      expect(trip.distanceKm, closeTo(4.0, 1e-9));
+    });
+
     test('ticking while idle is a no-op', () async {
       final trip = build();
       await trip.tick();
@@ -292,6 +370,30 @@ void main() {
       mode = TrackingMode.background;
       await trip.refreshTrackingMode();
       expect(trip.trackingMode, TrackingMode.background);
+    });
+
+    test('a silent GPS is surfaced to the shell', () async {
+      final trip = build();
+      await trip.startTrip();
+      expect(trip.gpsSilent, isFalse);
+
+      tracker.emitGpsSilent(true);
+      await pumpEventQueue();
+      expect(trip.gpsSilent, isTrue);
+
+      tracker.emitGpsSilent(false);
+      await pumpEventQueue();
+      expect(trip.gpsSilent, isFalse);
+    });
+
+    test('stopping a trip clears the silent-GPS warning', () async {
+      final trip = build();
+      await trip.startTrip();
+      tracker.emitGpsSilent(true);
+      await pumpEventQueue();
+
+      await trip.stopTrip();
+      expect(trip.gpsSilent, isFalse);
     });
 
     test('the walk-plausibility flag is surfaced', () async {
@@ -353,6 +455,51 @@ void main() {
       expect(await trip.stopTrip(), closeTo(2.4, 1e-9));
     });
 
+    test('a snapshot resurrected after the stop is not banked twice',
+        () async {
+      totals.total = 10;
+      final trip = build();
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+      await trip.stopTrip();
+      expect(totals.total, closeTo(12.4, 1e-9));
+
+      // stopService() returns before the service isolate's onDestroy has
+      // necessarily flushed, so its final write can land *after* we cleared
+      // the file - resurrecting a `recording` snapshot for a trip that has
+      // already been banked and submitted.
+      tracker.persisted = recordingSnapshot(distanceKm: 2.4);
+
+      final next = build();
+      await next.restore();
+
+      expect(next.state, TripState.idle);
+      expect(totals.total, closeTo(12.4, 1e-9));
+    });
+
+    test('a genuinely different trip is still offered after a finalised one',
+        () async {
+      final trip = build();
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+      await trip.stopTrip();
+
+      // A different trip: its start time is its identity.
+      tracker.persisted = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.1,
+        steps: 900,
+        startedAt: DateTime.utc(2026, 8, 30, 11, 0),
+        updatedAt: DateTime.utc(2026, 8, 30, 11, 12),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+
+      final next = build();
+      await next.restore();
+      expect(next.state, TripState.interrupted);
+    });
+
     test('stopping when idle is a no-op', () async {
       final trip = build();
       expect(await trip.stopTrip(), 0);
@@ -402,6 +549,23 @@ void main() {
       expect(trip.steps, 3200);
     });
 
+    test('"Terminer" stops the service before banking', () async {
+      // allowAutoRestart means the service may be alive again by the time
+      // the user answers the banner; banking without stopping would leave it
+      // recording with its notification up.
+      final trip = build();
+      await trip.restore();
+      expect(trip.state, TripState.interrupted);
+
+      // Android brought the service back between the cold start and the
+      // user answering the banner.
+      tracker.running = true;
+      await trip.finishInterrupted();
+
+      expect(tracker.stops, 1);
+      expect(tracker.running, isFalse);
+    });
+
     test('"Terminer" finalises through the normal path', () async {
       double? submitted;
       totals.total = 10;
@@ -437,6 +601,10 @@ void main() {
       expect(trip.state, TripState.interrupted);
       expect(trip.distanceKm, closeTo(2.4, 1e-9));
       expect(tracker.startedWith, isEmpty);
+      // And it says so, rather than blaming the GPS.
+      expect(trip.lastStartFailure, TripStartFailure.interruptedTripPending);
+      expect(startFailureMessage(trip.lastStartFailure),
+          contains('Trajet interrompu'));
     });
 
     test('resuming when nothing was interrupted is a no-op', () async {
@@ -474,6 +642,19 @@ void main() {
       await trip.setProfile(RoutingProfile.bike);
       expect(trip.profile, RoutingProfile.bike);
       expect(routes.current!.profile, RoutingProfile.bike);
+    });
+
+    test('changing the profile drops the route it was computed for', () async {
+      final trip = build();
+      await trip.saveActiveRoute(fakeActiveRoute());
+      await trip.setProfile(RoutingProfile.bike);
+
+      // A cyclist's line through a park is not a walker's: keeping the old
+      // shape on screen under a new profile label would be a lie, and the
+      // session tab has no planner to recompute it with.
+      expect(trip.route, isNull);
+      expect(trip.activeRoute!.destination, const (46.51, 6.61));
+      expect(routes.current!.route, isNull);
     });
 
     test('setting the profile without a planned route still remembers it',

@@ -37,6 +37,64 @@ void main() {
     });
   });
 
+  group('isGpsSilent', () {
+    final since = DateTime.utc(2026, 8, 30, 10, 0);
+
+    test('a fix a moment ago is not silence', () {
+      expect(
+        isGpsSilent(
+            now: DateTime.utc(2026, 8, 30, 10, 5),
+            lastFixAt: DateTime.utc(2026, 8, 30, 10, 4, 30),
+            recordingSince: since),
+        isFalse,
+      );
+    });
+
+    test('a minute without a single fix is silence', () {
+      expect(
+        isGpsSilent(
+            now: DateTime.utc(2026, 8, 30, 10, 5),
+            lastFixAt: DateTime.utc(2026, 8, 30, 10, 3, 30),
+            recordingSince: since),
+        isTrue,
+      );
+    });
+
+    test('before the first fix the clock runs from the trip start', () {
+      // The failure this exists for — geolocator not working in the service
+      // isolate — never produces a first fix at all, so a null lastFixAt
+      // must not read as "fine".
+      expect(
+        isGpsSilent(
+            now: DateTime.utc(2026, 8, 30, 10, 0, 30),
+            lastFixAt: null,
+            recordingSince: since),
+        isFalse,
+      );
+      expect(
+        isGpsSilent(
+            now: DateTime.utc(2026, 8, 30, 10, 2),
+            lastFixAt: null,
+            recordingSince: since),
+        isTrue,
+      );
+    });
+
+    test('a fix arriving after a silent spell clears it', () {
+      expect(
+        isGpsSilent(
+            now: DateTime.utc(2026, 8, 30, 10, 10),
+            lastFixAt: DateTime.utc(2026, 8, 30, 10, 9, 59),
+            recordingSince: since),
+        isFalse,
+      );
+    });
+
+    test('the threshold is the documented one minute', () {
+      expect(kGpsSilenceThreshold, const Duration(seconds: 60));
+    });
+  });
+
   group('resumePoint', () {
     test('a restarted service picks up the persisted progress, not the seed',
         () {

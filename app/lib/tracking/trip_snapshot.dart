@@ -154,9 +154,15 @@ abstract class TripSnapshotStore {
 /// `TrackingService`) so the isolate never has to call `path_provider`.
 class FileTripSnapshotStore implements TripSnapshotStore {
   final File file;
+
+  /// Two isolates write this document — the UI writes the seed at trip
+  /// start, the service writes progress — so they must not share a scratch
+  /// path, or one rename can consume the other's half-written file.
+  final String tmpSuffix;
+
   Future<void> _pending = Future.value();
 
-  FileTripSnapshotStore(this.file);
+  FileTripSnapshotStore(this.file, {this.tmpSuffix = '.tmp'});
 
   @override
   Future<TripSnapshot?> read() async {
@@ -177,7 +183,7 @@ class FileTripSnapshotStore implements TripSnapshotStore {
   @override
   Future<void> write(TripSnapshot snapshot) => _serialize(() async {
         await file.parent.create(recursive: true);
-        final tmp = File('${file.path}.tmp');
+        final tmp = File('${file.path}$tmpSuffix');
         await tmp.writeAsString(jsonEncode(snapshot.toJson()), flush: true);
         await tmp.rename(file.path);
       });

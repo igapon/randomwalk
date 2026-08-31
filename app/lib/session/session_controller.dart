@@ -17,6 +17,7 @@ class SessionController {
   final LocationSettings _locationSettings;
 
   SessionRecorder? _recorder;
+  DateTime? _lastFixAt;
   bool _isRecording = false;
   bool _isStarting = false;
   StreamSubscription<Position>? _positionStream;
@@ -46,6 +47,16 @@ class SessionController {
         _checkPermissions = checkPermissions ?? _defaultCheckPermissions;
 
   bool get isRecording => _isRecording;
+
+  /// When a position last arrived from the stream, by this controller's own
+  /// clock — not the fix's timestamp, which comes from the device and says
+  /// nothing about whether the stream is still alive.
+  ///
+  /// Null until the first fix. Only a liveness signal: it is set for every
+  /// position received, including ones the recorder then discards as too
+  /// inaccurate, because "arriving but imprecise" and "not arriving at all"
+  /// are different failures and only the second one is worth warning about.
+  DateTime? get lastFixAt => _lastFixAt;
   bool get isStarting => _isStarting;
   SessionRecorder? get recorder => _recorder;
   Duration get elapsed => _recorder?.elapsed(_getClock()) ?? Duration.zero;
@@ -80,10 +91,12 @@ class SessionController {
 
       // Create a fresh recorder for this session.
       _recorder = SessionRecorder();
+      _lastFixAt = null;
 
       // Subscribe to position stream.
       _positionStream = _getPositionStream(_locationSettings).listen(
         (Position position) {
+          _lastFixAt = _getClock();
           final sample = GpsSample(
             lat: position.latitude,
             lon: position.longitude,

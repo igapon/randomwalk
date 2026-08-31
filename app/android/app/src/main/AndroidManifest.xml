@@ -17,6 +17,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Android 10+: hardware step counter (see DeviceChannel.kt). -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION"/>
+    <!-- Steps are a nice-to-have signal, not a reason to hide the app from
+         the ~ tablets and budget phones with no step counter: required=false
+         keeps it installable there. -->
+    <uses-feature
+        android:name="android.hardware.sensor.stepcounter"
+        android:required="false"/>
     <application
         android:label="randomwalk"
         android:name="${applicationName}"

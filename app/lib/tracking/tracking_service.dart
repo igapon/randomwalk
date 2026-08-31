@@ -20,6 +20,14 @@ import 'trip_snapshot.dart';
 /// local object) is what makes the controller's "the process died mid-trip"
 /// path testable at all.
 abstract class TripTracker {
+  /// Begins receiving live snapshots from an already-running service.
+  ///
+  /// Separate from [start] because the UI process can die and come back
+  /// while the service keeps recording: the reattaching process has a trip
+  /// to display but nothing to start, and without this its live channel
+  /// would never be opened.  Idempotent.
+  Future<void> attach();
+
   /// Starts recording from [seed] — zeroed for a new trip, or carrying the
   /// distance/steps of an interrupted one being resumed.
   Future<bool> start(TripSnapshot seed);
@@ -48,6 +56,12 @@ abstract class TripTracker {
   /// and the user deserves to be told why.
   Stream<String?> get errors;
 
+  /// Whether the recorder has gone quiet: the stream reported no error but
+  /// has stopped delivering positions (see [isGpsSilent]). This is the
+  /// symptom of geolocator not working inside the service isolate, which is
+  /// otherwise completely silent — the trip simply never advances.
+  Stream<bool> get gpsSilent;
+
   /// Hands the tracker a step count sampled by the UI (the step sensor is
   /// read from the UI isolate — see [StepSensor]) so it lands in the
   /// persisted snapshot too.
@@ -69,6 +83,30 @@ const _kServiceId = 4211;
 const _kSnapshotPathKey = 'randomwalk_snapshot_path';
 const _kSeedKey = 'randomwalk_seed_snapshot';
 const _kGpsErrorKey = 'gpsError';
+const _kGpsSilentKey = 'gpsSilent';
+
+/// How long a recording trip may go without a single position before the UI
+/// is told the GPS has gone quiet. Long enough not to fire on a cold fix in
+/// a building, short enough that a walk does not finish before the user is
+/// warned.
+const kGpsSilenceThreshold = Duration(seconds: 60);
+
+/// Whether a recording session has stopped hearing from the location
+/// stream altogether.
+///
+/// Worth a warning of its own because it is the one failure mode with no
+/// other symptom: geolocator not working inside the service isolate raises
+/// nothing, logs nothing and simply never delivers a fix, leaving a trip
+/// that looks like it is recording and measures nothing. [lastFixAt] is
+/// null before the first position ever arrives, in which case the clock
+/// runs from [recordingSince].
+bool isGpsSilent({
+  required DateTime now,
+  required DateTime? lastFixAt,
+  required DateTime recordingSince,
+  Duration threshold = kGpsSilenceThreshold,
+}) =>
+    now.difference(lastFixAt ?? recordingSince) > threshold;
 
 /// Android foreground service (`flutter_foreground_task` 11.x) hosting a
 /// [SessionController] in its own isolate.
@@ -84,9 +122,13 @@ const _kGpsErrorKey = 'gpsError';
 /// the file is the only one of the two that survives the UI process dying.
 class ForegroundServiceTripTracker implements TripTracker {
   final File snapshotFile;
-  late final TripSnapshotStore _store = FileTripSnapshotStore(snapshotFile);
+
+  /// `.ui.tmp`, not the isolate's `.tmp`: both sides write this document.
+  late final TripSnapshotStore _store =
+      FileTripSnapshotStore(snapshotFile, tmpSuffix: '.ui.tmp');
   final _updates = StreamController<TripSnapshot>.broadcast();
   final _errors = StreamController<String?>.broadcast();
+  final _gpsSilent = StreamController<bool>.broadcast();
   bool _callbackAttached = false;
 
   ForegroundServiceTripTracker(this.snapshotFile);
@@ -103,6 +145,12 @@ class ForegroundServiceTripTracker implements TripTracker {
   Stream<String?> get errors => _errors.stream;
 
   @override
+  Stream<bool> get gpsSilent => _gpsSilent.stream;
+
+  @override
+  Future<void> attach() async => _attachCallback();
+
+  @override
   Future<bool> isRunning() => FlutterForegroundTask.isRunningService;
 
   @override
@@ -114,7 +162,7 @@ class ForegroundServiceTripTracker implements TripTracker {
   @override
   Future<bool> start(TripSnapshot seed) async {
     _configure();
-    _attachCallback();
+    await attach();
 
     // Written before the service starts so the isolate never races the UI
     // for its own starting state, and so a service that dies before its
@@ -158,6 +206,7 @@ class ForegroundServiceTripTracker implements TripTracker {
     }
     await _updates.close();
     await _errors.close();
+    await _gpsSilent.close();
   }
 
   void _attachCallback() {
@@ -173,6 +222,12 @@ class ForegroundServiceTripTracker implements TripTracker {
       if (message.containsKey(_kGpsErrorKey)) {
         if (!_errors.isClosed) {
           _errors.add(message[_kGpsErrorKey] as String?);
+        }
+        return;
+      }
+      if (message.containsKey(_kGpsSilentKey)) {
+        if (!_gpsSilent.isClosed) {
+          _gpsSilent.add(message[_kGpsSilentKey] as bool);
         }
         return;
       }
@@ -243,6 +298,8 @@ class TripTaskHandler extends TaskHandler {
   ThrottledSnapshotWriter? _writer;
   TripSnapshot? _seed;
   int _steps = 0;
+  DateTime? _recordingSince;
+  bool _gpsSilent = false;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -275,6 +332,7 @@ class TripTaskHandler extends TaskHandler {
       ),
     );
     _session = session;
+    _recordingSince = timestamp;
     await session.start();
   }
 
@@ -290,6 +348,8 @@ class TripTaskHandler extends TaskHandler {
     if (session != null && !session.isRecording && !session.isStarting) {
       session.start();
     }
+
+    _reportGpsSilence(timestamp);
 
     final snapshot = _snapshotAt(timestamp);
     if (snapshot == null) return;
@@ -313,6 +373,23 @@ class TripTaskHandler extends TaskHandler {
     await _writer?.flush();
     await _session?.dispose();
     _session = null;
+  }
+
+  /// Tells the UI when the location stream has gone quiet, and when it
+  /// comes back. Only on transitions: the UI does not need this repeated
+  /// every two seconds for as long as it lasts.
+  void _reportGpsSilence(DateTime now) {
+    final since = _recordingSince;
+    if (since == null) return;
+    final silent = isGpsSilent(
+      now: now,
+      lastFixAt: _session?.lastFixAt,
+      recordingSince: since,
+    );
+    if (silent == _gpsSilent) return;
+    _gpsSilent = silent;
+    FlutterForegroundTask.sendDataToMain(
+        jsonEncode({_kGpsSilentKey: silent}));
   }
 
   /// Folds a finished session's distance into the running total.

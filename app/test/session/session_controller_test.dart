@@ -18,6 +18,8 @@ class FakeStore implements TotalDistanceStore {
 }
 
 void main() {
+  _lastFixAtTests();
+
   test('ignores double-start (re-entrancy guard)', () async {
     final store = FakeStore();
 
@@ -249,5 +251,84 @@ void main() {
 
     // No duplicate subscriptions were created.
     expect(streamCreationCount, 2);
+  });
+}
+
+/// [SessionController.lastFixAt] is the liveness signal the foreground
+/// service's GPS watchdog runs on (see `isGpsSilent`): "the stream has gone
+/// quiet" is otherwise indistinguishable from "the walker is standing
+/// still", and geolocator failing inside the service isolate would be
+/// completely silent.
+void _lastFixAtTests() {
+  Position position({double accuracy = 5}) => Position(
+        latitude: 46.5,
+        longitude: 6.6,
+        accuracy: accuracy,
+        speed: 0,
+        speedAccuracy: 0,
+        heading: 0,
+        headingAccuracy: 0,
+        timestamp: DateTime.utc(2000),
+        altitudeAccuracy: 0,
+        altitude: 0,
+      );
+
+  group('lastFixAt', () {
+    late StreamController<Position> positions;
+    late DateTime now;
+    late SessionController controller;
+
+    setUp(() {
+      positions = StreamController<Position>.broadcast();
+      now = DateTime.utc(2026, 8, 30, 10, 0);
+      controller = SessionController(
+        store: FakeStore(),
+        getPositionStream: (_) => positions.stream,
+        checkPermissions: () async => true,
+        getClock: () => now,
+      );
+    });
+
+    tearDown(() async => positions.close());
+
+    test('is null until the first position arrives', () async {
+      await controller.start();
+      expect(controller.lastFixAt, isNull);
+    });
+
+    test('advances with the controller clock, not the fix timestamp',
+        () async {
+      await controller.start();
+      positions.add(position());
+      await pumpEventQueue();
+      // The fix's own timestamp is the year 2000; what matters is when it
+      // reached us.
+      expect(controller.lastFixAt, now);
+
+      now = now.add(const Duration(seconds: 30));
+      positions.add(position());
+      await pumpEventQueue();
+      expect(controller.lastFixAt, DateTime.utc(2026, 8, 30, 10, 0, 30));
+    });
+
+    test('a position too inaccurate to record still counts as life', () async {
+      // "Arriving but imprecise" and "not arriving at all" are different
+      // failures; only the second one deserves a warning.
+      await controller.start();
+      positions.add(position(accuracy: 500));
+      await pumpEventQueue();
+      expect(controller.lastFixAt, now);
+      expect(controller.recorder!.distanceKm, 0);
+    });
+
+    test('a new session starts from a clean slate', () async {
+      await controller.start();
+      positions.add(position());
+      await pumpEventQueue();
+      await controller.stop();
+
+      await controller.start();
+      expect(controller.lastFixAt, isNull);
+    });
   });
 }

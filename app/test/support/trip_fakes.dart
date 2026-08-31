@@ -5,6 +5,7 @@ import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/trip/active_route_store.dart';
+import 'package:randomwalk/trip/finalised_trip_memory.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
 /// Fakes shared by the trip controller's own tests and by any widget test
@@ -16,6 +17,20 @@ class FakeTotalDistanceStore implements TotalDistanceStore {
   Future<double> totalKm() async => total;
   @override
   Future<double> addAndGetTotalKm(double km) async => total += km;
+}
+
+/// In-memory [FinalisedTripMemory]: remembers which trips have already been
+/// banked, so a snapshot resurrected by a late write cannot be banked twice.
+class MemoryFinalisedTripMemory implements FinalisedTripMemory {
+  final banked = <DateTime>{};
+
+  @override
+  Future<bool> wasFinalised(DateTime startedAt) async =>
+      banked.contains(startedAt.toUtc());
+
+  @override
+  Future<void> markFinalised(DateTime startedAt) async =>
+      banked.add(startedAt.toUtc());
 }
 
 class MemoryRouteStore implements ActiveRouteStore {
@@ -37,23 +52,44 @@ class MemoryRouteStore implements ActiveRouteStore {
 
 /// Stands in for the foreground service: everything the real tracker does
 /// asynchronously across an isolate boundary, done synchronously here.
+///
+/// Models *attachment* faithfully, which the first version did not: the real
+/// tracker only receives live snapshots once it has registered a task-data
+/// callback, so a fake whose `updates` stream is always live hides the whole
+/// class of "the UI reattached to a running service and never heard from it
+/// again" bugs.
 class FakeTripTracker implements TripTracker {
   TripSnapshot? persisted;
   bool running = false;
   bool startSucceeds = true;
+  bool attached = false;
   final startedWith = <TripSnapshot>[];
   final publishedSteps = <int>[];
   int stops = 0;
   int clears = 0;
+  int attaches = 0;
   final _updates = StreamController<TripSnapshot>.broadcast();
   final _errors = StreamController<String?>.broadcast();
+  final _gpsSilent = StreamController<bool>.broadcast();
 
   void emitError(String message) => _errors.add(message);
+  void emitGpsSilent(bool silent) => _gpsSilent.add(silent);
 
+  /// The service publishing progress: it always lands on disk, but only
+  /// reaches the UI's stream while the UI is attached.
   void emit(TripSnapshot snapshot) {
     persisted = snapshot;
-    _updates.add(snapshot);
+    if (attached) _updates.add(snapshot);
   }
+
+  @override
+  Future<void> attach() async {
+    attaches++;
+    attached = true;
+  }
+
+  @override
+  Stream<bool> get gpsSilent => _gpsSilent.stream;
 
   @override
   Stream<TripSnapshot> get updates => _updates.stream;
@@ -79,6 +115,7 @@ class FakeTripTracker implements TripTracker {
     startedWith.add(seed);
     persisted = seed;
     running = true;
+    attached = true;
     return true;
   }
 
@@ -94,8 +131,10 @@ class FakeTripTracker implements TripTracker {
 
   @override
   Future<void> dispose() async {
+    attached = false;
     await _updates.close();
     await _errors.close();
+    await _gpsSilent.close();
   }
 }
 

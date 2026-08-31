@@ -11,6 +11,7 @@ import '../tracking/tracking_service.dart';
 import '../tracking/trip_snapshot.dart';
 import '../valhalla/models.dart';
 import 'active_route_store.dart';
+import 'finalised_trip_memory.dart';
 
 enum TripState {
   idle,
@@ -23,7 +24,31 @@ enum TripState {
   interrupted,
 }
 
+/// Why a [TripController.startTrip] refused, phrased for the user by
+/// `trip_messages.dart`.
+///
+/// Not [TripPermissionOutcome] itself: not every refusal is a permission
+/// problem, and conflating them made a trip refused because another one is
+/// waiting to be resumed tell the user their GPS was unavailable.
+enum TripStartFailure {
+  locationServiceOff,
+  locationDenied,
+  openedSettings,
+
+  /// A trip is sitting in [TripState.interrupted]. The « Trajet interrompu »
+  /// banner is the only way out of that state, so the user is pointed at it.
+  interruptedTripPending,
+
+  /// The permission flow passed but the service refused to start.
+  serviceUnavailable,
+}
+
 const _kTripProfileKey = 'trip_profile';
+
+/// How often the UI re-reads the persisted snapshot as a fallback to the
+/// service's live channel. Slower than the tick, faster than a user would
+/// notice a stale number.
+const _kSnapshotPollInterval = Duration(seconds: 3);
 
 /// All of a trip's application state: the planned route, whether a trip is
 /// recording, and how far it has got.
@@ -46,6 +71,7 @@ class TripController extends ChangeNotifier {
   final TotalDistanceStore _totals;
   final Future<TripPermissions> Function() ensurePermissions;
   final SessionStepCounter Function(int seed) _createStepCounter;
+  final FinalisedTripMemory _finalisedTrips;
   final Future<TrackingMode> Function()? readTrackingMode;
   final DateTime Function() _clock;
   final Future<void> Function(RoutingProfile profile) _persistProfile;
@@ -72,17 +98,22 @@ class TripController extends ChangeNotifier {
   ActiveRoute? _activeRoute;
   RoutingProfile _profile = RoutingProfile.walk;
   TrackingMode _trackingMode = TrackingMode.background;
-  TripPermissionOutcome? _lastOutcome;
+  TripStartFailure? _lastStartFailure;
+  bool _stepsAvailable = true;
+  bool _gpsSilent = false;
   bool _starting = false;
+  DateTime? _lastPollAt;
   SessionStepCounter? _steps;
   StreamSubscription<TripSnapshot>? _updates;
   StreamSubscription<String?>? _errors;
+  StreamSubscription<bool>? _gpsSilence;
 
   TripController({
     required this.tracker,
     required this.routeStore,
     required TotalDistanceStore totalStore,
     required this.ensurePermissions,
+    FinalisedTripMemory? finalisedTrips,
     SessionStepCounter Function(int seed)? createStepCounter,
     this.readTrackingMode,
     DateTime Function()? clock,
@@ -90,6 +121,7 @@ class TripController extends ChangeNotifier {
     Future<RoutingProfile?> Function()? loadProfile,
     this.onCameraFollowChanged,
   })  : _totals = totalStore,
+        _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
         _createStepCounter = createStepCounter ??
             ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
         _clock = clock ?? DateTime.now,
@@ -97,6 +129,7 @@ class TripController extends ChangeNotifier {
         _loadProfile = loadProfile ?? _defaultLoadProfile {
     _updates = tracker.updates.listen(_onTrackerSnapshot);
     _errors = tracker.errors.listen((message) => onSessionError?.call(message));
+    _gpsSilence = tracker.gpsSilent.listen(_onGpsSilent);
   }
 
   TripState get state => _state;
@@ -120,7 +153,17 @@ class TripController extends ChangeNotifier {
   TrackingMode get trackingMode => _trackingMode;
 
   /// Why the last [startTrip] refused, for the screen to phrase a message.
-  TripPermissionOutcome? get lastOutcome => _lastOutcome;
+  TripStartFailure? get lastStartFailure => _lastStartFailure;
+
+  /// Whether the step counter is usable at all (ACTIVITY_RECOGNITION granted
+  /// and a sensor present). False hides the step read-out rather than
+  /// showing a permanent, unexplained zero.
+  bool get stepsAvailable => _stepsAvailable;
+
+  /// The recorder has stopped hearing from the location stream — see
+  /// [isGpsSilent]. Drives a discreet banner, because this is the one
+  /// tracking failure with no other visible symptom.
+  bool get gpsSilent => _gpsSilent;
 
   static Future<void> _defaultPersistProfile(RoutingProfile profile) async {
     await (await SharedPreferences.getInstance())
@@ -143,9 +186,14 @@ class TripController extends ChangeNotifier {
     if (_activeRoute != null) _profile = _activeRoute!.profile;
 
     final snapshot = await tracker.readSnapshot();
-    if (snapshot == null || !snapshot.isRecording) {
-      // A non-recording snapshot is debris from a finalised trip; drop it
-      // so the next cold start does not have to reason about it again.
+    // A non-recording snapshot is debris from a finalised trip. So is a
+    // recording one whose trip has already been banked: the service's last
+    // flush can land after the stop cleared the file (see
+    // [FinalisedTripMemory]), and offering « Trajet interrompu » for it
+    // would let « Terminer » submit the same kilometres twice.
+    if (snapshot == null ||
+        !snapshot.isRecording ||
+        await _finalisedTrips.wasFinalised(snapshot.startedAt)) {
       if (snapshot != null) await tracker.clearSnapshot();
       _state = TripState.idle;
       notifyListeners();
@@ -155,10 +203,13 @@ class TripController extends ChangeNotifier {
     _snapshot = snapshot;
     _profile = snapshot.profile;
     if (await tracker.isRunning()) {
-      // The service outlived the UI: adopt it rather than restarting it.
+      // The service outlived the UI: adopt it rather than restarting it —
+      // and open the live channel, which only [TripTracker.start] would
+      // otherwise have done.
+      await tracker.attach();
+      _lastPollAt = null;
       _state = TripState.recording;
-      _steps = _createStepCounter(snapshot.steps);
-      await _steps!.start();
+      await _startStepCounter(snapshot.steps);
       if (snapshot.routeBound) onCameraFollowChanged?.call(true);
     } else {
       _state = TripState.interrupted;
@@ -175,7 +226,14 @@ class TripController extends ChangeNotifier {
     // a fresh zeroed seed would overwrite the snapshot the « Trajet
     // interrompu » banner is offering to resume, silently binning the
     // distance it is showing. The banner is the only way out of that state.
-    if (_state != TripState.idle || _starting) return false;
+    if (_starting) return false;
+    if (_state != TripState.idle) {
+      _lastStartFailure = _state == TripState.interrupted
+          ? TripStartFailure.interruptedTripPending
+          : null;
+      notifyListeners();
+      return false;
+    }
 
     if (profile != null) {
       _profile = profile;
@@ -207,35 +265,67 @@ class TripController extends ChangeNotifier {
   Future<double> finishInterrupted() async {
     final snapshot = _snapshot;
     if (_state != TripState.interrupted || snapshot == null) return 0;
-    return _finalise(snapshot);
+    // The service is *probably* dead — that is what put us in this state —
+    // but `allowAutoRestart` means Android may have brought it back before
+    // the user answered the banner. Banking without stopping would leave it
+    // recording, notification and all, over a trip that has been finished.
+    // Tolerant of failure: when the service really is gone there is nothing
+    // to stop, and that must not block the user's « Terminer ».
+    TripSnapshot? persisted;
+    try {
+      persisted = await tracker.stop();
+    } catch (_) {
+      persisted = null;
+    }
+    return _finalise(_freshest(persisted, snapshot));
   }
 
   Future<bool> _launch(TripSnapshot seed) async {
     _starting = true;
     try {
       final permissions = await ensurePermissions();
-      _lastOutcome = permissions.outcome;
       _trackingMode = permissions.mode;
+      _stepsAvailable = permissions.stepsAvailable;
       if (!permissions.canStart) {
+        _lastStartFailure = _failureFor(permissions.outcome);
         notifyListeners();
         return false;
       }
 
       if (!await tracker.start(seed)) {
+        _lastStartFailure = TripStartFailure.serviceUnavailable;
         notifyListeners();
         return false;
       }
 
+      _lastStartFailure = null;
+      _gpsSilent = false;
+      _lastPollAt = null;
       _snapshot = seed;
       _state = TripState.recording;
-      _steps = _createStepCounter(seed.steps);
-      await _steps!.start();
+      await _startStepCounter(seed.steps);
       if (seed.routeBound) onCameraFollowChanged?.call(true);
       notifyListeners();
       return true;
     } finally {
       _starting = false;
     }
+  }
+
+  static TripStartFailure _failureFor(TripPermissionOutcome outcome) =>
+      switch (outcome) {
+        TripPermissionOutcome.locationServiceOff =>
+          TripStartFailure.locationServiceOff,
+        TripPermissionOutcome.openedSettings =>
+          TripStartFailure.openedSettings,
+        _ => TripStartFailure.locationDenied,
+      };
+
+  Future<void> _startStepCounter(int seed) async {
+    if (!_stepsAvailable) return;
+    final counter = _createStepCounter(seed);
+    _steps = counter;
+    _stepsAvailable = await counter.start();
   }
 
   /// Stops the trip and banks it. Returns the distance recorded by this
@@ -260,11 +350,17 @@ class TripController extends ChangeNotifier {
     _steps = null;
 
     final distanceKm = snapshot?.distanceKm ?? 0;
+    // Recorded *before* the total is banked, so a crash between the two
+    // leaves a trip that is skipped rather than one that is counted twice.
+    if (snapshot != null) {
+      await _finalisedTrips.markFinalised(snapshot.startedAt);
+    }
     final totalKm = await _totals.addAndGetTotalKm(distanceKm);
     await tracker.clearSnapshot();
 
     _state = TripState.idle;
     _snapshot = null;
+    _gpsSilent = false;
     // The planned route deliberately survives the trip: finishing a walk is
     // not a request to erase the itinerary from the map. The ✕ on the route
     // card is what clears it.
@@ -279,23 +375,63 @@ class TripController extends ChangeNotifier {
   /// the hardware step counter (only readable from this isolate) and hands
   /// the result to the tracker so it lands in the persisted snapshot.
   Future<void> tick() async {
+    if (!isRecording) return;
+    await _pollSnapshot();
+
     final steps = _steps;
-    if (!isRecording || steps == null) return;
+    if (steps == null) return;
     await steps.sample();
     if (steps.steps == (_snapshot?.steps ?? 0)) return;
-    _snapshot = _snapshot?.copyWith(steps: steps.steps, updatedAt: _clock());
+    // `updatedAt` deliberately untouched: it is the service's stamp, and
+    // _pollSnapshot compares against it. Bumping it here — once a second,
+    // from a clock the service does not share — would make every persisted
+    // snapshot look stale and shut the polling fallback off entirely.
+    _snapshot = _snapshot?.copyWith(steps: steps.steps);
     await tracker.publishSteps(steps.steps);
     notifyListeners();
   }
 
+  /// Belt to the live channel's braces: re-reads the snapshot the service
+  /// persists, so progress still shows even if the plugin's data port is
+  /// not delivering. Never rewinds — whichever of the two channels wrote
+  /// last wins.
+  Future<void> _pollSnapshot() async {
+    // Both screens tick once a second (IndexedStack keeps them mounted), so
+    // an unthrottled poll would be two file reads a second for a document
+    // the service only rewrites every two.
+    final now = _clock();
+    final last = _lastPollAt;
+    if (last != null && now.difference(last) < _kSnapshotPollInterval) return;
+    _lastPollAt = now;
+
+    final persisted = await tracker.readSnapshot();
+    if (persisted == null || !persisted.isRecording) return;
+    if (!isRecording) return;
+    final current = _snapshot;
+    if (current != null && !persisted.updatedAt.isAfter(current.updatedAt)) {
+      return;
+    }
+    _adopt(persisted);
+  }
+
   void _onTrackerSnapshot(TripSnapshot snapshot) {
     if (_state != TripState.recording) return;
+    _adopt(snapshot);
+  }
+
+  void _adopt(TripSnapshot snapshot) {
     // The service does not know about steps sampled since its last event;
     // keep the higher of the two rather than letting the count flicker
     // backwards between the two channels.
     final steps = _steps?.steps ?? snapshot.steps;
     _snapshot = snapshot.copyWith(
         steps: steps > snapshot.steps ? steps : snapshot.steps);
+    notifyListeners();
+  }
+
+  void _onGpsSilent(bool silent) {
+    if (_gpsSilent == silent || !isRecording) return;
+    _gpsSilent = silent;
     notifyListeners();
   }
 
@@ -322,7 +458,12 @@ class TripController extends ChangeNotifier {
     _profile = profile;
     final route = _activeRoute;
     if (route != null) {
-      _activeRoute = route.copyWith(profile: profile);
+      // The computed route belonged to the old profile: a cyclist's line
+      // through a park is not a walker's. Dropping it (the endpoints stay)
+      // means no screen can show a route that does not match the selected
+      // profile — the map replans immediately, and the session tab, which
+      // has no planner, simply stops showing a stale one.
+      _activeRoute = route.copyWith(profile: profile, clearRoute: true);
       notifyListeners();
       await routeStore.save(_activeRoute!);
       return;
@@ -347,6 +488,7 @@ class TripController extends ChangeNotifier {
   void dispose() {
     unawaited(_updates?.cancel() ?? Future.value());
     unawaited(_errors?.cancel() ?? Future.value());
+    unawaited(_gpsSilence?.cancel() ?? Future.value());
     unawaited(_steps?.stop() ?? Future.value());
     super.dispose();
   }
