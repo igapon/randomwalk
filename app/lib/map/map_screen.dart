@@ -7,7 +7,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'geocoding.dart';
+import 'initial_camera.dart';
 import 'latest_only.dart';
+import 'nav_camera_state.dart';
 import 'route_controller.dart';
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
@@ -60,6 +62,28 @@ class MapScreenState extends ConsumerState<MapScreen> {
   bool _planning = false;
   ({int done, int total})? _downloadProgress;
 
+  /// Resolved once at startup — see [_resolveInitialCamera] — before the
+  /// map is built at all: last-known position when there is one, else
+  /// Geneva. Null while that resolution is still in flight (device-QA
+  /// addendum, point 1).
+  LatLng? _initialCameraCenter;
+
+  /// Mirrors `MapLibreMap.myLocationEnabled`. Starts false and flips true
+  /// once location permission is known to be granted (see
+  /// [_enableMyLocation]) — never unconditionally true at native map
+  /// creation, which is what left the own-position dot invisible until an
+  /// app switch (device-QA addendum, point 2): the location layer would be
+  /// asked to turn on before permission existed and never told to retry.
+  bool _myLocationEnabled = false;
+
+  /// Set by `MapLibreMap.onCameraTrackingDismissed` whenever a user gesture
+  /// pans/zooms the map away from following the walker during navigation —
+  /// device-QA addendum, point 3. Cleared again by the "recentrer" button
+  /// or by a fresh camera-follow session (see [_onCameraFollowChanged]).
+  /// Read only through [shouldShowRecenterButton] so the visibility rule
+  /// stays in one, unit-tested place.
+  bool _trackingReleased = false;
+
   /// One-shot: armed by the "Modifier le départ" action, consumed by the
   /// next long-press, which then sets the departure instead of the
   /// destination.
@@ -89,6 +113,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
     super.initState();
     ref.read(tripControllerProvider).onCameraFollowChanged =
         _onCameraFollowChanged;
+    unawaited(_resolveInitialCamera());
+    unawaited(_checkExistingLocationPermission());
   }
 
   @override
@@ -103,9 +129,71 @@ class MapScreenState extends ConsumerState<MapScreen> {
     super.dispose();
   }
 
+  /// Last-known position (no permission prompt) when there is one, else
+  /// Geneva — see [resolveInitialCameraCenter]. Awaited before the map is
+  /// ever built (see [build]): `initialCameraPosition` is only read once,
+  /// at native platform-view creation, so there is no way to correct it
+  /// after the fact short of moving the camera again.
+  Future<void> _resolveInitialCamera() async {
+    final center = await resolveInitialCameraCenter(() async {
+      final pos = await Geolocator.getLastKnownPosition();
+      return pos == null ? null : (pos.latitude, pos.longitude);
+    });
+    if (!mounted) return;
+    setState(() => _initialCameraCenter = center);
+  }
+
+  /// A passive, no-prompt read of whatever permission state already exists
+  /// (e.g. granted in a previous session) so the location dot can appear
+  /// the moment the map opens, without waiting for the user to trigger a
+  /// permission flow from this screen first.
+  Future<void> _checkExistingLocationPermission() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse) {
+        _enableMyLocation();
+      }
+    } catch (_) {
+      // Nothing to enable yet; a later successful position/permission flow
+      // (see [_enableMyLocation]'s call sites) will catch up.
+    }
+  }
+
+  /// Flips `MapLibreMap.myLocationEnabled` on. A no-op past the first call —
+  /// device-QA addendum, point 2: this is deliberately the *only* thing that
+  /// turns the layer on, called once permission is actually known to be
+  /// granted (a successful position, or a completed start-trip permission
+  /// flow), so the native location component is never asked to enable
+  /// itself before it has anything to show.
+  void _enableMyLocation() {
+    if (_myLocationEnabled || !mounted) return;
+    setState(() => _myLocationEnabled = true);
+  }
+
   void _onCameraFollowChanged(bool follow) {
     controller?.updateMyLocationTrackingMode(
         follow ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none);
+    // A fresh camera-follow session — trip start or stop — starts unreleased:
+    // carrying a stale release across trips would show the recentrer button
+    // (or hide it) based on the previous trip's last gesture.
+    if (_trackingReleased && mounted) setState(() => _trackingReleased = false);
+  }
+
+  /// `MapLibreMap.onCameraTrackingDismissed` — fired by any user gesture
+  /// (pan/zoom) that takes the camera out of `MyLocationTrackingMode`.
+  /// Device-QA addendum, point 3: navigation itself is untouched by this —
+  /// only whether the map keeps re-centring on the walker.
+  void _onCameraTrackingDismissed() {
+    if (!mounted) return;
+    setState(() => _trackingReleased = true);
+  }
+
+  /// The "recentrer" button: re-engages camera-follow without touching the
+  /// trip itself.
+  void _recenterOnTrack() {
+    controller?.updateMyLocationTrackingMode(MyLocationTrackingMode.tracking);
+    setState(() => _trackingReleased = false);
   }
 
   /// The planning state to edit: whatever is stored, or an empty plan
@@ -256,6 +344,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
     try {
       final pos = await Geolocator.getCurrentPosition();
+      // A position was just obtained, so permission is granted — safe to
+      // turn the own-position dot on now (device-QA addendum, point 2).
+      _enableMyLocation();
       return LatLng(pos.latitude, pos.longitude);
     } on LocationServiceDisabledException {
       // Services can be switched off in the gap between the check above
@@ -456,7 +547,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final trip = ref.read(tripControllerProvider);
     final route = trip.route;
     if (route == null) return;
-    if (!await trip.startTrip(route: route) && mounted) {
+    if (await trip.startTrip(route: route)) {
+      // The permission flow inside startTrip just ran, successfully — the
+      // fresh-install path (device-QA addendum, point 2) starts here just
+      // as often as it does from `_currentPositionOrNull`.
+      _enableMyLocation();
+    } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
     }
@@ -473,7 +569,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     );
     if (profile == null || !mounted) return;
     final trip = ref.read(tripControllerProvider);
-    if (!await trip.startTrip(profile: profile) && mounted) {
+    if (await trip.startTrip(profile: profile)) {
+      _enableMyLocation();
+    } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
     }
@@ -491,6 +589,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final initialCenter = _initialCameraCenter;
+    if (initialCenter == null) {
+      // Resolving the initial camera (last-known position, else Geneva —
+      // see [_resolveInitialCamera]) is normally sub-frame fast; this only
+      // ever shows for the handful of milliseconds that takes.
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final trip = ref.watch(tripControllerProvider);
     _statsTicker.sync(trip.isRecording);
@@ -532,8 +638,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
             key: ValueKey(styleUrl),
             styleString: styleUrl,
             initialCameraPosition:
-                const CameraPosition(target: LatLng(46.52, 6.63), zoom: 11),
-            myLocationEnabled: true,
+                CameraPosition(target: initialCenter, zoom: 13),
+            myLocationEnabled: _myLocationEnabled,
             myLocationTrackingMode: MyLocationTrackingMode.none,
             attributionButtonPosition: AttributionButtonPosition.bottomLeft,
             onMapCreated: _onMapCreated,
@@ -541,6 +647,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
             // (see maplibre_map.dart's onStyleLoadedCallback doc).
             onStyleLoadedCallback: _onStyleLoaded,
             onMapLongClick: _onMapLongClick,
+            // Device-QA addendum, point 3: any user gesture releases the
+            // camera from following the walker during navigation.
+            onCameraTrackingDismissed: _onCameraTrackingDismissed,
           ),
           Positioned(
             top: 0,
@@ -602,9 +711,26 @@ class MapScreenState extends ConsumerState<MapScreen> {
       floatingActionButton: Padding(
         // Lifted clear of the bottom banner/pill.
         padding: const EdgeInsets.only(bottom: 88),
-        child: FloatingActionButton(
-          onPressed: _centerOnUser,
-          child: const Icon(Icons.my_location),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (shouldShowRecenterButton(
+                isNavigating: trip.isRouteBound,
+                trackingReleased: _trackingReleased)) ...[
+              FloatingActionButton(
+                heroTag: 'recenter',
+                onPressed: _recenterOnTrack,
+                tooltip: 'Recentrer',
+                child: const WaymarkDiamond(size: 16, color: AppColors.ink),
+              ),
+              const SizedBox(height: 12),
+            ],
+            FloatingActionButton(
+              heroTag: 'myLocation',
+              onPressed: _centerOnUser,
+              child: const Icon(Icons.my_location),
+            ),
+          ],
         ),
       ),
     );
