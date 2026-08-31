@@ -2,6 +2,12 @@ import 'dart:convert' show jsonEncode;
 
 enum RoutingProfile { walk, bike }
 
+/// Shared Valhalla JSON builder for costing and direction options.
+Map<String, dynamic> _buildValhallaOptions(RoutingProfile profile) => {
+      'costing': profile == RoutingProfile.bike ? 'bicycle' : 'pedestrian',
+      'directions_options': {'units': 'kilometers', 'language': 'fr-FR'},
+    };
+
 class RouteRequest {
   final double fromLat, fromLon, toLat, toLon;
   final RoutingProfile profile;
@@ -17,8 +23,7 @@ class RouteRequest {
           {'lat': fromLat, 'lon': fromLon, 'type': 'break'},
           {'lat': toLat, 'lon': toLon, 'type': 'break'},
         ],
-        'costing': profile == RoutingProfile.bike ? 'bicycle' : 'pedestrian',
-        'directions_options': {'units': 'kilometers', 'language': 'fr-FR'},
+        ..._buildValhallaOptions(profile),
       });
 }
 
@@ -28,8 +33,9 @@ class MultiPointRouteRequest {
 
   MultiPointRouteRequest(
       {required this.locations, required this.profile}) {
-    assert(locations.length >= 2,
-        'MultiPointRouteRequest requires at least 2 locations');
+    if (locations.length < 2) {
+      throw ArgumentError('at least 2 locations required');
+    }
   }
 
   String toValhallaJson() {
@@ -48,8 +54,7 @@ class MultiPointRouteRequest {
 
     return jsonEncode({
       'locations': locObjects,
-      'costing': profile == RoutingProfile.bike ? 'bicycle' : 'pedestrian',
-      'directions_options': {'units': 'kilometers', 'language': 'fr-FR'},
+      ..._buildValhallaOptions(profile),
     });
   }
 }

@@ -199,14 +199,69 @@ void main() {
           locations: const [(46.52, 6.63)],
           profile: RoutingProfile.walk,
         ),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<ArgumentError>()),
       );
     });
   });
 
-  group('RouteResult.fromValhallaJson with multiple legs', () {
-    test('parses 3-leg Valhalla response with correct shape indices', () {
-      // Create three legs with distinct shapes and maneuvers
+  group('RouteResult.fromValhallaJson with single leg and multiple waypoints', () {
+    test('parses single-leg response with multiple through-waypoint maneuvers '
+        'and correct global shape indices', () {
+      // Realistic: MultiPointRouteRequest produces a single leg because
+      // Valhalla splits legs only at break/break_through boundaries.
+      // The shape traverses through several waypoints, and maneuvers occur
+      // at different positions within that single leg.
+      final legShape = encodePolyline6([
+        (46.52, 6.63),
+        (46.521, 6.631),
+        (46.522, 6.632),
+        (46.53, 6.64),
+        (46.535, 6.645),
+      ]);
+
+      final j = jsonDecode('''
+      {"trip":{"summary":{"length":2.5,"time":900},
+        "legs":[
+          {"shape":"$legShape",
+            "maneuvers":[
+              {"instruction":"Partez nord-est.","length":1.0,"begin_shape_index":0},
+              {"instruction":"Continuez tout droit.","length":0.8,"begin_shape_index":2},
+              {"instruction":"Vous êtes arrivé.","length":0.7,"begin_shape_index":4}
+            ]}
+        ]}}
+      ''') as Map<String, dynamic>;
+
+      final r = RouteResult.fromValhallaJson(j);
+
+      // Verify totals
+      expect(r.distanceKm, closeTo(2.5, 1e-9));
+      expect(r.duration, const Duration(seconds: 900));
+
+      // Verify shape from single leg (5 points)
+      expect(r.shape, hasLength(5));
+      expect(r.shape.first.$1, closeTo(46.52, 1e-6));
+      expect(r.shape.last.$1, closeTo(46.535, 1e-6));
+
+      // Verify maneuvers with globally consistent indices (no leg offset added)
+      expect(r.maneuvers, hasLength(3));
+
+      expect(r.maneuvers[0].instruction, 'Partez nord-est.');
+      expect(r.maneuvers[0].beginShapeIndex, 0);
+
+      expect(r.maneuvers[1].instruction, 'Continuez tout droit.');
+      expect(r.maneuvers[1].beginShapeIndex, 2);
+
+      expect(r.maneuvers[2].instruction, 'Vous êtes arrivé.');
+      expect(r.maneuvers[2].beginShapeIndex, 4);
+    });
+  });
+
+  group('RouteResult.fromValhallaJson with multi-break responses', () {
+    test('parses multi-break responses (not produced by MultiPointRouteRequest) '
+        'with correct global shape indices across legs', () {
+      // This tests the general multi-leg parsing machinery.
+      // MultiPointRouteRequest does not produce multi-leg responses because
+      // Valhalla only splits legs at explicit break boundaries.
       final leg1Shape = encodePolyline6([(46.52, 6.63), (46.521, 6.631)]);
       final leg2Shape = encodePolyline6([(46.521, 6.631), (46.53, 6.64)]);
       final leg3Shape = encodePolyline6([(46.53, 6.64), (46.535, 6.645)]);
