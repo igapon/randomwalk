@@ -129,6 +129,34 @@ void main() {
       expect(fields.degraded, isFalse);
     });
 
+    test('a divergence big enough to look like a GPS spike still replans',
+        () async {
+      // Beyond 200 m the follower treats a fix as multipath and freezes
+      // progress on it — but it is still evidence of being off the route,
+      // and a walker who has taken a different street entirely is exactly
+      // the walker who most needs a new one. This is the path that would
+      // strand a trip if the runtime kept feeding the old follower.
+      final replacement = straightRoute(
+          lonOffset: eastDegrees(46.52, 250), turn: 'Route de Berne');
+      final replan = FakeReplan([replacement]);
+      final nav = runtime(replan);
+      (double, double) far(int i) => eastOf(planned.shape[i], 250);
+
+      await fixAt(nav, on(1), 0);
+      final spike = await fixAt(nav, far(2), 5);
+      expect(spike.offRoute, isFalse, reason: 'still inside the grace');
+      expect(replan.calls, 0);
+
+      final fields = await fixAt(nav, far(2), 20);
+
+      expect(replan.calls, 1);
+      expect(fields.replanCount, 1);
+      expect(fields.instruction, 'Route de Berne');
+      expect(fields.routeShapeEnc, encodePolyline6(replacement.shape));
+      expect(fields.offRoute, isFalse,
+          reason: 'the fresh follower has the walker on the new line');
+    });
+
     test('no second replan starts while one is in flight', () async {
       final replacement = straightRoute(lonOffset: eastDegrees(46.52, 60));
       final replan = FakeReplan([replacement])..gate = Completer<void>();

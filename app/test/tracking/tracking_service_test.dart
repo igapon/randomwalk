@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/valhalla/models.dart';
@@ -118,6 +119,48 @@ void main() {
 
     test('nothing to resume from at all yields nothing', () {
       expect(resumePoint(null, null), isNull);
+    });
+  });
+
+  group('withoutNavigation', () {
+    TripSnapshot navigating() => snapshot().copyWith(
+          nav: const NavFields(
+            instruction: 'Tournez à gauche sur la rue de Bourg',
+            distanceToManeuverM: 120,
+            remainingKm: 2.4,
+            etaSeconds: 1920,
+            offRoute: true,
+            arrived: true,
+            replanCount: 3,
+            routeShapeEnc: '_izlhA~rlgdF',
+          ),
+        );
+
+    test('a restarting incarnation keeps the distance and drops the guidance',
+        () {
+      // The failure this exists for: with no nav seed to read (blank or
+      // corrupt), the new incarnation builds no follower, so nothing would
+      // ever overwrite these — the UI would show the dead incarnation's
+      // instruction, and its route line, for the rest of the trip.
+      final fresh = withoutNavigation(navigating());
+
+      expect(fresh.distanceKm, closeTo(2.4, 1e-9));
+      expect(fresh.steps, 3100);
+      expect(fresh.navInstruction, isNull);
+      expect(fresh.navDistanceToManeuverM, isNull);
+      expect(fresh.navRemainingKm, isNull);
+      expect(fresh.navEtaSeconds, isNull);
+      expect(fresh.navRouteShapeEnc, isNull);
+      expect(fresh.navOffRoute, isFalse);
+      expect(fresh.navArrived, isFalse);
+      expect(fresh.navReplanCount, 0);
+    });
+
+    test('a snapshot that was never navigating comes back unchanged', () {
+      final free = withoutNavigation(snapshot());
+      expect(free.navInstruction, isNull);
+      expect(free.distanceKm, closeTo(2.4, 1e-9));
+      expect(free.updatedAt, snapshot().updatedAt);
     });
   });
 }

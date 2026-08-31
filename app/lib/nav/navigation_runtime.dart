@@ -70,9 +70,13 @@ class NavigationRuntime {
   /// with GPS noise, and all — would corrupt.
   ///
   /// Completes only once any replan it started has finished, so the fields
-  /// returned already describe the new route. A fix arriving while that
-  /// replan is in flight is answered from the route still being followed,
-  /// without queueing a second recalculation.
+  /// returned already describe the new route.
+  ///
+  /// Calling this again while a replan is in flight is safe — the second
+  /// call is answered from the route still being followed and starts no
+  /// second recalculation — but that is a property of this class, not a
+  /// description of production: the service serializes fixes and simply
+  /// drops the ones that arrive mid-replan (see `TripTaskHandler._onNavFix`).
   Future<NavFields> onFix(
       double lat, double lon, double speedMps, DateTime time) async {
     var update = _follower.update(lat, lon, time);

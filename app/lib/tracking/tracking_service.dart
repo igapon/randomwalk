@@ -192,6 +192,10 @@ class ForegroundServiceTripTracker implements TripTracker {
   @override
   Future<TripSnapshot?> stop() async {
     await FlutterForegroundTask.stopService();
+    // The itinerary dies with the trip. This store outlives the process, and
+    // `start` blanking it is only enough for starts that go through this
+    // class — a service Android brings back on its own does not.
+    await FlutterForegroundTask.saveData(key: _kNavSeedKey, value: '');
     // `stopService` returns before the handler's `onDestroy` has necessarily
     // flushed, so the caller reconciles this with the last live snapshot it
     // saw (see TripController._finalise).
@@ -276,6 +280,20 @@ class ForegroundServiceTripTracker implements TripTracker {
 TripSnapshot? resumePoint(TripSnapshot? persisted, TripSnapshot? seed) =>
     persisted != null && persisted.isRecording ? persisted : seed;
 
+/// [snapshot] with its navigation state forgotten — what a (re)starting
+/// service incarnation must record on top of.
+///
+/// The distance and steps of a killed incarnation are worth resuming; its
+/// *guidance* is not. A new incarnation rebuilds its follower from the
+/// planned route (or, with no nav seed to read, has no follower at all), so
+/// carrying the dead one's fields over would republish a frozen instruction
+/// and a stale route shape — for the rest of the trip in the no-follower
+/// case, since nothing would ever overwrite them. Resetting `navReplanCount`
+/// with them is the honest reading: the count belongs to a route this
+/// incarnation is not following.
+TripSnapshot withoutNavigation(TripSnapshot snapshot) =>
+    snapshot.copyWith(nav: const NavFields());
+
 /// The service isolate's entry point. Must be a top-level function marked
 /// `vm:entry-point` — the AOT compiler cannot see it otherwise.
 @pragma('vm:entry-point')
@@ -315,6 +333,16 @@ class TripTaskHandler extends TaskHandler {
   /// not queue up behind guidance.
   bool _navBusy = false;
 
+  /// The service is being torn down. A replan can outlive `onDestroy` — it
+  /// is awaiting a platform channel, which the teardown does not cancel —
+  /// and must not then submit a snapshot after the final flush or update a
+  /// notification that is on its way out.
+  bool _stopped = false;
+
+  /// The notification line last published, so a fix that does not change
+  /// what the guidance *says* costs nothing (see [_publish]).
+  String? _lastNotificationText;
+
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     final path = await FlutterForegroundTask.getData<String>(
@@ -322,8 +350,11 @@ class TripTaskHandler extends TaskHandler {
     if (path == null) return;
 
     final store = FileTripSnapshotStore(File(path));
-    final seed = await _resumePoint(store);
-    if (seed == null) return;
+    final resumed = await _resumePoint(store);
+    if (resumed == null) return;
+    // Distance and steps carry over from a killed incarnation; guidance does
+    // not (see [withoutNavigation]).
+    final seed = withoutNavigation(resumed);
     _seed = seed;
     _steps = seed.steps;
     _writer = ThrottledSnapshotWriter(store);
@@ -384,21 +415,28 @@ class TripTaskHandler extends TaskHandler {
       _recordingSince = timestamp;
     }
 
-    _publish(timestamp);
+    _publish(timestamp, periodic: true);
   }
 
   /// Writes the current state everywhere it is read from: the persisted
   /// snapshot (throttled), the notification, and the UI's live channel.
   ///
-  /// Called on every repeat event *and* on every navigated fix — a walker
-  /// approaching a turn should not have to wait out the tick for the
-  /// notification to say so.
-  void _publish(DateTime now) {
+  /// Called on every repeat event ([periodic]) *and* on every navigated fix
+  /// — a walker approaching a turn should not have to wait out the tick for
+  /// the notification to say so. A fix that does not change what the
+  /// guidance *says*, though, publishes nothing at all: the metre-by-metre
+  /// progress behind it reaches the UI on the next repeat event anyway, and
+  /// the alternative is a snapshot (route polyline included) crossing the
+  /// isolate boundary for every fix of the walk.
+  void _publish(DateTime now, {required bool periodic}) {
+    if (_stopped) return;
     final snapshot = _snapshotAt(now);
     if (snapshot == null) return;
+    final text = _notificationText(snapshot, now);
+    if (!periodic && text == _lastNotificationText) return;
+    _lastNotificationText = text;
     _writer?.submit(snapshot);
-    FlutterForegroundTask.updateService(
-        notificationText: _notificationText(snapshot, now));
+    FlutterForegroundTask.updateService(notificationText: text);
     FlutterForegroundTask.sendDataToMain(jsonEncode(snapshot.toJson()));
   }
 
@@ -415,15 +453,15 @@ class TripTaskHandler extends TaskHandler {
   /// recording trip, never a way to end one.
   Future<void> _onNavFix(GpsSample sample) async {
     final nav = _nav;
-    if (nav == null || _navBusy) return;
+    if (nav == null || _navBusy || _stopped) return;
     _navBusy = true;
     try {
       _navFields = await nav.onFix(
           sample.lat, sample.lon, sample.speedMps, sample.time);
-      // Publishing is inside the guard too: a fix whose replan outlived the
-      // service teardown would otherwise update a notification that is on
-      // its way out, from a callback nothing is left to await.
-      _publish(DateTime.now());
+      // Publishing is inside the try for the same reason [_stopped] exists:
+      // a fix whose replan outlived the teardown must not raise from a
+      // callback nothing is left to await.
+      _publish(DateTime.now(), periodic: false);
     } catch (_) {
       return;
     } finally {
@@ -469,6 +507,9 @@ class TripTaskHandler extends TaskHandler {
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    // Before the final flush, so an in-flight replan completing during the
+    // teardown cannot submit a snapshot after it.
+    _stopped = true;
     final snapshot = _snapshotAt(timestamp);
     if (snapshot != null) await _writer?.submit(snapshot);
     await _writer?.flush();
