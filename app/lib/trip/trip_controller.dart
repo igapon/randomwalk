@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../nav/nav_fields.dart';
 import '../session/recorder.dart';
 import '../settings/alert_settings.dart';
 import '../tracking/nav_seed.dart';
@@ -312,12 +313,19 @@ class TripController extends ChangeNotifier {
     // gpsSilent deliberately cleared: it describes the *previous* session's
     // stream, and the service re-derives it from the new one's first repeat
     // event. Carrying it would flash the warning for the couple of seconds
-    // before that arrives.
+    // before that arrives. nav is blanked the same way: the interrupted
+    // session's guidance — including any replanned route shape — belongs to
+    // a follower that is gone, not to whatever this resumed service builds
+    // fresh from the planned route below. Without this, the map would draw
+    // the dead session's replanned line (keyed on `navRouteShapeEnc`, see
+    // `map_screen.dart`'s `_maybeSyncReplannedRoute`) until the new service
+    // happens to replan again — which might be never.
     return _launch(
       snapshot.copyWith(
           status: TripStatus.recording,
           updatedAt: _clock(),
-          gpsSilent: false),
+          gpsSilent: false,
+          nav: const NavFields()),
       // A resumed route-bound trip is re-seeded from the planned route
       // (which outlives the trip, see [ActiveRouteStore]); without this,
       // « Reprendre » would silently come back without guidance.

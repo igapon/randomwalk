@@ -10,6 +10,7 @@ import 'geocoding.dart';
 import 'initial_camera.dart';
 import 'latest_only.dart';
 import 'nav_camera_state.dart';
+import 'replan_line.dart';
 import 'route_controller.dart';
 import '../coverage/manifest.dart' show DatasetVersionMismatch;
 import '../nav/guidance_text.dart';
@@ -62,10 +63,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
   ActiveRoute? _drawn;
   bool _syncing = false;
 
-  /// The [TripSnapshot.navReplanCount] the route line currently drawn was
-  /// last redrawn for. Null before the map has ever synced a replanned
-  /// shape — see [_maybeSyncReplannedRoute].
-  int? _lastDrawnReplanCount;
+  /// The (normalised — empty reads as null) [TripSnapshot.navRouteShapeEnc]
+  /// the route line currently drawn was last redrawn for. Null both before
+  /// the map has ever synced a replanned shape, and again once
+  /// [_maybeSyncReplannedRoute] has restored the base planned line — see
+  /// [decideReplanLineSync].
+  String? _lastDrawnRouteShapeEnc;
 
   bool _planning = false;
   ({int done, int total})? _downloadProgress;
@@ -242,7 +245,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // base draw below redraws the *planned* route, which is stale if a
     // replan had already happened before this remount (a theme flip
     // mid-navigation, say).
-    _lastDrawnReplanCount = null;
+    _lastDrawnRouteShapeEnc = null;
   }
 
   Future<void> _onStyleLoaded() async {
@@ -343,8 +346,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  /// Redraws the route line from the service's replanned shape once
-  /// [TripSnapshot.navReplanCount] moves past what is currently on screen.
+  /// Redraws the route line from the service's replanned shape whenever
+  /// [TripSnapshot.navRouteShapeEnc] changes from what is currently on
+  /// screen — see [decideReplanLineSync] for the decision itself, kept
+  /// pure and tested separately.
   ///
   /// The planned route drawn by [_drawOverlays] never changes on its own —
   /// it is [TripController.activeRoute], which nothing touches once a trip
@@ -356,16 +361,30 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _maybeSyncReplannedRoute() async {
     if (controller == null) return;
     final trip = ref.read(tripControllerProvider);
-    if (!trip.isRouteBound) return;
-    final snapshot = trip.snapshot;
-    final replanCount = snapshot?.navReplanCount ?? 0;
-    if (replanCount == 0 || replanCount == _lastDrawnReplanCount) return;
-    final enc = snapshot?.navRouteShapeEnc;
-    if (enc == null || enc.isEmpty) return;
-    final shape = decodePolyline6(enc);
-    if (shape.length < 2) return;
-    await _redrawRouteLine(shape);
-    _lastDrawnReplanCount = replanCount;
+    final raw = trip.snapshot?.navRouteShapeEnc;
+    final enc = (raw == null || raw.isEmpty) ? null : raw;
+    switch (decideReplanLineSync(
+      isRouteBound: trip.isRouteBound,
+      currentShapeEnc: enc,
+      lastDrawnShapeEnc: _lastDrawnRouteShapeEnc,
+    )) {
+      case ReplanLineSync.none:
+        return;
+      case ReplanLineSync.redraw:
+        final shape = decodePolyline6(enc!);
+        if (shape.length < 2) return;
+        await _redrawRouteLine(shape);
+        _lastDrawnRouteShapeEnc = enc;
+      case ReplanLineSync.restoreBase:
+        // The replan this trip (or a previous one) had drawn is gone —
+        // put the planned route's own line back rather than leaving the
+        // dead replan on screen forever (final review item 4).
+        final planned = trip.activeRoute?.route?.shape;
+        if (planned != null && planned.length >= 2) {
+          await _redrawRouteLine(planned);
+        }
+        _lastDrawnRouteShapeEnc = null;
+    }
   }
 
   /// Draws the new casing/line pair before removing the old one, so the
@@ -738,14 +757,22 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final trip = ref.watch(tripControllerProvider);
     _statsTicker.sync(trip.isRecording);
     final snapshot = trip.snapshot;
-    final replanCount = snapshot?.navReplanCount ?? 0;
+    final rawShapeEnc = snapshot?.navRouteShapeEnc;
+    final currentShapeEnc =
+        (rawShapeEnc == null || rawShapeEnc.isEmpty) ? null : rawShapeEnc;
     // The plan can change from anywhere (a restore at startup, the session
     // tab, a search result); a replan happens inside the service. Either
-    // redraws after the frame that noticed.
+    // redraws after the frame that noticed. Keyed on the shape itself, not
+    // `navReplanCount` — see [decideReplanLineSync]'s doc comment on why a
+    // counter that resets to 0 for every fresh trip cannot tell "nothing
+    // changed" from "a previous trip's replanned line is still drawn".
     final needsOverlaySync = !identical(trip.activeRoute, _drawn) && !_syncing;
-    final needsReplanSync = trip.isRouteBound &&
-        replanCount != 0 &&
-        replanCount != _lastDrawnReplanCount;
+    final needsReplanSync = decideReplanLineSync(
+          isRouteBound: trip.isRouteBound,
+          currentShapeEnc: currentShapeEnc,
+          lastDrawnShapeEnc: _lastDrawnRouteShapeEnc,
+        ) !=
+        ReplanLineSync.none;
     if (needsOverlaySync || needsReplanSync) {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => unawaited(_syncMapForFrame()));
@@ -784,7 +811,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (trip.isRouteBound && snapshot != null) {
       if (snapshot.navArrived) {
         topOverlay = const NavArrivedCard();
-      } else if (snapshot.navOffRoute) {
+      } else if (snapshot.navOffRoute || snapshot.navReplanning) {
         topOverlay = const _NavRecalculatingCard();
       } else if (snapshot.navInstruction != null &&
           snapshot.navInstruction!.isNotEmpty) {

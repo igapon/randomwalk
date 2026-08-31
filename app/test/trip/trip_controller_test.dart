@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
@@ -592,6 +593,36 @@ void main() {
       expect(tracker.startedWith.single.startedAt,
           DateTime.utc(2026, 8, 30, 9, 30, 0));
       expect(trip.elapsed, const Duration(minutes: 30));
+    });
+
+    test(
+        '"Reprendre" does not inherit a previous replan\'s route line '
+        '(final review item 4)', () async {
+      tracker.persisted = recordingSnapshot(routeBound: true).copyWith(
+        nav: const NavFields(
+          instruction: 'Tournez à gauche sur la rue de Bourg',
+          distanceToManeuverM: 42,
+          remainingKm: 0.8,
+          etaSeconds: 300,
+          replanCount: 2,
+          routeShapeEnc: '_izlhA~rlgdF',
+        ),
+      );
+      final trip = build();
+      await trip.restore();
+      await trip.resumeInterrupted();
+
+      final seed = tracker.startedWith.single;
+      expect(seed.navReplanCount, 0);
+      expect(seed.navRouteShapeEnc, isNull);
+      expect(seed.navInstruction, isNull);
+      expect(seed.navDistanceToManeuverM, isNull);
+      expect(seed.navRemainingKm, isNull);
+      expect(seed.navEtaSeconds, isNull);
+      // And it is this blanked seed the UI reads immediately, before the
+      // resumed service has published anything of its own — otherwise the
+      // map would draw the dead session's replanned line in the gap.
+      expect(trip.snapshot?.navRouteShapeEnc, isNull);
     });
 
     test('"Reprendre" keeps counting steps on from the saved total', () async {
