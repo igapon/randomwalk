@@ -64,18 +64,41 @@ Duration clampDurationTarget(Duration duration) {
 /// Turns a duration target into a distance target at the walker's own pace.
 /// [speedKmh] is threaded in by the caller (`SpeedHistoryStore.speedKmh`)
 /// rather than read here — this file stays free of async/IO so it can be
-/// tested as plain functions. Always positive: [speedKmh] is, by
-/// `SpeedHistoryStore`'s own contract (default or EMA, never zero/negative),
-/// and [kDurationTargetMin] is a positive duration.
+/// tested as plain functions.
+///
+/// Clamped to `[kLoopTargetMinKm, kLoopTargetMaxKm]` — the same bounds
+/// [clampLoopTargetKm] holds the Boucle slider to (final review item 4). The
+/// two modes plan through the identical [LoopRequest]/`LoopPlanner` pipeline,
+/// so a target Boucle cannot even express must not reach it from Durée
+/// either: 4 h at a 25 km/h cycling pace is 100 km, which the planner would
+/// spend its entire router-call budget bisecting toward and never reach,
+/// handing back a candidate ~70 % short with no explanation. At the other
+/// end, a slow walker's 15 minutes converts to well under a kilometre.
+///
+/// Always positive as a result — the clamp guarantees it, so a [LoopRequest]
+/// built from this can never throw on a non-positive target regardless of
+/// what [speedKmh] the history store learned.
 double durationToTargetKm(Duration duration, double speedKmh) {
   assert(speedKmh > 0, 'speedKmh must be positive');
-  return duration.inSeconds / 3600 * speedKmh;
+  final raw = duration.inSeconds / 3600 * speedKmh;
+  return raw.clamp(kLoopTargetMinKm, kLoopTargetMaxKm);
 }
 
 /// « ≈ 3,8 km à votre rythme » — French decimal comma, one decimal place.
+///
+/// Reads « ≈ 30,0 km (maximum) à votre rythme » on a target sitting at a
+/// bound (item 4). [durationToTargetKm] clamps, and without saying so the
+/// label would look like an ordinary pace conversion while lengthening the
+/// duration slider silently stopped changing the distance — the one reading
+/// of that screen a walker cannot debug for themselves.
 String formatConversionLabel(double km) {
   final formatted = km.toStringAsFixed(1).replaceAll('.', ',');
-  return '≈ $formatted km à votre rythme';
+  final bound = km >= kLoopTargetMaxKm
+      ? ' (maximum)'
+      : km <= kLoopTargetMinKm
+          ? ' (minimum)'
+          : '';
+  return '≈ $formatted km$bound à votre rythme';
 }
 
 // ---- Candidate seed stepping -----------------------------------------------
@@ -144,17 +167,28 @@ LoopRequest? buildLoopRequest({
 /// fixed-duration A→B against a pin the walker never chose for that mode,
 /// with no control on screen to see or clear it.
 ///
-/// Only an Itinéraire->(Boucle|Durée) transition with no route on screen is
-/// affected: a destination set *while already in* Durée (long-press/search
-/// there) is intentional and shown/clearable in the target panel instead
-/// (see `map_screen.dart`'s destination chip), and Boucle never reads the
-/// destination at all regardless of how it got there.
+/// Final review item 7 makes the rule symmetric: **any** mode change with no
+/// route on screen drops an un-routed destination. The original rule only
+/// covered Itinéraire→(Boucle|Durée), which left the mirror image of the same
+/// bug — a pin set in Durée and carried into Itinéraire, where the Durée
+/// destination chip that could clear it is no longer on screen and no result
+/// banner exists either, so the next long-press or « Planifier » plans
+/// against a target the walker can neither see nor cancel. A destination
+/// belongs to the panel it was set in; switching panels orphans it.
+///
+/// Two things the rule deliberately still protects:
+///
+///  * `hasRoute` — a computed route *is* visible, with the result banner's
+///    own ✕ to clear it. This must not race or duplicate that.
+///  * `from == to` — a no-op switch clears nothing, so the rule does not
+///    depend on `_onPlanModeChanged`'s early return to avoid dropping a pin
+///    the user just set in the mode they are already in.
 bool shouldClearDestinationOnModeSwitch({
   required PlanMode from,
   required PlanMode to,
   required bool hasRoute,
 }) =>
-    from == PlanMode.itinerary && to != PlanMode.itinerary && !hasRoute;
+    from != to && !hasRoute;
 
 /// Coordinate fallback label for a pinned destination the UI has no
 /// reverse-geocoded name for (a long-press pin, or a search result whose

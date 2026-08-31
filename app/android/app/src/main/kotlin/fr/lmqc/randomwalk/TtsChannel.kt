@@ -353,6 +353,13 @@ class TtsChannel(private val context: Context) {
      * `randomwalk/tts` method-channel handler having already requested focus but with no
      * utterance ever going on to call [onUtteranceEnded] — the focus grant would then leak
      * until the next [shutdown]. Abandon it immediately on that path instead.
+     *
+     * Final review item 7: the *documented* failure mode is not a throw at all —
+     * `TextToSpeech.speak` returns `ERROR` (rather than `SUCCESS`) when the engine declines
+     * the request, and no `UtteranceProgressListener` callback follows a request that was
+     * never enqueued. That is the same leak as the throw, so it gets the same treatment,
+     * in the same block: a non-`SUCCESS` return code releases focus immediately instead of
+     * ducking the user's music until the next [speak] or [shutdown] happens to come along.
      */
     private fun speak(text: String) {
         val engine = tts ?: return
@@ -360,7 +367,11 @@ class TtsChannel(private val context: Context) {
         activeUtteranceId = utteranceId
         requestFocus()
         try {
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+            val queued = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+            if (queued != TextToSpeech.SUCCESS) {
+                activeUtteranceId = null
+                abandonFocus()
+            }
         } catch (_: Exception) {
             activeUtteranceId = null
             abandonFocus()

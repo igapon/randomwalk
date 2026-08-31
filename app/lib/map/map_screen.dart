@@ -835,9 +835,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (mode == _planMode) return;
     final trip = ref.read(tripControllerProvider);
     final wasItinerary = _planMode == PlanMode.itinerary;
-    // Fix-round-1: drop a destination pinned in Itinéraire that never turned
-    // into a route before it can leak into Durée as an invisible A->B
-    // target — see [shouldClearDestinationOnModeSwitch].
+    // Drop an un-routed destination pin on any mode change: it belongs to
+    // the panel it was set in, and switching panels leaves it invisible and
+    // unclearable in whichever mode is now showing — in either direction
+    // (final review item 7 made this symmetric). See
+    // [shouldClearDestinationOnModeSwitch].
     final dropDestination = shouldClearDestinationOnModeSwitch(
         from: _planMode, to: mode, hasRoute: trip.route != null);
     setState(() {

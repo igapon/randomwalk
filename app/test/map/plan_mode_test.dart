@@ -70,6 +70,38 @@ void main() {
         () {
       expect(durationToTargetKm(kDurationTargetMin, 2.0), greaterThan(0));
     });
+
+    group('clamped to the Boucle slider bounds (final review item 4)', () {
+      test('a fast cyclist over 4 hours is capped at the maximum', () {
+        // 4 h at 25 km/h is 100 km — a target the loop planner would spend
+        // its whole router budget bisecting toward and never reach, and one
+        // no « Boucle » slider position can even express.
+        expect(durationToTargetKm(kDurationTargetMax, 25), kLoopTargetMaxKm);
+        expect(durationToTargetKm(const Duration(hours: 2), 20),
+            kLoopTargetMaxKm);
+      });
+
+      test('a slow walker over the minimum duration is raised to the minimum',
+          () {
+        // 15 min at 3 km/h is 0.75 km, below the slider's own floor.
+        expect(durationToTargetKm(kDurationTargetMin, 3), kLoopTargetMinKm);
+      });
+
+      test('an in-range conversion is untouched', () {
+        expect(durationToTargetKm(const Duration(hours: 1), 4.5), 4.5);
+        expect(durationToTargetKm(const Duration(hours: 2), 12), 24.0);
+      });
+
+      test('the result is always a legal LoopRequest target', () {
+        for (var minutes = 15; minutes <= 240; minutes += 15) {
+          for (final speed in [2.0, 4.5, 6.0, 15.0, 25.0, 40.0]) {
+            final km = durationToTargetKm(Duration(minutes: minutes), speed);
+            expect(km, greaterThanOrEqualTo(kLoopTargetMinKm));
+            expect(km, lessThanOrEqualTo(kLoopTargetMaxKm));
+          }
+        }
+      });
+    });
   });
 
   group('formatConversionLabel', () {
@@ -77,6 +109,27 @@ void main() {
       expect(formatConversionLabel(3.8), '≈ 3,8 km à votre rythme');
       expect(formatConversionLabel(12.0), '≈ 12,0 km à votre rythme');
       expect(formatConversionLabel(2.04), '≈ 2,0 km à votre rythme');
+    });
+
+    test('says so when the target is sitting on a bound (item 4)', () {
+      // Otherwise the label reads as an ordinary pace conversion and the
+      // walker has no way to tell why lengthening the duration stopped
+      // changing the distance.
+      expect(formatConversionLabel(kLoopTargetMaxKm),
+          '≈ 30,0 km (maximum) à votre rythme');
+      expect(formatConversionLabel(kLoopTargetMinKm),
+          '≈ 1,0 km (minimum) à votre rythme');
+    });
+
+    test('reflects the clamp the conversion actually applied', () {
+      expect(formatConversionLabel(durationToTargetKm(kDurationTargetMax, 25)),
+          contains('(maximum)'));
+      expect(formatConversionLabel(durationToTargetKm(kDurationTargetMin, 3)),
+          contains('(minimum)'));
+      expect(
+          formatConversionLabel(
+              durationToTargetKm(const Duration(hours: 1), 4.5)),
+          '≈ 4,5 km à votre rythme');
     });
   });
 
@@ -232,32 +285,58 @@ void main() {
       );
     });
 
-    test('never clears between Boucle and Durée (neither is Itinéraire)', () {
+    test('final review item 7: symmetric — Durée→Itinéraire drops the orphan '
+        'pin too', () {
+      // The asymmetry this replaces: a pin set in Durée that never became a
+      // route survived into Itinéraire, where the Durée chip that could clear
+      // it is gone and no result banner exists yet — an invisible target for
+      // the next « Planifier »/long-press to plan against.
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.loop, to: PlanMode.duration, hasRoute: false),
-        isFalse,
+            from: PlanMode.duration, to: PlanMode.itinerary, hasRoute: false),
+        isTrue,
+      );
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.loop, to: PlanMode.itinerary, hasRoute: false),
+        isTrue,
       );
       expect(
         shouldClearDestinationOnModeSwitch(
             from: PlanMode.duration, to: PlanMode.loop, hasRoute: false),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        shouldClearDestinationOnModeSwitch(
+            from: PlanMode.loop, to: PlanMode.duration, hasRoute: false),
+        isTrue,
       );
     });
 
-    test('never clears when switching into Itinéraire', () {
-      expect(
-        shouldClearDestinationOnModeSwitch(
-            from: PlanMode.loop, to: PlanMode.itinerary, hasRoute: false),
-        isFalse,
-      );
-      expect(
-        shouldClearDestinationOnModeSwitch(
-            from: PlanMode.duration,
-            to: PlanMode.itinerary,
-            hasRoute: false),
-        isFalse,
-      );
+    test('a route on screen protects the destination in every direction', () {
+      for (final from in PlanMode.values) {
+        for (final to in PlanMode.values) {
+          expect(
+            shouldClearDestinationOnModeSwitch(
+                from: from, to: to, hasRoute: true),
+            isFalse,
+            reason: '$from -> $to',
+          );
+        }
+      }
+    });
+
+    test('a no-op switch clears nothing', () {
+      // `_onPlanModeChanged` returns early on this, but the rule must not
+      // depend on that guard to avoid dropping a pin the user just set in
+      // the mode they are already in.
+      for (final mode in PlanMode.values) {
+        expect(
+          shouldClearDestinationOnModeSwitch(
+              from: mode, to: mode, hasRoute: false),
+          isFalse,
+        );
+      }
     });
   });
 

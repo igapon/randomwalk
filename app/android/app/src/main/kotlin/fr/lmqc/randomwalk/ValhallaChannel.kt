@@ -66,12 +66,30 @@ class ValhallaChannel(private val context: Context) {
         // Deleting a file that happens to still belong to another
         // concurrently-live instance (the UI engine and the background
         // tracking engine can both be attached at once — see the class doc
-        // comment) is safe, not just swept-under-the-rug: `Valhalla`'s
-        // constructor reads the file once, synchronously, before returning
-        // (see the class doc comment's account of the real AAR API), so a
-        // live actor has nothing left to reread from it. The only way it
-        // matters again is a *later* `init()` on that same instance, and
-        // `File.writeText` recreates the file unconditionally either way.
+        // comment) is safe for an instance whose engine is already *built*,
+        // not just swept-under-the-rug: `Valhalla`'s constructor reads the
+        // file once, synchronously, before returning (see the class doc
+        // comment's account of the real AAR API), so a live actor has nothing
+        // left to reread from it. The only way it matters again is a *later*
+        // `init()` on that same instance, and `File.writeText` recreates the
+        // file unconditionally either way.
+        //
+        // One window is genuinely racy, and is accepted rather than closed:
+        // the two statements inside another instance's `init` —
+        // `configFile.writeText(configJson)` then `Valhalla(path)` — are not
+        // atomic, and a sweep landing between them deletes a config that
+        // instance is about to open. The engine's own worker thread then
+        // fails to construct, `init` answers `VALHALLA <no such file>` to
+        // Dart, and (per that block's build-into-a-local discipline) `actor`
+        // is left cleanly null rather than pointing at anything broken; Dart
+        // sees a routing call fail and can re-`init`. Hitting it requires two
+        // engines attaching and initialising within the same few
+        // milliseconds — plausible only around
+        // `ForegroundService.createForegroundTask` — and the alternative
+        // (a cross-instance lock, or naming files by a registry the process
+        // has to keep in sync across an LMK kill) buys a rarer failure than
+        // the orphaned-file leak this sweep exists to stop. Stated here so
+        // the next reader does not have to rediscover it.
         sweepOrphanedConfigFiles()
         val methodChannel = MethodChannel(messenger, "randomwalk/valhalla")
         channel = methodChannel
