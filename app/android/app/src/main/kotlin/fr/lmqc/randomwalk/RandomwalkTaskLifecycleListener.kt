@@ -45,22 +45,27 @@ import io.flutter.plugins.GeneratedPluginRegistrant
  * (not just the package docs) to confirm two things before wiring this in: it wraps every single
  * plugin's registration in its own `try`/`catch (Exception e)` and merely logs a failure, so one
  * misbehaving plugin cannot take the others — or the service — down with it; and every plugin this
- * app actually depends on (`flutter_local_notifications`, `geolocator`, `shared_preferences`,
- * `permission_handler`, `maplibre_gl`, ...) implements only `FlutterPlugin`'s
- * `onAttachedToEngine`/`onDetachedFromEngine` there — no `ActivityAware` method is required to
- * construct any of their platform state, so attaching them to an engine with no Activity (this
- * one) is exactly the supported, documented shape of a `FlutterPlugin`, not a workaround. This
- * also incidentally makes `geolocator`'s GPS stream and `shared_preferences` reliable from inside
- * the service isolate for the first time — both were already relied on there (Task 5) without
- * this call ever having run, unverified until now.
+ * app actually depends on builds all the platform state that matters here from
+ * `FlutterPlugin.onAttachedToEngine` alone, without needing an Activity. Several of them —
+ * `flutter_local_notifications`, `geolocator`, `permission_handler` — *do* also implement
+ * `ActivityAware` (verified by reading their sources, not assumed), but purely for methods this
+ * engine never calls: `onAttachedToActivity` and its siblings only fire when an `Activity`
+ * actually attaches to the engine, which never happens for a background engine with none. Their
+ * `ActivityAware` side simply stays dormant here — exactly the behaviour a `FlutterPlugin` is
+ * documented to have with no Activity around, not a workaround this listener has to compensate
+ * for. This also incidentally makes `geolocator`'s GPS stream and `shared_preferences` reliable
+ * from inside the service isolate for the first time — both were already relied on there
+ * (Task 5) without this call ever having run, unverified until now.
  *
  * `flutter_tts` was tried for Task 6's optional spoken guidance and pulled back out — not a
  * registration problem at all, but a build one: its `android/build.gradle` unconditionally applies
  * the legacy `kotlin-android` Gradle plugin, which AGP 9's built-in Kotlin support (this app runs
  * with `android.builtInKotlin=true`, required by `maplibre_gl` — see `android/gradle.properties`)
- * refuses to coexist with. Flipping that flag back to `false` trades one break for the other. See
- * `nav/tts.dart`'s `NoopTtsSpeaker` doc comment for the full account; nothing here needed to change
- * for it.
+ * refuses to coexist with. Flipping that flag back to `false` trades one break for the other.
+ * Replaced with this app's own [TtsChannel] (a local plugin, bundled into [RandomwalkPlugin] above,
+ * wrapping the platform `android.speech.tts.TextToSpeech` directly — no Gradle plugin of its own to
+ * conflict with anything). See `nav/tts.dart`'s `NativeTtsSpeaker`/`NoopTtsSpeaker` doc comments for
+ * the full account.
  *
  * Registered once, from [RandomwalkApplication.onCreate] — not from `MainActivity` — because the
  * service can (re)create its engine without any Activity ever running (e.g. `RestartReceiver`

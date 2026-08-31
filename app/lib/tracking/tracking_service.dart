@@ -376,16 +376,24 @@ class TripTaskHandler extends TaskHandler {
   /// evaluate for one (brief: "Free sessions: no alerts").
   AlertPolicy? _alertPolicy;
 
+  /// The [NavFields.replanCount] [_alertPolicy] was last reset for. A
+  /// replan builds a fresh `RouteFollower` (see `NavigationRuntime`'s own
+  /// doc comment) whose maneuver numbering restarts at 0 — without
+  /// noticing the count changed and calling [AlertPolicy.reset], the new
+  /// route's early maneuvers could read as "already alerted" purely by
+  /// index coincidence with the old one.
+  int _lastAlertPolicyReplanCount = 0;
+
   /// « Vibrations et alertes » / « Guidage vocal », read from the seed and
   /// refreshed live via [onReceiveData] — see `TripTracker.updateAlertSettings`.
   bool _hapticsEnabled = true;
   bool _ttsEnabled = true;
 
-  /// [NoopTtsSpeaker] is the only [TtsSpeaker] this app currently ships —
-  /// see its doc comment for why a real one is out for now. `_ttsEnabled`
-  /// still flows all the way here so the moment a working implementation
-  /// exists, plugging it in above is the only change [_maybeAlert] needs.
-  final TtsSpeaker _speaker = const NoopTtsSpeaker();
+  /// [NoopTtsSpeaker] until [_initSpeaker] (called from [onStart], and again
+  /// from [onReceiveData] if "Guidage vocal" is turned on mid-trip) swaps in
+  /// a [NativeTtsSpeaker] that actually answered `init()` with usable French
+  /// TTS. Stays [NoopTtsSpeaker] on a device with none.
+  TtsSpeaker _speaker = const NoopTtsSpeaker();
 
   FlutterLocalNotificationsPlugin? _notifications;
   bool _notificationsReady = false;
@@ -446,6 +454,7 @@ class TripTaskHandler extends TaskHandler {
             true;
     _ttsEnabled =
         await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ?? true;
+    if (_ttsEnabled) await _initSpeaker();
 
     final session = SessionController(
       store: _PassThroughDistanceStore(),
@@ -553,6 +562,17 @@ class TripTaskHandler extends TaskHandler {
   Future<void> _maybeAlert(NavUpdate? update) async {
     final policy = _alertPolicy;
     if (policy == null || update == null || _stopped) return;
+
+    // A replan since the last fix means a fresh RouteFollower — reset before
+    // asking the policy about this update, so its very first tick on the new
+    // route is judged fresh rather than against the old route's bookkeeping
+    // (see AlertPolicy.reset's doc comment for why this matters).
+    final replanCount = _navFields?.replanCount ?? _lastAlertPolicyReplanCount;
+    if (replanCount != _lastAlertPolicyReplanCount) {
+      policy.reset();
+      _lastAlertPolicyReplanCount = replanCount;
+    }
+
     if (!policy.shouldAlert(update)) return;
 
     final text = alertText(update);
@@ -560,6 +580,17 @@ class TripTaskHandler extends TaskHandler {
     if (_hapticsEnabled) tasks.add(_postAlertNotification(text));
     if (_ttsEnabled) tasks.add(_speaker.speak(text).catchError((_) {}));
     await Future.wait(tasks);
+  }
+
+  /// Builds a [NativeTtsSpeaker], asks it to `init()`, and swaps it in as
+  /// [_speaker] if — and only if — it answered with usable French TTS.
+  /// Leaves [_speaker] as [NoopTtsSpeaker] otherwise (no voice data for
+  /// fr-FR, or no TTS engine on the device at all): [init]'s whole point is
+  /// answering that question honestly rather than throwing.
+  Future<void> _initSpeaker() async {
+    final speaker = NativeTtsSpeaker();
+    final available = await speaker.init();
+    _speaker = available ? speaker : const NoopTtsSpeaker();
   }
 
   /// Posts (or replaces) the single guidance-alert notification — high
@@ -645,7 +676,15 @@ class TripTaskHandler extends TaskHandler {
     if (data['hapticsEnabled'] is bool) {
       _hapticsEnabled = data['hapticsEnabled'] as bool;
     }
-    if (data['ttsEnabled'] is bool) _ttsEnabled = data['ttsEnabled'] as bool;
+    if (data['ttsEnabled'] is bool) {
+      final enabled = data['ttsEnabled'] as bool;
+      _ttsEnabled = enabled;
+      // Fire-and-forget: onReceiveData is synchronous, and until init()
+      // resolves _speaker simply stays whatever it already was (Noop, most
+      // likely) — harmless, since _maybeAlert only ever calls it while
+      // _ttsEnabled is true and it is always safe to call.
+      if (enabled && _speaker is NoopTtsSpeaker) unawaited(_initSpeaker());
+    }
   }
 
   @override
@@ -658,6 +697,24 @@ class TripTaskHandler extends TaskHandler {
     await _writer?.flush();
     await _session?.dispose();
     _session = null;
+    await _cancelAlertNotification();
+  }
+
+  /// Clears a lingering guidance alert when the trip ends — a walker who
+  /// stops mid-instruction should not keep seeing (and hearing, on the next
+  /// unlock) a notification about a maneuver from a trip that is now over.
+  /// A no-op if no alert ever fired: nothing here should construct the
+  /// notifications plugin for the first time just to immediately cancel
+  /// something that was never shown.
+  Future<void> _cancelAlertNotification() async {
+    final notifications = _notifications;
+    if (notifications == null || !_notificationsReady) return;
+    try {
+      await notifications.cancel(id: _kAlertNotificationId);
+    } catch (_) {
+      // Symmetric with _postAlertNotification: teardown must never hang or
+      // throw over a notification plugin that is misbehaving.
+    }
   }
 
   bool _isGpsSilentAt(DateTime now) {

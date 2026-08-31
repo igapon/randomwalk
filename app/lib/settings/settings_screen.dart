@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../nav/tts.dart';
 import '../session/recorder.dart';
 import '../trip/trip_controller.dart';
 import 'alert_settings.dart';
@@ -22,10 +23,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late Future<
       ({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})> _future;
 
+  /// Probed once, independently of [_future] — a toggle change (haptics
+  /// included) reloads [_future] via [_load], and re-asking the native side
+  /// whether French TTS is available every time either switch moves would
+  /// be pointless platform-channel chatter for a fact that never changes
+  /// mid-session.
+  late Future<bool> _ttsAvailable;
+
   @override
   void initState() {
     super.initState();
     _future = _load();
+    _ttsAvailable = NativeTtsSpeaker().init();
   }
 
   Future<({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>
@@ -121,17 +130,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     Text('Distance totale : ${totalKm.toStringAsFixed(1)} km',
                         style: Theme.of(context).textTheme.bodyMedium),
                     const Divider(height: 32),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Guidage vocal'),
-                      // No French TTS ships yet — see NoopTtsSpeaker's doc
-                      // comment (nav/tts.dart) for the upstream blocker —
-                      // but the setting itself is real and forward-facing,
-                      // so it should not claim an effect it does not have.
-                      subtitle: const Text(
-                          'Instructions lues à voix haute (bientôt disponible)'),
-                      value: ttsEnabled,
-                      onChanged: _setTtsEnabled,
+                    FutureBuilder<bool>(
+                      future: _ttsAvailable,
+                      builder: (context, ttsSnapshot) {
+                        // Defaults to unavailable while the native probe is
+                        // still in flight — briefly disabled rather than
+                        // briefly claiming a capability the device may not
+                        // have.
+                        final available = ttsSnapshot.data ?? false;
+                        return SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Guidage vocal'),
+                          subtitle: Text(available
+                              ? 'Instructions de navigation lues à voix haute'
+                              : 'Synthèse vocale indisponible sur cet appareil'),
+                          value: available && ttsEnabled,
+                          onChanged: available ? _setTtsEnabled : null,
+                        );
+                      },
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,

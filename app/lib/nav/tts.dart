@@ -1,22 +1,20 @@
+import 'package:flutter/services.dart';
+
 /// Speaks a piece of guidance text aloud. The seam between the tracking
 /// handler's alert wiring and whatever text-to-speech engine actually does
 /// it, so that wiring is testable without a real one, and so "Guidage vocal"
 /// being off (or unavailable) is just a different object rather than a
 /// branch scattered through the caller.
-///
-/// No implementation ships yet — see [NoopTtsSpeaker]'s doc comment for why
-/// — but the rest of the maneuver-alert path (`AlertPolicy`, the settings
-/// toggle, the seed/live-refresh plumbing in `TripTaskHandler`) is built
-/// against this interface exactly as if one did, so wiring a real one back
-/// in later is a one-class change.
 abstract class TtsSpeaker {
   Future<void> speak(String text);
 }
 
-/// Does nothing. The only [TtsSpeaker] this app currently ships.
+/// Does nothing. Used whenever « Guidage vocal » is off, or the device has
+/// no usable French TTS — see [NativeTtsSpeaker]'s doc comment for how that
+/// is determined.
 ///
-/// `flutter_tts` (the obvious implementation) was tried for this task and
-/// pulled back out: its Android module unconditionally applies the
+/// `flutter_tts` (the obvious pub-package implementation) was tried for this
+/// task and pulled back out: its Android module unconditionally applies the
 /// `kotlin-android` Gradle plugin (`flutter_tts-4.2.5/android/build.gradle`),
 /// which Android Gradle Plugin 9's built-in Kotlin support (enabled here via
 /// `android.builtInKotlin=true` in `android/gradle.properties`, itself
@@ -28,17 +26,82 @@ abstract class TtsSpeaker {
 /// breaks `maplibre_gl` the same way in the other direction (documented in
 /// `gradle.properties`) — the two plugins disagree about which side of the
 /// AGP 9 migration they are on, and nothing short of forking one of them or
-/// downgrading the whole app off AGP 9 resolves that. Out of scope for a
-/// single task.
-///
-/// "Guidage vocal" therefore persists and reaches the service (see
-/// `AlertSettingsStore`, `TripTaskHandler`) but has no audible effect right
-/// now — the sound/vibration alert (`AndroidNotificationDetails` in
-/// `tracking_service.dart`) is what the brief calls "la voie garantie écran
-/// éteint", and is unaffected by any of this.
+/// downgrading the whole app off AGP 9 resolves that. Replaced with
+/// [NativeTtsSpeaker] instead: this app's own local plugin channel over the
+/// bare platform `android.speech.tts.TextToSpeech`, which has no Gradle
+/// plugin of its own to conflict with anything.
 class NoopTtsSpeaker implements TtsSpeaker {
   const NoopTtsSpeaker();
 
   @override
   Future<void> speak(String text) async {}
+}
+
+/// French voice guidance via this app's own native TTS channel
+/// (`randomwalk/tts` — see `RandomwalkPlugin`/`TtsChannel` on the Android
+/// side), not the `flutter_tts` pub package (see [NoopTtsSpeaker]'s doc
+/// comment for why).
+///
+/// [init] must be called, and awaited, before [speak] does anything — it
+/// asks the native side to construct (or reuse) its `TextToSpeech` engine
+/// and select fr-FR, and reports whether that actually worked. Call it once
+/// per instance; a second call is wasted work, not a correctness problem
+/// (the native side answers a repeat `init` from its already-built engine
+/// rather than constructing a second one). A device with no French voice
+/// data installed — or no TTS engine at all — answers `false`, and this
+/// class then behaves exactly like [NoopTtsSpeaker] for every [speak] that
+/// follows, rather than throwing: "no TTS here" is this facade's expected
+/// unhappy path, not a caller-visible error.
+class NativeTtsSpeaker implements TtsSpeaker {
+  /// Exposed for tests, which mock this exact channel via
+  /// `TestDefaultBinaryMessengerBinding` rather than injecting a fake —
+  /// there is nothing behind a `MethodChannel` worth faking separately.
+  static const channel = MethodChannel('randomwalk/tts');
+
+  bool _initialized = false;
+  bool _available = false;
+
+  /// Whether the last [init] call reported usable French TTS. False before
+  /// [init] has ever been called.
+  bool get available => _available;
+
+  /// Asks the native side to build (or reuse) its engine and select fr-FR.
+  /// Never throws — a platform-channel failure is treated the same as the
+  /// native side honestly answering "unavailable".
+  Future<bool> init() async {
+    try {
+      _available = await channel.invokeMethod<bool>('init') ?? false;
+    } catch (_) {
+      _available = false;
+    }
+    _initialized = true;
+    return _available;
+  }
+
+  @override
+  Future<void> speak(String text) async {
+    if (!_initialized || !_available) return;
+    try {
+      await channel.invokeMethod('speak', {'text': text});
+      // A speech failure costs this one alert its voice, never the trip —
+      // the same swallow-everything philosophy as the rest of the alert
+      // path (see TripTaskHandler._maybeAlert).
+    } catch (_) {
+      return;
+    }
+  }
+
+  /// Releases the native `TextToSpeech` engine. Not currently called by
+  /// `TripTaskHandler` — the engine's own teardown already disposes
+  /// `TtsChannel` when the Flutter engine it lives on is destroyed (see
+  /// `RandomwalkPlugin.onDetachedFromEngine`) — but kept as a real,
+  /// independently-usable operation rather than dead API surface.
+  Future<void> shutdown() async {
+    if (!_initialized) return;
+    try {
+      await channel.invokeMethod('shutdown');
+    } catch (_) {
+      return;
+    }
+  }
 }
