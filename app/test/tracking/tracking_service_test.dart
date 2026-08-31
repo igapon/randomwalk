@@ -131,6 +131,51 @@ void main() {
     });
   });
 
+  group('gpsSilenceThresholdFor (item 3 regression)', () {
+    test('at the close 3 m filter, the threshold is the base one minute',
+        () {
+      expect(gpsSilenceThresholdFor(kNavCloseDistanceFilterM),
+          const Duration(seconds: 60));
+    });
+
+    test('at the far 12 m filter, the threshold scales to keep the same '
+        'floor speed as the close filter (0.18 km/h)', () {
+      final threshold = gpsSilenceThresholdFor(kNavFarDistanceFilterM);
+      expect(threshold, const Duration(minutes: 4));
+
+      // 0.18 km/h at both filters — the false-positive this exists for
+      // (12 m / 60 s = 0.72 km/h) never appears if this ratio holds.
+      final closeFloorKmh = kNavCloseDistanceFilterM /
+          kGpsSilenceThreshold.inSeconds *
+          3.6;
+      final farFloorKmh = kNavFarDistanceFilterM / threshold.inSeconds * 3.6;
+      expect(farFloorKmh, closeTo(closeFloorKmh, 1e-9));
+    });
+
+    test('never returns less than the documented base threshold', () {
+      // Filters below the close filter are not expected in practice, but
+      // the scaling must be a floor, never a tightening.
+      expect(gpsSilenceThresholdFor(1).inSeconds,
+          greaterThanOrEqualTo(kGpsSilenceThreshold.inSeconds));
+    });
+
+    test('a walker slower than the close-filter floor still reads as '
+        'silent at the far filter — this is not a "never fires" escape '
+        'hatch', () {
+      final since = DateTime.utc(2026, 8, 30, 10, 0);
+      final threshold = gpsSilenceThresholdFor(kNavFarDistanceFilterM);
+      expect(
+        isGpsSilent(
+          now: since.add(threshold + const Duration(seconds: 1)),
+          lastFixAt: null,
+          recordingSince: since,
+          threshold: threshold,
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('resumePoint', () {
     test('a restarted service picks up the persisted progress, not the seed',
         () {

@@ -122,6 +122,34 @@ const _kAlertNotificationId = 4212;
 /// warned.
 const kGpsSilenceThreshold = Duration(seconds: 60);
 
+/// The GPS-silence threshold to use while navigation's adaptive GPS (see
+/// `adaptive_gps.dart`) has [distanceFilterM] as the current
+/// `distanceFilter`.
+///
+/// [kGpsSilenceThreshold] alone is only right at [kNavCloseDistanceFilterM]
+/// (3 m — what a free trip runs permanently, and what a route-bound trip
+/// runs near a maneuver): at that filter, a walker has to slow below
+/// 3 m / 60 s = 0.18 km/h before 60 s can pass with no fix for a reason
+/// other than GPS actually being down. Loosened to [kNavFarDistanceFilterM]
+/// (12 m, on a long straight leg) with the *same* 60 s threshold, that floor
+/// jumps to 12 m / 60 s = 0.72 km/h — slow enough that stopping for a photo
+/// or a red light reads as "GPS silencieux" while the GPS is working fine.
+/// Scaling the threshold with the filter keeps the floor speed at M1's
+/// 0.18 km/h no matter which filter navigation currently has selected,
+/// without giving up the 12 m filter's battery saving in between: at 12 m
+/// this returns 240 s (4 min), the same 0.18 km/h floor as the 3 m/60 s
+/// case. `max(kGpsSilenceThreshold, ...)` is a floor, not a cap — filters
+/// below [kNavCloseDistanceFilterM] are not expected, but must never
+/// *tighten* the threshold below the documented base value if one ever
+/// showed up.
+Duration gpsSilenceThresholdFor(int distanceFilterM) {
+  final scaledMs = kGpsSilenceThreshold.inMilliseconds *
+      distanceFilterM /
+      kNavCloseDistanceFilterM;
+  final scaled = Duration(milliseconds: scaledMs.round());
+  return scaled > kGpsSilenceThreshold ? scaled : kGpsSilenceThreshold;
+}
+
 /// Whether a recording session has stopped hearing from the location
 /// stream altogether.
 ///
@@ -790,6 +818,7 @@ class TripTaskHandler extends TaskHandler {
       now: now,
       lastFixAt: _session?.lastFixAt,
       recordingSince: since,
+      threshold: gpsSilenceThresholdFor(_currentDistanceFilter),
     );
   }
 
