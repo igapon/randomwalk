@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../exploration/exploration_recorder.dart';
 import '../loop/speed_history.dart';
 import '../nav/nav_fields.dart';
 import '../session/recorder.dart';
@@ -94,6 +95,18 @@ class TripController extends ChangeNotifier {
   /// recalculated; it never stops one from starting.
   final Future<String?> Function()? resolveTileDir;
 
+  /// M4 exploration: best-effort, fire-and-forget post-trip processing —
+  /// map-matching, covered-edge storage, fog reveal, and the resulting
+  /// journal events (see `ExplorationRecorder`). Null in every test that
+  /// does not care about the game layer (the default), and in any build
+  /// where the game is disabled entirely: absent, exploration processing is
+  /// simply skipped, same as every other "game never blocks the tool"
+  /// degradation in this app. Never awaited by [_finalise] — a slow or
+  /// throwing implementation must not delay « Terminer » finishing, and
+  /// [ExplorationRecorder.process] itself is already documented to never
+  /// throw, so this is a second, independent guard rather than the only one.
+  final Future<void> Function(FinishedTrip trip)? processTripExploration;
+
   /// Notified when the map should turn its "follow me" camera mode on
   /// (route-bound trip start) or off (trip stop / manual pan elsewhere).
   /// Mutable so the map screen — the only widget holding the actual
@@ -137,6 +150,7 @@ class TripController extends ChangeNotifier {
     Future<RoutingProfile?> Function()? loadProfile,
     this.resolveTileDir,
     this.onCameraFollowChanged,
+    this.processTripExploration,
     AlertSettingsStore? alertSettings,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
@@ -504,6 +518,23 @@ class TripController extends ChangeNotifier {
         debugPrint('TripController: recordSession failed, continuing: $e');
       }
     }
+
+    // M4 exploration: fire-and-forget, never awaited — see
+    // [processTripExploration]'s doc comment. `unawaited` plus its own
+    // `catchError` means neither a slow map-match nor a thrown error from a
+    // broken hook can delay or interrupt anything below this line, or the
+    // `stopTrip()`/`finishInterrupted()` call that got us here.
+    final exploration = processTripExploration;
+    if (exploration != null && snapshot != null) {
+      unawaited(exploration(FinishedTrip(
+        km: distanceKm,
+        isLoop: _activeRoute?.isLoop ?? false,
+        navArrived: snapshot.navArrived,
+      )).catchError((e) {
+        debugPrint('TripController: exploration processing failed, continuing: $e');
+      }));
+    }
+
     await tracker.clearSnapshot();
 
     _state = TripState.idle;

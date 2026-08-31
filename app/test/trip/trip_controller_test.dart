@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/exploration/exploration_recorder.dart';
 import 'package:randomwalk/loop/speed_history.dart';
 import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/permissions.dart';
@@ -46,6 +47,7 @@ void main() {
     void Function(bool)? onCameraFollowChanged,
     Future<TrackingMode> Function()? readTrackingMode,
     SpeedHistoryStore? speedHistoryOverride,
+    Future<void> Function(FinishedTrip trip)? processTripExploration,
   }) =>
       TripController(
         tracker: tracker,
@@ -63,6 +65,7 @@ void main() {
         persistProfile: persistProfile ?? (_) async {},
         loadProfile: loadProfile ?? () async => null,
         onCameraFollowChanged: onCameraFollowChanged,
+        processTripExploration: processTripExploration,
       );
 
   setUp(() {
@@ -694,6 +697,64 @@ void main() {
       expect(trip.state, TripState.idle);
       expect(trip.snapshot, isNull);
       expect(tracker.clears, greaterThan(0));
+    });
+  });
+
+  group('exploration wiring (M4)', () {
+    test('a stopped trip invokes processTripExploration with this trip\'s '
+        'own km, isLoop and navArrived', () async {
+      final calls = <FinishedTrip>[];
+      final trip = build(processTripExploration: (t) async => calls.add(t));
+      await trip.saveActiveRoute(fakeActiveRoute().copyWith(isLoop: true));
+      await trip.startTrip(route: fakeRoute());
+      tracker.emit(recordingSnapshot(distanceKm: 2.4)
+          .copyWith(nav: const NavFields(arrived: true)));
+
+      await trip.stopTrip();
+      // processTripExploration is fire-and-forget (`unawaited`): give its
+      // microtask a turn to run before asserting on it.
+      await Future<void>.delayed(Duration.zero);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.km, closeTo(2.4, 1e-9));
+      expect(calls.single.isLoop, isTrue);
+      expect(calls.single.navArrived, isTrue);
+    });
+
+    test('a throwing/never-completing exploration hook never delays or '
+        'breaks trip finalisation', () async {
+      totals.total = 10;
+      final trip = build(
+          processTripExploration: (t) async =>
+              throw StateError('exploration boom'));
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      final distance = await trip.stopTrip();
+
+      // stopTrip() must resolve immediately (fire-and-forget), independent
+      // of the hook's own thrown Future ever settling.
+      expect(distance, closeTo(2.4, 1e-9));
+      expect(totals.total, closeTo(12.4, 1e-9));
+      expect(trip.state, TripState.idle);
+      expect(trip.snapshot, isNull);
+      expect(tracker.clears, greaterThan(0));
+
+      // Let the hook's rejected future actually run/settle (and be caught
+      // by TripController's own catchError) so it doesn't leak as an
+      // unhandled async error into a later test.
+      await Future<void>.delayed(Duration.zero);
+    });
+
+    test('no exploration hook configured is a silent no-op', () async {
+      final trip = build(); // processTripExploration left null
+      await trip.startTrip();
+      tracker.emit(recordingSnapshot(distanceKm: 2.4));
+
+      final distance = await trip.stopTrip();
+
+      expect(distance, closeTo(2.4, 1e-9));
+      expect(trip.state, TripState.idle);
     });
   });
 

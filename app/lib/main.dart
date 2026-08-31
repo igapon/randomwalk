@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:randomwalk/coverage/coverage_repository.dart';
+import 'package:randomwalk/exploration/edges_store.dart';
+import 'package:randomwalk/exploration/exploration_recorder.dart';
+import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/map/map_screen.dart';
@@ -20,6 +23,8 @@ import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/trip/active_route_store.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
+import 'package:randomwalk/valhalla/engine.dart';
+import 'package:randomwalk/valhalla/engine_channel.dart';
 
 /// Needed by the permission flow: the "Autoriser tout le temps" rationale
 /// is raised by [TripController], which has no `BuildContext` of its own.
@@ -65,6 +70,27 @@ Future<TripController> _buildTripController() async {
       return BackgroundLocationRationale.show(context);
     },
   );
+
+  // M4 exploration: best-effort post-trip processing (map-matching, covered
+  // edges, fog reveal, journal events). `EdgesStore.open` is the only
+  // `await` here that can fail outright (sqflite hiccup) — if it does, the
+  // whole game layer stays off for this run rather than the app failing to
+  // start; every other exploration failure mode is handled inside
+  // `ExplorationRecorder` itself.
+  Future<void> Function(FinishedTrip trip)? processTripExploration;
+  try {
+    final edgesStore = await EdgesStore.open('${dir.path}/covered_edges.db');
+    final recorder = ExplorationRecorder(
+      engineProvider: () => _buildExplorationEngine(coverage),
+      edgesStore: edgesStore,
+      journal: GameJournal(Directory('${dir.path}/game')),
+      trackFile: File('${dir.path}/active_track.jsonl'),
+    );
+    processTripExploration = recorder.process;
+  } catch (e) {
+    debugPrint('main: exploration layer unavailable, game disabled: $e');
+  }
+
   return TripController(
     tracker: ForegroundServiceTripTracker(
         File('${dir.path}/trip_snapshot.json')),
@@ -73,7 +99,29 @@ Future<TripController> _buildTripController() async {
     ensurePermissions: permissions.ensureForTrip,
     readTrackingMode: permissions.currentTrackingMode,
     resolveTileDir: coverage.cachedTileDirPath,
+    processTripExploration: processTripExploration,
   );
+}
+
+/// Builds and initializes a fresh [RoutingEngine] for one
+/// [ExplorationRecorder.process] call's map-matching, or `null` when no tile
+/// directory has been downloaded yet or the engine fails to initialize —
+/// either way, [ExplorationRecorder] treats that exactly like a failed
+/// match (see its `engineProvider` doc comment). A new instance per call
+/// rather than a cached one: exploration processing runs at most once per
+/// finished trip, far too infrequently to be worth keeping a native actor
+/// (and its mmapped tiles) resident between trips.
+Future<RoutingEngine?> _buildExplorationEngine(
+    CoverageRepository coverage) async {
+  final tileDirPath = await coverage.cachedTileDirPath();
+  if (tileDirPath == null) return null;
+  final engine = ChannelRoutingEngine();
+  try {
+    await engine.init(tileDirPath);
+  } catch (_) {
+    return null;
+  }
+  return engine;
 }
 
 class RandomWalkApp extends StatelessWidget {
