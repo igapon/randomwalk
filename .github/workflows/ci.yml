@@ -24,6 +24,11 @@ jobs:
         with: {channel: stable, cache: true}
       - run: flutter pub get
       - run: flutter build apk --debug
+      # No key.properties on CI (see docs/release-signing.md) — this exercises
+      # the release build's signing fallback path (debug-signing substitution)
+      # rather than producing a distributable artifact, so only the debug APK
+      # below is uploaded.
+      - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
           name: randomwalk-debug-apk
