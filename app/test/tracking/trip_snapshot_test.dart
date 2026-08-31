@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
@@ -66,6 +67,64 @@ void main() {
     test('a document written before the flag existed reads as not silent', () {
       final legacy = _recording().toJson()..remove('gpsSilent');
       expect(TripSnapshot.fromJson(legacy).gpsSilent, isFalse);
+    });
+
+    test('carries the navigation fields the service computes', () {
+      final navigating = _recording().copyWith(
+        nav: const NavFields(
+          instruction: 'Tournez à gauche sur la rue de Bourg',
+          distanceToManeuverM: 120,
+          remainingKm: 2.4,
+          etaSeconds: 1920,
+          offRoute: true,
+          arrived: false,
+          replanCount: 2,
+          routeShapeEnc: '_izlhA~rlgdF',
+          // Deliberately not persisted: it phrases a notification, it is not
+          // trip state the UI has to rebuild from disk.
+          degraded: true,
+        ),
+      );
+      final restored =
+          TripSnapshot.fromJson(jsonDecode(jsonEncode(navigating.toJson())));
+
+      expect(restored.navInstruction, 'Tournez à gauche sur la rue de Bourg');
+      expect(restored.navDistanceToManeuverM, closeTo(120, 1e-9));
+      expect(restored.navRemainingKm, closeTo(2.4, 1e-9));
+      expect(restored.navEtaSeconds, 1920);
+      expect(restored.navOffRoute, isTrue);
+      expect(restored.navArrived, isFalse);
+      expect(restored.navReplanCount, 2);
+      expect(restored.navRouteShapeEnc, '_izlhA~rlgdF');
+    });
+
+    test('a free trip carries no navigation fields at all', () {
+      final restored =
+          TripSnapshot.fromJson(jsonDecode(jsonEncode(_recording().toJson())));
+
+      expect(restored.navInstruction, isNull);
+      expect(restored.navDistanceToManeuverM, isNull);
+      expect(restored.navRemainingKm, isNull);
+      expect(restored.navEtaSeconds, isNull);
+      expect(restored.navRouteShapeEnc, isNull);
+      expect(restored.navOffRoute, isFalse);
+      expect(restored.navArrived, isFalse);
+      expect(restored.navReplanCount, 0);
+    });
+
+    test('a document written before navigation existed reads as not navigating',
+        () {
+      final legacy = _recording().toJson()
+        ..remove('navOffRoute')
+        ..remove('navArrived')
+        ..remove('navReplanCount');
+      final restored = TripSnapshot.fromJson(legacy);
+
+      expect(restored.navOffRoute, isFalse);
+      expect(restored.navArrived, isFalse);
+      expect(restored.navReplanCount, 0);
+      expect(restored.navInstruction, isNull);
+      expect(restored.distanceKm, closeTo(1.2, 1e-9));
     });
 
     test('an unknown profile name degrades to walk rather than throwing', () {

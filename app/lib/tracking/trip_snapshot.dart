@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../nav/nav_fields.dart';
 import '../valhalla/models.dart';
 
 enum TripStatus { idle, recording }
@@ -62,6 +63,27 @@ class TripSnapshot {
   /// race on attach.
   final bool gpsSilent;
 
+  /// Turn-by-turn state, computed by `NavigationRuntime` in the tracking
+  /// isolate for [routeBound] trips only.
+  ///
+  /// Rides the snapshot for the same reason [gpsSilent] does: it is state,
+  /// not an event, and the UI that has to draw it may have started (or
+  /// restarted) long after the turn was announced. All of it is optional or
+  /// defaulted, so a free trip's snapshot — and every document written
+  /// before navigation existed — reads exactly as it did before.
+  final String? navInstruction;
+  final double? navDistanceToManeuverM;
+  final double? navRemainingKm;
+  final int? navEtaSeconds;
+  final bool navOffRoute;
+  final bool navArrived;
+  final int navReplanCount;
+
+  /// Polyline6 of the route currently being followed. Present so the map can
+  /// redraw the line after a service-side replan, which the UI never sees
+  /// happen and whose result exists nowhere else in this process.
+  final String? navRouteShapeEnc;
+
   const TripSnapshot({
     required this.status,
     required this.distanceKm,
@@ -71,6 +93,14 @@ class TripSnapshot {
     required this.profile,
     required this.routeBound,
     this.gpsSilent = false,
+    this.navInstruction,
+    this.navDistanceToManeuverM,
+    this.navRemainingKm,
+    this.navEtaSeconds,
+    this.navOffRoute = false,
+    this.navArrived = false,
+    this.navReplanCount = 0,
+    this.navRouteShapeEnc,
   });
 
   /// A trip that is about to start: zeroed, or — when resuming an
@@ -108,12 +138,17 @@ class TripSnapshot {
         steps: steps,
       );
 
+  /// [nav] replaces *all* the navigation fields at once. They are produced
+  /// as one value by one component and mean nothing individually — a
+  /// remaining distance from the old route beside an instruction from the
+  /// new one would be worse than either.
   TripSnapshot copyWith({
     TripStatus? status,
     double? distanceKm,
     int? steps,
     DateTime? updatedAt,
     bool? gpsSilent,
+    NavFields? nav,
   }) =>
       TripSnapshot(
         status: status ?? this.status,
@@ -124,6 +159,15 @@ class TripSnapshot {
         profile: profile,
         routeBound: routeBound,
         gpsSilent: gpsSilent ?? this.gpsSilent,
+        navInstruction: nav == null ? navInstruction : nav.instruction,
+        navDistanceToManeuverM:
+            nav == null ? navDistanceToManeuverM : nav.distanceToManeuverM,
+        navRemainingKm: nav == null ? navRemainingKm : nav.remainingKm,
+        navEtaSeconds: nav == null ? navEtaSeconds : nav.etaSeconds,
+        navOffRoute: nav?.offRoute ?? navOffRoute,
+        navArrived: nav?.arrived ?? navArrived,
+        navReplanCount: nav?.replanCount ?? navReplanCount,
+        navRouteShapeEnc: nav == null ? navRouteShapeEnc : nav.routeShapeEnc,
       );
 
   Map<String, dynamic> toJson() => {
@@ -135,6 +179,18 @@ class TripSnapshot {
         'profile': profile.name,
         'routeBound': routeBound,
         'gpsSilent': gpsSilent,
+        // Omitted entirely rather than written as nulls: this document is
+        // rewritten every couple of seconds for the whole of a trip, and a
+        // free trip has no navigation to describe.
+        if (navInstruction != null) 'navInstruction': navInstruction,
+        if (navDistanceToManeuverM != null)
+          'navDistanceToManeuverM': navDistanceToManeuverM,
+        if (navRemainingKm != null) 'navRemainingKm': navRemainingKm,
+        if (navEtaSeconds != null) 'navEtaSeconds': navEtaSeconds,
+        if (navOffRoute) 'navOffRoute': navOffRoute,
+        if (navArrived) 'navArrived': navArrived,
+        if (navReplanCount != 0) 'navReplanCount': navReplanCount,
+        if (navRouteShapeEnc != null) 'navRouteShapeEnc': navRouteShapeEnc,
       };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
@@ -148,6 +204,15 @@ class TripSnapshot {
             orElse: () => RoutingProfile.walk),
         routeBound: j['routeBound'] as bool? ?? false,
         gpsSilent: j['gpsSilent'] as bool? ?? false,
+        navInstruction: j['navInstruction'] as String?,
+        navDistanceToManeuverM:
+            (j['navDistanceToManeuverM'] as num?)?.toDouble(),
+        navRemainingKm: (j['navRemainingKm'] as num?)?.toDouble(),
+        navEtaSeconds: (j['navEtaSeconds'] as num?)?.toInt(),
+        navOffRoute: j['navOffRoute'] as bool? ?? false,
+        navArrived: j['navArrived'] as bool? ?? false,
+        navReplanCount: (j['navReplanCount'] as num?)?.toInt() ?? 0,
+        navRouteShapeEnc: j['navRouteShapeEnc'] as String?,
       );
 }
 
