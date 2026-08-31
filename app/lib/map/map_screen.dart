@@ -11,6 +11,8 @@ import 'initial_camera.dart';
 import 'latest_only.dart';
 import 'nav_camera_state.dart';
 import 'route_controller.dart';
+import '../nav/guidance_text.dart';
+import '../nav/nav_fields.dart' show formatDistance;
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
 import '../trip/active_route_store.dart';
@@ -58,6 +60,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// tell "already drawn" from "needs redrawing" without diffing geometry.
   ActiveRoute? _drawn;
   bool _syncing = false;
+
+  /// The [TripSnapshot.navReplanCount] the route line currently drawn was
+  /// last redrawn for. Null before the map has ever synced a replanned
+  /// shape — see [_maybeSyncReplannedRoute].
+  int? _lastDrawnReplanCount;
 
   bool _planning = false;
   ({int done, int total})? _downloadProgress;
@@ -218,6 +225,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
     _departureMarker = null;
     _destinationMarker = null;
     _drawn = null;
+    // Forces [_maybeSyncReplannedRoute] to re-check on the next frame: the
+    // base draw below redraws the *planned* route, which is stale if a
+    // replan had already happened before this remount (a theme flip
+    // mid-navigation, say).
+    _lastDrawnReplanCount = null;
   }
 
   Future<void> _onStyleLoaded() async {
@@ -229,6 +241,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// active, against this (possibly brand new) native map instance.
   Future<void> _redrawAfterRemount() async {
     await _syncOverlays();
+    await _maybeSyncReplannedRoute();
     final trip = ref.read(tripControllerProvider);
     if (trip.isRecording && trip.isRouteBound) {
       controller?.updateMyLocationTrackingMode(MyLocationTrackingMode.tracking);
@@ -308,6 +321,50 @@ class MapScreenState extends ConsumerState<MapScreen> {
           lineColor: AppColors.routeLineHex,
           lineWidth: 4.5));
     }
+  }
+
+  /// Redraws the route line from the service's replanned shape once
+  /// [TripSnapshot.navReplanCount] moves past what is currently on screen.
+  ///
+  /// The planned route drawn by [_drawOverlays] never changes on its own —
+  /// it is [TripController.activeRoute], which nothing touches once a trip
+  /// starts. A service-side replan happens entirely inside the tracking
+  /// isolate and reaches this process only through the snapshot's
+  /// [TripSnapshot.navRouteShapeEnc]; this is the one place that decodes it
+  /// back into map geometry (review ruling: the new route replaces the old
+  /// one on the map, not alongside it).
+  Future<void> _maybeSyncReplannedRoute() async {
+    if (controller == null) return;
+    final trip = ref.read(tripControllerProvider);
+    if (!trip.isRouteBound) return;
+    final snapshot = trip.snapshot;
+    final replanCount = snapshot?.navReplanCount ?? 0;
+    if (replanCount == 0 || replanCount == _lastDrawnReplanCount) return;
+    final enc = snapshot?.navRouteShapeEnc;
+    if (enc == null || enc.isEmpty) return;
+    final shape = decodePolyline6(enc);
+    if (shape.length < 2) return;
+    await _redrawRouteLine(shape);
+    _lastDrawnReplanCount = replanCount;
+  }
+
+  /// Draws the new casing/line pair before removing the old one, so the
+  /// route never flashes empty between a replan and its redraw.
+  Future<void> _redrawRouteLine(List<(double, double)> shape) async {
+    final oldCasing = _routeLineCasing;
+    final oldLine = _routeLine;
+    final geometry = [for (final (lat, lon) in shape) LatLng(lat, lon)];
+    _routeLineCasing = await controller?.addLine(LineOptions(
+        geometry: geometry,
+        lineColor: AppColors.routeLineCasingHex,
+        lineWidth: 7,
+        lineOpacity: 1.0));
+    _routeLine = await controller?.addLine(LineOptions(
+        geometry: geometry, lineColor: AppColors.routeLineHex, lineWidth: 4.5));
+    if (oldCasing != null) await controller?.removeLine(oldCasing);
+    if (oldLine != null) await controller?.removeLine(oldLine);
+    if (!mounted) return;
+    setState(() {});
   }
 
   /// Registers the waymark diamond icons on the current native map
@@ -587,6 +644,27 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (trip.activeRoute?.destination != null) await _planRoute();
   }
 
+  /// Everything that redraws map geometry from app state, run together in
+  /// one post-frame callback — see [build]'s single scheduling site below.
+  Future<void> _syncMapForFrame() async {
+    await _syncOverlays();
+    await _maybeSyncReplannedRoute();
+  }
+
+  /// « 2,4 km · ~32 min » for the bottom banner, or null when there is
+  /// nothing to show yet (not route-bound, or the estimator has not seen
+  /// enough movement for an ETA's underlying distance either). Kept out of
+  /// [build] itself so the banner-building `if`/`else if` chain below reads
+  /// as which *card* to show, not as nav-field bookkeeping.
+  String? _navRemainingLabel(TripController trip) {
+    if (!trip.isRouteBound) return null;
+    final remainingKm = trip.snapshot?.navRemainingKm;
+    if (remainingKm == null) return null;
+    final etaSeconds = trip.snapshot?.navEtaSeconds;
+    return formatRemaining(
+        remainingKm, etaSeconds == null ? null : Duration(seconds: etaSeconds));
+  }
+
   @override
   Widget build(BuildContext context) {
     final initialCenter = _initialCameraCenter;
@@ -600,11 +678,18 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final trip = ref.watch(tripControllerProvider);
     _statsTicker.sync(trip.isRecording);
+    final snapshot = trip.snapshot;
+    final replanCount = snapshot?.navReplanCount ?? 0;
     // The plan can change from anywhere (a restore at startup, the session
-    // tab, a search result); redraw after the frame that noticed.
-    if (!identical(trip.activeRoute, _drawn) && !_syncing) {
+    // tab, a search result); a replan happens inside the service. Either
+    // redraws after the frame that noticed.
+    final needsOverlaySync = !identical(trip.activeRoute, _drawn) && !_syncing;
+    final needsReplanSync = trip.isRouteBound &&
+        replanCount != 0 &&
+        replanCount != _lastDrawnReplanCount;
+    if (needsOverlaySync || needsReplanSync) {
       WidgetsBinding.instance
-          .addPostFrameCallback((_) => unawaited(_syncOverlays()));
+          .addPostFrameCallback((_) => unawaited(_syncMapForFrame()));
     }
     final brightness = Theme.of(context).brightness;
     final styleUrl =
@@ -618,6 +703,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
       bottomBanner = _StatsBanner(
         distanceKm: trip.distanceKm,
         elapsed: _formatDuration(trip.elapsed),
+        remaining: _navRemainingLabel(trip),
+        arrived: trip.isRouteBound && (snapshot?.navArrived ?? false),
         onStop: _stopTrip,
       );
     } else if (result != null) {
@@ -630,6 +717,62 @@ class MapScreenState extends ConsumerState<MapScreen> {
     } else {
       bottomBanner = _StartPill(onStart: _startFreeTrip);
     }
+
+    // The top-of-screen overlay during a route-bound trip: the plain
+    // search/profile UI has no business floating over a walker mid-turn, so
+    // it is replaced outright — review ruling: arrived wins over off-route.
+    Widget topOverlay;
+    if (trip.isRouteBound && snapshot != null) {
+      if (snapshot.navArrived) {
+        topOverlay = const _NavArrivedCard();
+      } else if (snapshot.navOffRoute) {
+        topOverlay = const _NavRecalculatingCard();
+      } else if (snapshot.navInstruction != null &&
+          snapshot.navInstruction!.isNotEmpty) {
+        topOverlay = _NavInstructionCard(
+          instruction: snapshot.navInstruction!,
+          distanceM: snapshot.navDistanceToManeuverM,
+        );
+      } else {
+        topOverlay = const SizedBox.shrink();
+      }
+    } else {
+      topOverlay = Column(
+        children: [
+          _SearchBar(
+            controller: _searchController,
+            onChanged: _onSearchChanged,
+          ),
+          if (_searching || _searchError != null || _searchResults.isNotEmpty)
+            _SearchResultsPanel(
+              searching: _searching,
+              error: _searchError,
+              results: _searchResults,
+              onSelect: _selectSearchResult,
+              maxHeight: MediaQuery.of(context).size.height * 0.5,
+            ),
+          const SizedBox(height: 12),
+          SegmentedButton<RoutingProfile>(
+            segments: const [
+              ButtonSegment(
+                  value: RoutingProfile.walk,
+                  label: Text('Marche'),
+                  icon: Icon(Icons.directions_walk)),
+              ButtonSegment(
+                  value: RoutingProfile.bike,
+                  label: Text('Vélo'),
+                  icon: Icon(Icons.directions_bike)),
+            ],
+            selected: {trip.profile},
+            onSelectionChanged:
+                trip.isRecording ? null : (s) => _onProfileChanged(s.first),
+          ),
+        ],
+      );
+    }
+
+    final showRecenter = shouldShowRecenterButton(
+        isNavigating: trip.isRouteBound, trackingReleased: _trackingReleased);
 
     return Scaffold(
       body: Stack(
@@ -659,39 +802,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
               bottom: false,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: Column(
-                  children: [
-                    _SearchBar(
-                      controller: _searchController,
-                      onChanged: _onSearchChanged,
-                    ),
-                    if (_searching || _searchError != null || _searchResults.isNotEmpty)
-                      _SearchResultsPanel(
-                        searching: _searching,
-                        error: _searchError,
-                        results: _searchResults,
-                        onSelect: _selectSearchResult,
-                        maxHeight: MediaQuery.of(context).size.height * 0.5,
-                      ),
-                    const SizedBox(height: 12),
-                    SegmentedButton<RoutingProfile>(
-                      segments: const [
-                        ButtonSegment(
-                            value: RoutingProfile.walk,
-                            label: Text('Marche'),
-                            icon: Icon(Icons.directions_walk)),
-                        ButtonSegment(
-                            value: RoutingProfile.bike,
-                            label: Text('Vélo'),
-                            icon: Icon(Icons.directions_bike)),
-                      ],
-                      selected: {trip.profile},
-                      onSelectionChanged: trip.isRecording
-                          ? null
-                          : (s) => _onProfileChanged(s.first),
-                    ),
-                  ],
-                ),
+                child: topOverlay,
               ),
             ),
           ),
@@ -714,9 +825,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (shouldShowRecenterButton(
-                isNavigating: trip.isRouteBound,
-                trackingReleased: _trackingReleased)) ...[
+            if (showRecenter) ...[
               FloatingActionButton(
                 heroTag: 'recenter',
                 onPressed: _recenterOnTrack,
@@ -849,6 +958,139 @@ class _ProgressBanner extends StatelessWidget {
   }
 }
 
+/// The top-of-screen card during a route-bound trip's normal turn-by-turn
+/// state: instruction (Schibsted Grotesk 18) beside the distance to it
+/// (Bricolage Grotesque 28, the "gros chiffre" a walker reads at a glance).
+/// Neither text style exists in the app's [TextTheme] at these exact sizes
+/// (the brief's sizes are binding), so both are built directly off
+/// [AppFonts] rather than approximated from the nearest theme style.
+///
+/// Wrapped in a [Semantics] label built from [formatManeuver] — the one
+/// place that combined sentence (« Dans 120 m, tournez à gauche ») is
+/// actually used: a screen reader announces one sentence, sighted users read
+/// the same information split across the two type sizes the brief asks for.
+class _NavInstructionCard extends StatelessWidget {
+  const _NavInstructionCard({required this.instruction, this.distanceM});
+  final String instruction;
+  final double? distanceM;
+
+  @override
+  Widget build(BuildContext context) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final distance = distanceM;
+    return Semantics(
+      label: distance == null
+          ? instruction
+          : formatManeuver(instruction, distance),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  instruction,
+                  style: TextStyle(
+                    fontFamily: AppFonts.body,
+                    fontWeight: FontWeight.w600,
+                    fontVariations: const [FontVariation('wght', 600)],
+                    fontSize: 18,
+                    color: onSurface,
+                  ),
+                ),
+              ),
+              if (distance != null) ...[
+                const SizedBox(width: 12),
+                Text(
+                  formatDistance(distance),
+                  style: TextStyle(
+                    fontFamily: AppFonts.display,
+                    fontWeight: FontWeight.w700,
+                    fontVariations: const [FontVariation('wght', 700)],
+                    fontSize: 28,
+                    color: onSurface,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The walker has left the planned route and the service is recalculating —
+/// review ruling: shown whenever `navOffRoute` is set and `navArrived` is
+/// not (arrived always wins). Orange rather than the ink/paper the rest of
+/// the app uses: this is the one state that needs to read as a warning at a
+/// glance, not as more trip chrome.
+class _NavRecalculatingCard extends StatelessWidget {
+  const _NavRecalculatingCard();
+
+  @override
+  Widget build(BuildContext context) => Card(
+        color: AppColors.recalcOrange,
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: [
+              SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: AppColors.ink)),
+              SizedBox(width: 12),
+              Text(
+                kNavRecalculatingLabel,
+                style: TextStyle(
+                  fontFamily: AppFonts.body,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.ink,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+/// The walker has reached the destination — review ruling: this wins over
+/// `navOffRoute` (standing at the destination needs no invitation to get
+/// back on a route that is, itself, now moot). The bottom banner's Terminer
+/// button is put forward separately (see [_StatsBanner]'s `arrived`) —
+/// this card is purely the "you're here" announcement.
+class _NavArrivedCard extends StatelessWidget {
+  const _NavArrivedCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            const WaymarkDiamond(size: 20, color: AppColors.ink),
+            const SizedBox(width: 12),
+            Text(
+              kNavArrivedLabel,
+              style: TextStyle(
+                fontFamily: AppFonts.display,
+                fontWeight: FontWeight.w700,
+                fontVariations: const [FontVariation('wght', 700)],
+                fontSize: 24,
+                color: onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Route result card (T9): the primary action is the yellow "Démarrer
 /// l'itinéraire" pill (right), "✕" (clear) is secondary.
 class _ResultBanner extends StatelessWidget {
@@ -926,19 +1168,31 @@ class _StartPill extends StatelessWidget {
 
 /// Recording: pill becomes "Terminer" (ink, paper text) alongside compact
 /// live stats (distance / duration, Bricolage Grotesque numerals).
+///
+/// [remaining] enriches the banner with what is left of a route-bound trip
+/// (« 2,4 km · ~32 min », `guidance_text.formatRemaining`) — null for a free
+/// trip, or before the estimator has anything to report. [arrived] puts
+/// Terminer forward as the primary (yellow) action instead of the plain
+/// ink/paper one recording otherwise uses, per the brief's « bouton
+/// Terminer mis en avant » at arrival.
 class _StatsBanner extends StatelessWidget {
   const _StatsBanner({
     required this.distanceKm,
     required this.elapsed,
+    this.remaining,
+    this.arrived = false,
     required this.onStop,
   });
   final double distanceKm;
   final String elapsed;
+  final String? remaining;
+  final bool arrived;
   final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final remainingLabel = remaining;
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -950,14 +1204,21 @@ class _StatsBanner extends StatelessWidget {
                   _Stat(value: '${distanceKm.toStringAsFixed(2)} km', theme: theme),
                   const SizedBox(width: 20),
                   _Stat(value: elapsed, theme: theme),
+                  if (remainingLabel != null) ...[
+                    const SizedBox(width: 20),
+                    _Stat(value: remainingLabel, theme: theme),
+                  ],
                 ],
               ),
             ),
+            const SizedBox(width: 8),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: theme.colorScheme.onSurface,
-                foregroundColor: theme.colorScheme.surface,
-              ),
+              style: arrived
+                  ? null // the theme's default primary (yellow) button.
+                  : ElevatedButton.styleFrom(
+                      backgroundColor: theme.colorScheme.onSurface,
+                      foregroundColor: theme.colorScheme.surface,
+                    ),
               onPressed: onStop,
               child: const Text('Terminer'),
             ),

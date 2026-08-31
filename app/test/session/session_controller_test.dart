@@ -252,6 +252,100 @@ void main() {
     // No duplicate subscriptions were created.
     expect(streamCreationCount, 2);
   });
+
+  group('updateLocationSettings', () {
+    test('resubscribes with the new settings while recording', () async {
+      final store = FakeStore();
+      final requestedFilters = <int?>[];
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        requestedFilters.add(settings.distanceFilter);
+        return const Stream<Position>.empty();
+      }
+
+      final controller = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+        locationSettings: const LocationSettings(distanceFilter: 3),
+      );
+
+      expect(await controller.start(), true);
+      expect(requestedFilters, [3]);
+
+      await controller.updateLocationSettings(
+          const LocationSettings(distanceFilter: 12));
+      expect(requestedFilters, [3, 12]);
+    });
+
+    test('the old subscription is cancelled, not left running alongside the new one',
+        () async {
+      final store = FakeStore();
+      final first = StreamController<Position>();
+      final second = StreamController<Position>();
+      var callCount = 0;
+      final seen = <double>[];
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        callCount++;
+        return (callCount == 1 ? first : second).stream;
+      }
+
+      final controller = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+        onFix: (sample) => seen.add(sample.lat),
+      );
+
+      Position at(double lat) => Position(
+            latitude: lat,
+            longitude: 6.6,
+            accuracy: 5,
+            speed: 0,
+            speedAccuracy: 0,
+            heading: 0,
+            headingAccuracy: 0,
+            timestamp: DateTime.utc(2026),
+            altitudeAccuracy: 0,
+            altitude: 0,
+          );
+
+      await controller.start();
+      await controller.updateLocationSettings(
+          const LocationSettings(distanceFilter: 12));
+
+      // A fix from the stale (cancelled) subscription must not still reach
+      // the recorder/onFix hook.
+      first.add(at(1));
+      await pumpEventQueue();
+      expect(seen, isEmpty);
+
+      second.add(at(2));
+      await pumpEventQueue();
+      expect(seen, [2]);
+
+      await first.close();
+      await second.close();
+    });
+
+    test('does nothing while not recording', () async {
+      final store = FakeStore();
+      var callCount = 0;
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        callCount++;
+        return const Stream<Position>.empty();
+      }
+
+      final controller = SessionController(
+          store: store, getPositionStream: mockStream, checkPermissions: () async => true);
+
+      await controller.updateLocationSettings(
+          const LocationSettings(distanceFilter: 12));
+      expect(callCount, 0);
+    });
+  });
 }
 
 /// [SessionController.lastFixAt] is the liveness signal the foreground

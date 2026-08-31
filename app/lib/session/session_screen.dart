@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../nav/guidance_text.dart';
 import '../theme/tokens.dart';
 import '../tracking/permissions.dart';
 import '../trip/gated_ticker.dart';
@@ -65,6 +66,16 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     _ticker.sync(trip.isRecording);
     final isRecording = trip.isRecording;
     final textTheme = Theme.of(context).textTheme;
+    final snapshot = trip.snapshot;
+    final navigating = isRecording && trip.isRouteBound;
+    final arrived = navigating && (snapshot?.navArrived ?? false);
+    final offRoute = navigating && !arrived && (snapshot?.navOffRoute ?? false);
+    final remainingKm = navigating ? snapshot?.navRemainingKm : null;
+    final etaSeconds = snapshot?.navEtaSeconds;
+    final remainingLabel = remainingKm == null
+        ? null
+        : formatRemaining(
+            remainingKm, etaSeconds == null ? null : Duration(seconds: etaSeconds));
 
     return Scaffold(
       body: SafeArea(
@@ -94,12 +105,40 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  if (isRecording && trip.isRouteBound)
+                  if (navigating) ...[
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Text('Trajet lié à l\'itinéraire',
                           style: textTheme.labelMedium),
                     ),
+                    // Review ruling: arrived wins over off-route.
+                    if (arrived)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(kNavArrivedLabel,
+                            style: textTheme.headlineSmall),
+                      )
+                    else if (offRoute)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(kNavRecalculatingLabel,
+                            style: textTheme.titleMedium
+                                ?.copyWith(color: AppColors.recalcOrange)),
+                      )
+                    else if (snapshot?.navInstruction != null &&
+                        snapshot!.navInstruction!.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(snapshot.navInstruction!,
+                            textAlign: TextAlign.center,
+                            style: textTheme.titleMedium),
+                      ),
+                    if (remainingLabel != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(remainingLabel, style: textTheme.titleMedium),
+                      ),
+                  ],
                   // Distance display — Bricolage Grotesque, "gros chiffres".
                   Text(
                     '${trip.distanceKm.toStringAsFixed(2)} km',
@@ -127,7 +166,10 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                   const SizedBox(height: 32),
                   ElevatedButton(
                     onPressed: isRecording ? _stop : _start,
-                    style: isRecording
+                    // Arrived puts Terminer forward as the theme's default
+                    // primary (yellow) button instead of recording's plain
+                    // ink/paper one — brief: "bouton Terminer mis en avant".
+                    style: isRecording && !arrived
                         ? ElevatedButton.styleFrom(
                             backgroundColor: Theme.of(context).colorScheme.onSurface,
                             foregroundColor: Theme.of(context).colorScheme.surface,

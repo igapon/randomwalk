@@ -16,6 +16,7 @@ import '../session/session_controller.dart';
 import '../settings/alert_settings.dart';
 import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
+import 'adaptive_gps.dart';
 import 'nav_seed.dart';
 import 'trip_snapshot.dart';
 
@@ -376,6 +377,16 @@ class TripTaskHandler extends TaskHandler {
   /// evaluate for one (brief: "Free sessions: no alerts").
   AlertPolicy? _alertPolicy;
 
+  /// Adaptive GPS (Task 7 + owner brief): tightens the location stream's
+  /// `distanceFilter` as the walker nears a maneuver and loosens it again on
+  /// a long straight leg. `_currentDistanceFilter` starts at the tight value
+  /// because that is what [SessionController]'s own `AndroidSettings` below
+  /// is constructed with — the two must never disagree about what is
+  /// currently subscribed, or the rate limiter's "nothing to change" check
+  /// would be comparing against a filter the stream isn't actually using.
+  int _currentDistanceFilter = kNavCloseDistanceFilterM;
+  final _gpsRateLimiter = AdaptiveGpsRateLimiter();
+
   /// The [NavFields.replanCount] [_alertPolicy] was last reset for. A
   /// replan builds a fresh `RouteFollower` (see `NavigationRuntime`'s own
   /// doc comment) whose maneuver numbering restarts at 0 — without
@@ -542,6 +553,7 @@ class TripTaskHandler extends TaskHandler {
       _navFields = await nav.onFix(
           sample.lat, sample.lon, sample.speedMps, sample.time);
       await _maybeAlert(nav.lastUpdate);
+      await _maybeAdaptGps();
       // Publishing is inside the try for the same reason [_stopped] exists:
       // a fix whose replan outlived the teardown must not raise from a
       // callback nothing is left to await.
@@ -580,6 +592,31 @@ class TripTaskHandler extends TaskHandler {
     if (_hapticsEnabled) tasks.add(_postAlertNotification(text));
     if (_ttsEnabled) tasks.add(_speaker.speak(text).catchError((_) {}));
     await Future.wait(tasks);
+  }
+
+  /// Adaptive GPS (Task 7): tightens or loosens the recording's own
+  /// `distanceFilter` based on how far the walker now is from the next
+  /// maneuver — see `adaptiveDistanceFilter`. Rides the recording's existing
+  /// subscription (via [SessionController.updateLocationSettings]) rather
+  /// than opening a second one, same as guidance itself does (see
+  /// [SessionController.onFix]'s doc comment). Rate-limited to at most one
+  /// resubscribe a minute so a walker pacing the 500 m boundary cannot churn
+  /// the platform's location provider.
+  Future<void> _maybeAdaptGps() async {
+    final session = _session;
+    if (session == null || _stopped) return;
+    final desired = adaptiveDistanceFilter(_navFields?.distanceToManeuverM);
+    if (!_gpsRateLimiter.shouldResubscribe(
+        currentFilter: _currentDistanceFilter, desiredFilter: desired)) {
+      return;
+    }
+    await session.updateLocationSettings(AndroidSettings(
+      accuracy: LocationAccuracy.best,
+      distanceFilter: desired,
+      intervalDuration: const Duration(seconds: 2),
+    ));
+    _currentDistanceFilter = desired;
+    _gpsRateLimiter.recordChange();
   }
 
   /// Builds a [NativeTtsSpeaker], asks it to `init()`, and swaps it in as
