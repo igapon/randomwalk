@@ -1,8 +1,18 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/valhalla/engine.dart';
 import 'package:randomwalk/valhalla/engine_channel.dart';
 import 'package:randomwalk/valhalla/models.dart';
+
+/// `flutter test` runs with the package root (`app/`) as the working
+/// directory, so the asset is reachable directly off disk — no need for the
+/// `rootBundle`/`AssetManifest` machinery `ChannelRoutingEngine.init` uses
+/// at runtime, which is already covered by the `configJson` sent to the
+/// mocked channel in the `init()` group above.
+const rawTemplatePath = 'assets/valhalla_config.json';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -69,6 +79,55 @@ void main() {
           engine.init('/tiles/V1'),
           throwsA(isA<RoutingException>()
               .having((e) => e.message, 'message', 'bad config')));
+    });
+
+    test(
+        'the config sent to the native side keeps std_out logging outside '
+        'release (item 7) — flutter test never runs kReleaseMode==true',
+        () async {
+      String? sentConfigJson;
+      setHandler((call) async {
+        sentConfigJson = call.arguments['configJson'] as String;
+        return 'ok';
+      });
+      final engine = ChannelRoutingEngine();
+      await engine.init('/tiles/V1');
+
+      final sent = jsonDecode(sentConfigJson!) as Map<String, dynamic>;
+      expect((sent['mjolnir'] as Map)['logging']['type'], 'std_out');
+      expect((sent['loki'] as Map)['logging']['type'], 'std_out');
+    });
+  });
+
+  group('quietenLoggingForRelease (item 7)', () {
+    Map<String, dynamic> template() =>
+        jsonDecode(File(rawTemplatePath).readAsStringSync())
+            as Map<String, dynamic>;
+
+    test('a non-release config is left untouched', () {
+      final config = template();
+      quietenLoggingForRelease(config, release: false);
+      expect((config['mjolnir'] as Map)['logging']['type'], 'std_out');
+      expect((config['loki'] as Map)['logging']['type'], 'std_out');
+      expect((config['thor'] as Map)['logging']['type'], 'std_out');
+      expect((config['odin'] as Map)['logging']['type'], 'std_out');
+      expect((config['meili'] as Map)['logging']['type'], 'std_out');
+    });
+
+    test('a release config silences every module\'s logging', () {
+      final config = template();
+      quietenLoggingForRelease(config, release: true);
+      for (final module in ['mjolnir', 'loki', 'thor', 'odin', 'meili']) {
+        expect((config[module] as Map)['logging']['type'], '',
+            reason: '$module.logging.type');
+      }
+    });
+
+    test('a module with no logging block is left alone rather than crashing',
+        () {
+      final config = <String, dynamic>{'mjolnir': <String, dynamic>{}};
+      expect(() => quietenLoggingForRelease(config, release: true),
+          returnsNormally);
     });
   });
 
