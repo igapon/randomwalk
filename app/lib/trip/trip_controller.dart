@@ -293,6 +293,11 @@ class TripController extends ChangeNotifier {
       destLon: destination.$2,
       profile: _profile,
       tileDirPath: await _tileDirPath(),
+      // Final review item 1: without this the `shape.last` fallback above
+      // silently names a closed loop's own *start* as the replan target, and
+      // the first wrong turn reroutes the walker home. A loop is flagged
+      // instead, and the service skips replanning entirely.
+      isLoop: _activeRoute?.isLoop ?? false,
     );
   }
 

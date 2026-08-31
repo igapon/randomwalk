@@ -34,3 +34,11 @@ String formatRemaining(double km, Duration? eta) {
 /// or an arrival reads like.
 const kNavRecalculatingLabel = 'Recalcul…';
 const kNavArrivedLabel = 'Arrivé !';
+
+/// What a walker who has left a **loop** is told instead of « Recalcul… »
+/// (final review item 1). A loop is never recalculated — there is nowhere to
+/// route to but its own start — so promising a recalculation would be a lie;
+/// the honest instruction is to go back to the line. Shared by the spoken/
+/// notified alert (`alertText`) and the map's off-route card so the two
+/// cannot drift.
+const kNavRejoinLoopLabel = "Écart d'itinéraire — rejoignez la boucle";

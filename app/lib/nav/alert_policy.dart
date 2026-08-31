@@ -1,4 +1,5 @@
 import '../valhalla/models.dart';
+import 'guidance_text.dart';
 import 'route_follower.dart';
 
 /// Distance (metres) to the next maneuver at which a walker gets an alert.
@@ -120,8 +121,15 @@ class AlertPolicy {
 /// [u] itself already reads on-route by the time this is called, so
 /// without it the walker would hear the *new* route's first instruction
 /// with no mention of ever having left the old one.
-String alertText(NavUpdate u, {bool replanning = false}) {
+///
+/// [isLoop] (final review item 1) says the route is a closed loop, which
+/// `NavigationRuntime` deliberately never recalculates — so the off-route
+/// line drops the « recalcul » promise for [kNavRejoinLoopLabel]'s honest
+/// « rejoignez la boucle ». Everything else, arrival included, is unchanged.
+String alertText(NavUpdate u, {bool replanning = false, bool isLoop = false}) {
   if (u.arrived) return 'Arrivé !';
-  if (u.offRoute || replanning) return "Écart d'itinéraire — recalcul";
+  if (u.offRoute || replanning) {
+    return isLoop ? kNavRejoinLoopLabel : "Écart d'itinéraire — recalcul";
+  }
   return u.instruction.isEmpty ? "Suivez l'itinéraire" : u.instruction;
 }

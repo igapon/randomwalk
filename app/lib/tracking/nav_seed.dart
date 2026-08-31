@@ -18,8 +18,23 @@ class NavSeed {
   /// Where the trip is going, so a replan has a destination to route to.
   /// Taken from the user's picked destination when there is one, and from
   /// the route's own last point otherwise.
+  ///
+  /// Meaningless — and deliberately unused — when [isLoop]: a closed loop's
+  /// last shape point *is* its start, so this would name the wrong target.
   final double destLat, destLon;
   final RoutingProfile profile;
+
+  /// This route is a closed loop (see `ActiveRoute.isLoop`), which the
+  /// service must never replan: there is no destination to route to but the
+  /// start, and routing there is exactly how a mid-loop wrong turn used to
+  /// end the trip. Off-route is still reported and alerted, with its own
+  /// « rejoignez la boucle » phrasing — see `NavigationRuntime.isLoop` and
+  /// `alertText`.
+  ///
+  /// Defaults to false and omitted from [toJson] when false, so a seed
+  /// written by a previous build (or an Android service auto-restart reading
+  /// one) loads unchanged.
+  final bool isLoop;
 
   /// The offline tile directory a service-side replan routes against.
   ///
@@ -36,6 +51,7 @@ class NavSeed {
     required this.destLon,
     required this.profile,
     required this.tileDirPath,
+    this.isLoop = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -44,6 +60,7 @@ class NavSeed {
         'destLon': destLon,
         'profile': profile.name,
         if (tileDirPath != null) 'tileDirPath': tileDirPath,
+        if (isLoop) 'isLoop': true,
       };
 
   factory NavSeed.fromJson(Map<String, dynamic> j) => NavSeed(
@@ -53,5 +70,6 @@ class NavSeed {
         profile: RoutingProfile.values.firstWhere((p) => p.name == j['profile'],
             orElse: () => RoutingProfile.walk),
         tileDirPath: j['tileDirPath'] as String?,
+        isLoop: j['isLoop'] as bool? ?? false,
       );
 }

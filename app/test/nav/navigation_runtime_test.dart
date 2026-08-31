@@ -329,6 +329,81 @@ void main() {
       expect(fields.etaSeconds, isNotNull,
           reason: 'a fresh follower must inherit the speed estimator');
     });
+
+    group('isLoop (final review item 1)', () {
+      NavigationRuntime loopRuntime(FakeReplan replan) => NavigationRuntime(
+            follower: RouteFollower(planned),
+            replan: replan.call,
+            now: () => clock,
+            isLoop: true,
+          );
+
+      test('an off-route loop is never replanned, but still reads off-route',
+          () async {
+        // The bug this pins: a loop's ActiveRoute carries no destination, so
+        // the seed's dest falls back to the shape's last point — which, for a
+        // closed loop, *is* the start. Replanning there hands the walker
+        // "the shortest way home", arrival fires, and the loop is destroyed.
+        final replan = FakeReplan([straightRoute(lonOffset: eastDegrees(46.52, 60))]);
+        final nav = loopRuntime(replan);
+
+        await fixAt(nav, on(1), 0);
+        await fixAt(nav, off(2), 5);
+        final fields = await fixAt(nav, off(2), 20);
+
+        expect(replan.calls, 0, reason: 'a loop must never be recalculated');
+        expect(fields.offRoute, isTrue,
+            reason: 'the walker still needs to be told they left the line');
+        expect(fields.replanning, isFalse,
+            reason: 'nothing is being recalculated, so no « Recalcul… »');
+        expect(fields.degraded, isFalse,
+            reason: 'not replanning is by design here, not a failure');
+        expect(fields.replanCount, 0);
+        // Still following the planned loop, unchanged.
+        expect(fields.routeShapeEnc, encodePolyline6(planned.shape));
+        expect(nav.route, same(planned));
+      });
+
+      test('staying off-route never accumulates replan attempts', () async {
+        final replan = FakeReplan([]);
+        final nav = loopRuntime(replan);
+
+        await fixAt(nav, on(1), 0);
+        for (final seconds in [5, 20, 60, 120, 300]) {
+          final fields = await fixAt(nav, off(2), seconds);
+          expect(fields.replanning, isFalse);
+        }
+        expect(replan.calls, 0,
+            reason: 'the retry window must not open a loophole either');
+      });
+
+      test('rejoining the loop resumes ordinary guidance', () async {
+        final replan = FakeReplan([]);
+        final nav = loopRuntime(replan);
+
+        await fixAt(nav, on(1), 0);
+        // The off-route clock starts on the *first* off-route fix; the second,
+        // past the 10 s grace, is what latches it.
+        await fixAt(nav, off(2), 5);
+        expect((await fixAt(nav, off(2), 20)).offRoute, isTrue);
+
+        final back = await fixAt(nav, on(3), 30);
+        expect(back.offRoute, isFalse);
+        expect(back.instruction, 'Rue du Lac');
+        expect(replan.calls, 0);
+      });
+
+      test('defaults to false, so an A→B trip still replans', () async {
+        final replan = FakeReplan([straightRoute(lonOffset: eastDegrees(46.52, 60))]);
+        final nav = runtime(replan);
+
+        await fixAt(nav, on(1), 0);
+        await fixAt(nav, off(2), 5);
+        await fixAt(nav, off(2), 20);
+
+        expect(replan.calls, 1);
+      });
+    });
   });
 
   group('navNotificationText', () {

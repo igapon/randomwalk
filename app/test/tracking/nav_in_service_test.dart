@@ -43,6 +43,23 @@ void main() {
       final json = seed().toJson()..['profile'] = 'hovercraft';
       expect(NavSeed.fromJson(json).profile, RoutingProfile.walk);
     });
+
+    test('isLoop round-trips, defaults false, and tolerates a legacy document',
+        () {
+      expect(seed().isLoop, isFalse);
+      final loop = NavSeed(
+        route: fakeRoute(),
+        destLat: 46.51,
+        destLon: 6.61,
+        profile: RoutingProfile.walk,
+        tileDirPath: null,
+        isLoop: true,
+      );
+      expect(NavSeed.fromJson(jsonDecode(jsonEncode(loop.toJson()))).isLoop,
+          isTrue);
+      expect(NavSeed.fromJson(seed().toJson()..remove('isLoop')).isLoop,
+          isFalse);
+    });
   });
 
   group('TripController seeds the service for navigation', () {
@@ -115,6 +132,27 @@ void main() {
 
       expect(tracker.startedNav.single, isNotNull);
       expect(tracker.startedNav.single!.tileDirPath, isNull);
+    });
+
+    test('a planned loop reaches the service flagged as one', () async {
+      // Item 1: without this the service has no way to tell a loop from an
+      // A→B route, and its first off-route replan reroutes the walker to the
+      // loop's own start point — ending the trip.
+      routes.current = ActiveRoute(
+          route: fakeRoute(), profile: RoutingProfile.walk, isLoop: true);
+      final trip = build();
+      await trip.restore();
+      await trip.startTrip(route: fakeRoute());
+
+      expect(tracker.startedNav.single!.isLoop, isTrue);
+    });
+
+    test('an ordinary A→B plan is not flagged as a loop', () async {
+      final trip = build();
+      await trip.restore();
+      await trip.startTrip(route: fakeRoute());
+
+      expect(tracker.startedNav.single!.isLoop, isFalse);
     });
 
     test('a failing tile lookup never blocks the start of a trip', () async {

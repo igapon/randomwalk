@@ -74,6 +74,62 @@ void main() {
     });
   });
 
+  group('ActiveRoute.isLoop (final review item 1)', () {
+    test('defaults to false so every pre-loop construction is unchanged', () {
+      expect(_activeRoute().isLoop, isFalse);
+      expect(ActiveRoute(profile: RoutingProfile.walk).isLoop, isFalse);
+    });
+
+    test('survives a JSON round trip in both states', () {
+      for (final isLoop in [true, false]) {
+        final decoded = ActiveRoute.fromJson(jsonDecode(jsonEncode(
+                ActiveRoute(route: _route(), profile: RoutingProfile.walk, isLoop: isLoop)
+                    .toJson()))
+            as Map<String, dynamic>);
+        expect(decoded.isLoop, isLoop);
+      }
+    });
+
+    test('a legacy document with no isLoop key reads as not-a-loop', () {
+      // Backward compatibility: documents written by any build before loops
+      // existed carry no `isLoop` at all, and must not throw or come back as
+      // loops (which would silently disable their replanning).
+      final legacy = _activeRoute().toJson()..remove('isLoop');
+      expect(ActiveRoute.fromJson(legacy).isLoop, isFalse);
+    });
+
+    test('false is omitted from the document entirely', () {
+      // Same optional-field discipline as `TripSnapshot.toJson`: the common
+      // case writes nothing rather than a `false`.
+      expect(_activeRoute().toJson().containsKey('isLoop'), isFalse);
+      expect(
+          ActiveRoute(route: _route(), profile: RoutingProfile.walk, isLoop: true)
+              .toJson()['isLoop'],
+          isTrue);
+    });
+
+    test('copyWith carries it, and can set it either way', () {
+      final loop = _activeRoute().copyWith(isLoop: true);
+      expect(loop.isLoop, isTrue);
+      expect(loop.copyWith(profile: RoutingProfile.walk).isLoop, isTrue);
+      expect(loop.copyWith(isLoop: false).isLoop, isFalse);
+    });
+
+    test('clearRoute drops loop-ness with the route it described', () {
+      // `isLoop` is a property of the route, not of the screen: a plan whose
+      // route has been cleared must not leave a stale "this is a loop" flag
+      // behind for whatever A→B route is computed into it next.
+      expect(_activeRoute().copyWith(isLoop: true).copyWith(clearRoute: true).isLoop,
+          isFalse);
+    });
+
+    test('persists through the file store', () async {
+      final s = store();
+      await s.save(_activeRoute().copyWith(isLoop: true));
+      expect((await s.load())!.isLoop, isTrue);
+    });
+  });
+
   test('load returns null when nothing was ever persisted', () async {
     expect(await store().load(), isNull);
   });

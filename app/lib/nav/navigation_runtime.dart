@@ -28,9 +28,27 @@ const kReplanRetryInterval = Duration(seconds: 30);
 ///    state for an offline router; the runtime keeps following the route it
 ///    has, flags itself [NavFields.degraded] so the notification can say so,
 ///    and tries again no more than once per [kReplanRetryInterval].
+///  - **A loop is never replanned at all.** See [isLoop].
 class NavigationRuntime {
   final Future<RouteResult?> Function(double lat, double lon) _requestRoute;
   final DateTime Function() _now;
+
+  /// The route being followed is a closed loop (M3 « Boucle » / « Durée »
+  /// without a pinned destination — see `ActiveRoute.isLoop`), and must
+  /// therefore never be recalculated.
+  ///
+  /// Final review item 1: a loop has no destination distinct from its start,
+  /// so the only thing a replan can route to is the start itself. Doing that
+  /// replaces the walker's 10 km loop with the shortest way home, and the
+  /// fresh follower — already standing at its own last shape point — latches
+  /// arrival immediately, ending the trip on the first wrong turn.
+  ///
+  /// Skipping the recalculation is not a degraded state and not a failure:
+  /// off-route is still published exactly as before (so the walker is told,
+  /// once, with the « rejoignez la boucle » phrasing — see `alertText`), but
+  /// [NavFields.replanning] stays false, [NavFields.degraded] stays false,
+  /// and no router call is ever made.
+  final bool isLoop;
 
   RouteFollower _follower;
   String _routeShapeEnc;
@@ -50,6 +68,7 @@ class NavigationRuntime {
     required RouteFollower follower,
     required Future<RouteResult?> Function(double lat, double lon) replan,
     DateTime Function()? now,
+    this.isLoop = false,
   })  : _follower = follower,
         _requestRoute = replan,
         _now = now ?? DateTime.now,
@@ -118,6 +137,8 @@ class NavigationRuntime {
 
   bool _shouldReplan(NavUpdate update) {
     if (_inFlight) return false;
+    // A loop has nowhere to route to but its own start — see [isLoop].
+    if (isLoop) return false;
     // An arrived trip has nowhere left to route to: wandering off the line
     // after reaching the destination is not a wrong turn, and the arrival
     // latch means this would otherwise repeat for the rest of the trip.

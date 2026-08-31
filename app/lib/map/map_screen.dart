@@ -607,7 +607,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
       // Re-read the plan: the user may have moved a pin while the engine
       // was working, and the freshly computed route belongs to whatever
       // the plan says *now*, not to the snapshot taken above.
-      await trip.saveActiveRoute(_plan(trip).copyWith(route: result));
+      // `isLoop: false` explicitly, not just by omission: this is the A→B
+      // planner, and the plan being written into may still carry the flag
+      // from a loop candidate promoted earlier in the session.
+      await trip.saveActiveRoute(
+          _plan(trip).copyWith(route: result, isLoop: false));
       if (planner.lastVersionMismatch) _showUpdateRequired();
       if (planner.lastCoverageFailed > 0 && !_coverageWarningShown) {
         _coverageWarningShown = true;
@@ -907,7 +911,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // Item 8: same reset as `_planRoute` — a fresh « Proposer » series earns
     // a fresh chance to warn about incomplete coverage.
     _coverageWarningShown = false;
-    setState(() => _candidatePlanning = true);
+    setState(() {
+      _candidatePlanning = true;
+      _downloadProgress = null;
+    });
 
     final trip = ref.read(tripControllerProvider);
     final plan = _plan(trip);
@@ -926,24 +933,39 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
     setState(() => _speedKmh = speedKmh);
 
-    final request = buildLoopRequest(
-      mode: _planMode,
-      loopTargetKm: _loopTargetKm,
-      durationTarget: _durationTarget,
-      speedKmh: speedKmh,
-      profile: trip.profile,
-      start: (departure.latitude, departure.longitude),
-      destination: plan.destination,
-      seed: _planSeed,
-    );
-    if (request == null) {
-      // PlanMode.itinerary never reaches here (Proposer isn't shown), but
-      // stays defensive rather than leaving the spinner stuck on.
-      setState(() => _candidatePlanning = false);
-      return;
-    }
+    // Final review item 6: the first « Proposer » in a fresh area downloads
+    // tiles exactly like « Planifier » does, and without this the spinner sat
+    // there with no progress for the whole download — see [_planRoute], whose
+    // sink wiring this mirrors (including clearing it in `finally`, so a
+    // later plan's progress can never be routed into a dead closure).
+    final sink = ref.read(progressSinkProvider);
+    sink.onProgress = (done, total) {
+      if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
+      setState(() => _downloadProgress = (done: done, total: total));
+    };
 
     try {
+      // Final review item 7: built *inside* the try. [LoopRequest]'s
+      // constructor throws `ArgumentError` on an invalid target, and outside
+      // the try that throw escapes past the `finally` below — leaving
+      // `_candidatePlanning` true and wedging the spinner (with its ✕ the
+      // only way out) for the rest of the screen's life.
+      final request = buildLoopRequest(
+        mode: _planMode,
+        loopTargetKm: _loopTargetKm,
+        durationTarget: _durationTarget,
+        speedKmh: speedKmh,
+        profile: trip.profile,
+        start: (departure.latitude, departure.longitude),
+        destination: plan.destination,
+        seed: _planSeed,
+      );
+      if (request == null) {
+        // PlanMode.itinerary never reaches here (Proposer isn't shown), but
+        // stays defensive rather than leaving the spinner stuck on — the
+        // `finally` below drops it.
+        return;
+      }
       final orchestrator = await ref.read(loopPlannerProvider.future);
       final result = await orchestrator.plan(request);
       if (!mounted || !_candidateGeneration.isCurrent(gen)) {
@@ -980,8 +1002,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
     } on http.ClientException {
       _showRouteUnavailable();
     } finally {
+      sink.onProgress = null;
       if (mounted && _candidateGeneration.isCurrent(gen)) {
-        setState(() => _candidatePlanning = false);
+        setState(() {
+          _candidatePlanning = false;
+          _downloadProgress = null;
+        });
       }
     }
   }
@@ -992,7 +1018,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// a router call budget that can legitimately take a while.
   void _cancelCandidatePlanning() {
     _candidateGeneration.start();
-    setState(() => _candidatePlanning = false);
+    setState(() {
+      _candidatePlanning = false;
+      _downloadProgress = null;
+    });
   }
 
   /// « Autres propositions »: same request, next seed.
@@ -1024,6 +1053,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
       _candidateResult = null;
       _candidateKind = null;
       _candidatePlanning = false;
+      _downloadProgress = null;
     });
     unawaited(_removeCandidateLines());
   }
@@ -1053,6 +1083,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
       departure: plan.departure,
       destination: destination,
       profile: trip.profile,
+      // Final review item 1: the one place loop-ness is *known*. From here it
+      // rides the persisted plan into `NavSeed` and stops the tracking
+      // service from replanning a loop back to its own start point (see
+      // [ActiveRoute.isLoop]).
+      isLoop: _candidateKind == PlanKind.loop,
     ));
     setState(() {
       _candidateResult = null;
@@ -1183,7 +1218,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
       );
     } else if (_candidatePlanning) {
       bottomBanner =
-          _CandidateProgressBanner(onCancel: _cancelCandidatePlanning);
+          _CandidateProgressBanner(
+              onCancel: _cancelCandidatePlanning,
+              progress: _downloadProgress);
     } else if (candidateResult != null) {
       bottomBanner = CandidatesSheet(
         result: candidateResult,
@@ -1205,12 +1242,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
         onClear: _clearRoute,
         onStart: _startRouteTrip,
       );
-    } else if (_planMode != PlanMode.itinerary) {
-      // Boucle/Durée: the mode-specific controls (slider, « Proposer ») live
-      // in the top overlay; the bottom banner stays empty until a plan
-      // exists, same as Itinéraire before any destination is picked.
-      bottomBanner = const SizedBox.shrink();
     } else {
+      // Final review item 3: the « Démarrer » pill (a free session — no
+      // route, no target) is shown in *every* plan mode, not only Itinéraire.
+      // The owner's one-tap rule is about the app, not about which planning
+      // panel happens to be selected: a walker who opened Boucle, thought
+      // better of it and just wants to start walking must not have to switch
+      // tabs back to find the button. Boucle/Durée's own controls (slider,
+      // « Proposer ») live in the top overlay, so there is no conflict — and
+      // the moment a plan or candidates exist, the branches above take over.
       bottomBanner = _StartPill(onStart: _startFreeTrip);
     }
 
@@ -1222,7 +1262,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
       if (snapshot.navArrived) {
         topOverlay = const NavArrivedCard();
       } else if (snapshot.navOffRoute || snapshot.navReplanning) {
-        topOverlay = const _NavRecalculatingCard();
+        // Final review item 1: a loop is never recalculated, so the card must
+        // not show a spinner and promise « Recalcul… » — it asks the walker
+        // to rejoin the line instead. Read off the persisted plan rather than
+        // the snapshot: loop-ness belongs to the route, and the snapshot
+        // deliberately carries only what the service computes per fix.
+        topOverlay =
+            _NavRecalculatingCard(isLoop: trip.activeRoute?.isLoop ?? false);
       } else if (snapshot.navInstruction != null &&
           snapshot.navInstruction!.isNotEmpty) {
         topOverlay = _NavInstructionCard(
@@ -1505,12 +1551,25 @@ class _ProgressBanner extends StatelessWidget {
 /// cancel ✕, distinct from [_ProgressBanner]: this one is cancellable
 /// (LoopPlanner's router-call budget can legitimately take a few seconds),
 /// where the standard A→B tile-download progress banner is not.
+///
+/// Final review item 6: it also reports tile-download progress while
+/// [progress] is non-null. A « Proposer » in a fresh area downloads the same
+/// tiles « Planifier » does, and a bare spinner through a multi-megabyte
+/// download reads as a hung app — so the label switches to
+/// [_ProgressBanner]'s own wording for exactly as long as the download runs,
+/// then reverts to the search text.
 class _CandidateProgressBanner extends StatelessWidget {
-  const _CandidateProgressBanner({required this.onCancel});
+  const _CandidateProgressBanner({required this.onCancel, this.progress});
   final VoidCallback onCancel;
+  final ({int done, int total})? progress;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) {
+    final p = progress;
+    final label = (p != null && p.total > 0)
+        ? 'Téléchargement des cartes… ${p.done}/${p.total}'
+        : 'Recherche de boucles…';
+    return Card(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
@@ -1521,7 +1580,7 @@ class _CandidateProgressBanner extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2)),
               const SizedBox(width: 12),
               Expanded(
-                child: Text('Recherche de boucles…',
+                child: Text(label,
                     style: Theme.of(context).textTheme.bodyMedium),
               ),
               IconButton(
@@ -1533,6 +1592,7 @@ class _CandidateProgressBanner extends StatelessWidget {
           ),
         ),
       );
+  }
 }
 
 /// Boucle/Durée's mode-specific controls (task 6): the distance or duration
@@ -1738,29 +1798,40 @@ class _NavInstructionCard extends StatelessWidget {
 /// not (arrived always wins). Orange rather than the ink/paper the rest of
 /// the app uses: this is the one state that needs to read as a warning at a
 /// glance, not as more trip chrome.
+/// Final review item 1: with [isLoop] it says [kNavRejoinLoopLabel] and drops
+/// the spinner. A loop is deliberately never recalculated (see
+/// `NavigationRuntime.isLoop`), so a spinner over « Recalcul… » would animate
+/// away indefinitely for something that is never going to happen.
 class _NavRecalculatingCard extends StatelessWidget {
-  const _NavRecalculatingCard();
+  const _NavRecalculatingCard({this.isLoop = false});
+
+  final bool isLoop;
 
   @override
   Widget build(BuildContext context) => Card(
         color: AppColors.recalcOrange,
-        child: const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
-              SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: AppColors.ink)),
-              SizedBox(width: 12),
-              Text(
-                kNavRecalculatingLabel,
-                style: TextStyle(
-                  fontFamily: AppFonts.body,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.ink,
-                  fontSize: 16,
+              if (isLoop)
+                const Icon(Icons.u_turn_left, size: 18, color: AppColors.ink)
+              else
+                const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: AppColors.ink)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  isLoop ? kNavRejoinLoopLabel : kNavRecalculatingLabel,
+                  style: const TextStyle(
+                    fontFamily: AppFonts.body,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.ink,
+                    fontSize: 16,
+                  ),
                 ),
               ),
             ],
