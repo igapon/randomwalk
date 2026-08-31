@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../session/recorder.dart';
+import '../trip/trip_controller.dart';
+import 'alert_settings.dart';
 import 'identity.dart';
 
 /// Player settings: editable pseudo, plus read-only identity and local
@@ -17,7 +19,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   final _pseudoController = TextEditingController();
 
-  late Future<({PlayerIdentity identity, double totalKm})> _future;
+  late Future<
+      ({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})> _future;
 
   @override
   void initState() {
@@ -25,11 +28,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _future = _load();
   }
 
-  Future<({PlayerIdentity identity, double totalKm})> _load() async {
+  Future<({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>
+      _load() async {
     final identity = await ref.read(identityStoreProvider).get();
     final totalKm = await _totalStore.totalKm();
+    final alertSettings = ref.read(alertSettingsStoreProvider);
+    final ttsEnabled = await alertSettings.ttsEnabled();
+    final hapticsEnabled = await alertSettings.hapticsEnabled();
     _pseudoController.text = identity.pseudo;
-    return (identity: identity, totalKm: totalKm);
+    return (
+      identity: identity,
+      totalKm: totalKm,
+      ttsEnabled: ttsEnabled,
+      hapticsEnabled: hapticsEnabled,
+    );
+  }
+
+  Future<void> _setTtsEnabled(bool value) async {
+    await ref.read(tripControllerProvider).setTtsEnabled(value);
+    setState(() => _future = _load());
+  }
+
+  Future<void> _setHapticsEnabled(bool value) async {
+    await ref.read(tripControllerProvider).setHapticsEnabled(value);
+    setState(() => _future = _load());
   }
 
   @override
@@ -58,7 +80,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Réglages')),
-      body: FutureBuilder<({PlayerIdentity identity, double totalKm})>(
+      body: FutureBuilder<
+          ({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>(
         future: _future,
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
@@ -66,6 +89,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           }
           final identity = snapshot.data!.identity;
           final totalKm = snapshot.data!.totalKm;
+          final ttsEnabled = snapshot.data!.ttsEnabled;
+          final hapticsEnabled = snapshot.data!.hapticsEnabled;
           return SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -95,6 +120,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     const SizedBox(height: 8),
                     Text('Distance totale : ${totalKm.toStringAsFixed(1)} km',
                         style: Theme.of(context).textTheme.bodyMedium),
+                    const Divider(height: 32),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Guidage vocal'),
+                      subtitle: const Text(
+                          'Instructions de navigation lues à voix haute'),
+                      value: ttsEnabled,
+                      onChanged: _setTtsEnabled,
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Vibrations et alertes'),
+                      subtitle: const Text(
+                          "Vibration et son à l'approche d'une manœuvre"),
+                      value: hapticsEnabled,
+                      onChanged: _setHapticsEnabled,
+                    ),
                   ],
                 ),
               ),

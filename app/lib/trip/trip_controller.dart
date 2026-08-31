@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../session/recorder.dart';
+import '../settings/alert_settings.dart';
 import '../tracking/nav_seed.dart';
 import '../tracking/permissions.dart';
 import '../tracking/steps.dart';
@@ -82,6 +83,7 @@ class TripController extends ChangeNotifier {
   final DateTime Function() _clock;
   final Future<void> Function(RoutingProfile profile) _persistProfile;
   final Future<RoutingProfile?> Function() _loadProfile;
+  final AlertSettingsStore _alertSettings;
 
   /// Where the offline tiles already on disk live, so the tracking service
   /// can recalculate a route without this process (or any network) being
@@ -131,13 +133,15 @@ class TripController extends ChangeNotifier {
     Future<RoutingProfile?> Function()? loadProfile,
     this.resolveTileDir,
     this.onCameraFollowChanged,
+    AlertSettingsStore? alertSettings,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
         _createStepCounter = createStepCounter ??
             ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
         _clock = clock ?? DateTime.now,
         _persistProfile = persistProfile ?? _defaultPersistProfile,
-        _loadProfile = loadProfile ?? _defaultLoadProfile {
+        _loadProfile = loadProfile ?? _defaultLoadProfile,
+        _alertSettings = alertSettings ?? AlertSettingsStore() {
     _updates = tracker.updates.listen(_onTrackerSnapshot);
     _errors = tracker.errors.listen((message) => onSessionError?.call(message));
   }
@@ -524,6 +528,24 @@ class TripController extends ChangeNotifier {
     }
     notifyListeners();
     await _persistProfile(profile);
+  }
+
+  /// Persists « Guidage vocal » and pushes it into a running trip's service
+  /// immediately — see [TripTracker.updateAlertSettings] — so toggling it
+  /// mid-trip takes effect on the very next alert instead of waiting for the
+  /// trip to end.
+  Future<void> setTtsEnabled(bool value) async {
+    await _alertSettings.setTtsEnabled(value);
+    await tracker.updateAlertSettings(
+        ttsEnabled: value, hapticsEnabled: await _alertSettings.hapticsEnabled());
+  }
+
+  /// Persists « Vibrations et alertes » and pushes it into a running trip's
+  /// service immediately — see [setTtsEnabled].
+  Future<void> setHapticsEnabled(bool value) async {
+    await _alertSettings.setHapticsEnabled(value);
+    await tracker.updateAlertSettings(
+        ttsEnabled: await _alertSettings.ttsEnabled(), hapticsEnabled: value);
   }
 
   /// Re-reads whether "Autoriser tout le temps" has since been granted —

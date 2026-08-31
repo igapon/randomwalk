@@ -37,6 +37,7 @@ class NavigationRuntime {
   int _replanCount = 0;
   bool _inFlight = false;
   bool _degraded = false;
+  NavUpdate? _lastUpdate;
 
   /// When the last *failed* replan was attempted, and null whenever the
   /// runtime is not in a failed state. Successes are not throttled: the
@@ -59,6 +60,15 @@ class NavigationRuntime {
   RouteResult get route => _follower.route;
 
   int get replanCount => _replanCount;
+
+  /// The raw follower update behind the last [NavFields] this runtime
+  /// produced. [NavFields] deliberately drops `maneuverIndex` — it crosses an
+  /// isolate boundary into the persisted snapshot, and the UI has no use for
+  /// which maneuver a distance belongs to, only the distance itself.
+  /// `AlertPolicy` needs the index too (to tell "still approaching the same
+  /// maneuver" from "a new one"), so the tracking handler reads it from here
+  /// rather than from the snapshot. Null before the first [onFix].
+  NavUpdate? get lastUpdate => _lastUpdate;
 
   /// Consumes one accepted GPS fix and returns the navigation state to
   /// publish for it.
@@ -90,6 +100,7 @@ class NavigationRuntime {
       update = await _recalculate(lat, lon, time) ?? update;
     }
 
+    _lastUpdate = update;
     return _fieldsFrom(update);
   }
 

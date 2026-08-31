@@ -130,6 +130,16 @@ class FakeTripTracker implements TripTracker {
   @override
   Future<void> publishSteps(int steps) async => publishedSteps.add(steps);
 
+  /// Every [TripTracker.updateAlertSettings] call this fake has seen, in
+  /// order.
+  final alertSettingsUpdates = <({bool ttsEnabled, bool hapticsEnabled})>[];
+
+  @override
+  Future<void> updateAlertSettings(
+          {required bool ttsEnabled, required bool hapticsEnabled}) async =>
+      alertSettingsUpdates
+          .add((ttsEnabled: ttsEnabled, hapticsEnabled: hapticsEnabled));
+
   @override
   Future<void> dispose() async {
     attached = false;

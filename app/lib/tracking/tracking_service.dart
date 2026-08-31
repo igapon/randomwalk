@@ -3,13 +3,17 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../nav/alert_policy.dart';
 import '../nav/nav_fields.dart';
 import '../nav/navigation_runtime.dart';
 import '../nav/route_follower.dart';
+import '../nav/tts.dart';
 import '../session/recorder.dart';
 import '../session/session_controller.dart';
+import '../settings/alert_settings.dart';
 import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
 import 'nav_seed.dart';
@@ -72,6 +76,14 @@ abstract class TripTracker {
   /// persisted snapshot too.
   Future<void> publishSteps(int steps);
 
+  /// Pushes a changed « Guidage vocal »/« Vibrations et alertes » setting
+  /// into an already-running service, so flipping a toggle mid-trip takes
+  /// effect on the very next maneuver alert instead of waiting for the trip
+  /// to end. A no-op while nothing is recording — the next [start] reads the
+  /// setting fresh from disk anyway (see `AlertSettingsStore`).
+  Future<void> updateAlertSettings(
+      {required bool ttsEnabled, required bool hapticsEnabled});
+
   Future<void> dispose();
 }
 
@@ -89,6 +101,18 @@ const _kSnapshotPathKey = 'randomwalk_snapshot_path';
 const _kSeedKey = 'randomwalk_seed_snapshot';
 const _kNavSeedKey = 'randomwalk_nav_seed';
 const _kGpsErrorKey = 'gpsError';
+const _kTtsEnabledKey = 'randomwalk_tts_enabled';
+const _kHapticsEnabledKey = 'randomwalk_haptics_enabled';
+
+/// The maneuver-alert notification channel — distinct from [_kChannelId]'s
+/// silent, sticky trip notification: this one is meant to be noticed with
+/// the screen off, so it gets sound and vibration.
+const _kAlertChannelId = 'guidance';
+
+/// One id, reused for every alert: a fresh maneuver notice replaces the
+/// previous one instead of piling up a history of turns the walker has
+/// already taken.
+const _kAlertNotificationId = 4212;
 
 /// How long a recording trip may go without a single position before the UI
 /// is told the GPS has gone quiet. Long enough not to fire on a cold fix in
@@ -127,6 +151,7 @@ bool isGpsSilent({
 /// the file is the only one of the two that survives the UI process dying.
 class ForegroundServiceTripTracker implements TripTracker {
   final File snapshotFile;
+  final AlertSettingsStore _alertSettings;
 
   /// `.ui.tmp`, not the isolate's `.tmp`: both sides write this document.
   late final TripSnapshotStore _store =
@@ -135,7 +160,8 @@ class ForegroundServiceTripTracker implements TripTracker {
   final _errors = StreamController<String?>.broadcast();
   bool _callbackAttached = false;
 
-  ForegroundServiceTripTracker(this.snapshotFile);
+  ForegroundServiceTripTracker(this.snapshotFile, {AlertSettingsStore? alertSettings})
+      : _alertSettings = alertSettings ?? AlertSettingsStore();
 
   /// Must run in `main()` before `runApp`: without it the service isolate
   /// has nowhere to send data.
@@ -178,6 +204,13 @@ class ForegroundServiceTripTracker implements TripTracker {
     // store outlives both the service and the process.
     await FlutterForegroundTask.saveData(
         key: _kNavSeedKey, value: nav == null ? '' : jsonEncode(nav.toJson()));
+    // Read fresh at every start (not just once, ever) so a setting flipped
+    // between two trips is honoured by the second one even without
+    // [updateAlertSettings] ever having been called on a running service.
+    await FlutterForegroundTask.saveData(
+        key: _kTtsEnabledKey, value: await _alertSettings.ttsEnabled());
+    await FlutterForegroundTask.saveData(
+        key: _kHapticsEnabledKey, value: await _alertSettings.hapticsEnabled());
 
     final result = await FlutterForegroundTask.startService(
       serviceId: _kServiceId,
@@ -206,6 +239,21 @@ class ForegroundServiceTripTracker implements TripTracker {
   Future<void> publishSteps(int steps) async {
     if (!await isRunning()) return;
     FlutterForegroundTask.sendDataToTask({'steps': steps});
+  }
+
+  @override
+  Future<void> updateAlertSettings(
+      {required bool ttsEnabled, required bool hapticsEnabled}) async {
+    // Persisted regardless of whether a service is running: an
+    // Android-restarted service (allowAutoRestart) re-reads these at its own
+    // `onStart`, same as the nav seed.
+    await FlutterForegroundTask.saveData(
+        key: _kTtsEnabledKey, value: ttsEnabled);
+    await FlutterForegroundTask.saveData(
+        key: _kHapticsEnabledKey, value: hapticsEnabled);
+    if (!await isRunning()) return;
+    FlutterForegroundTask.sendDataToTask(
+        {'ttsEnabled': ttsEnabled, 'hapticsEnabled': hapticsEnabled});
   }
 
   @override
@@ -323,6 +371,23 @@ class TripTaskHandler extends TaskHandler {
   NavigationRuntime? _nav;
   NavFields? _navFields;
 
+  /// Decides which fixes are worth a maneuver alert for. Built alongside
+  /// [_nav] — null for a free trip, so [_maybeAlert] never has anything to
+  /// evaluate for one (brief: "Free sessions: no alerts").
+  AlertPolicy? _alertPolicy;
+
+  /// « Vibrations et alertes » / « Guidage vocal », read from the seed and
+  /// refreshed live via [onReceiveData] — see `TripTracker.updateAlertSettings`.
+  bool _hapticsEnabled = true;
+  bool _ttsEnabled = true;
+
+  /// A no-op until « Guidage vocal » is actually on, so a trip that never
+  /// enables it never touches flutter_tts's Dart-side setup at all.
+  TtsSpeaker _speaker = const NoopTtsSpeaker();
+
+  FlutterLocalNotificationsPlugin? _notifications;
+  bool _notificationsReady = false;
+
   /// Built on the first replan, not at start-up: a trip that never leaves
   /// its route never pays for loading a routing engine into this isolate.
   ChannelRoutingEngine? _engine;
@@ -371,7 +436,16 @@ class TripTaskHandler extends TaskHandler {
         follower: RouteFollower(navSeed.route),
         replan: _replanFrom,
       );
+      _alertPolicy = AlertPolicy(profile: navSeed.profile);
     }
+
+    _hapticsEnabled =
+        await FlutterForegroundTask.getData<bool>(key: _kHapticsEnabledKey) ??
+            true;
+    _ttsEnabled =
+        await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ??
+            true;
+    if (_ttsEnabled) _speaker = FlutterTtsSpeaker();
 
     final session = SessionController(
       store: _PassThroughDistanceStore(),
@@ -458,6 +532,7 @@ class TripTaskHandler extends TaskHandler {
     try {
       _navFields = await nav.onFix(
           sample.lat, sample.lon, sample.speedMps, sample.time);
+      await _maybeAlert(nav.lastUpdate);
       // Publishing is inside the try for the same reason [_stopped] exists:
       // a fix whose replan outlived the teardown must not raise from a
       // callback nothing is left to await.
@@ -466,6 +541,69 @@ class TripTaskHandler extends TaskHandler {
       return;
     } finally {
       _navBusy = false;
+    }
+  }
+
+  /// Runs [update] through [AlertPolicy] and, if it is worth interrupting
+  /// the walker for, fires whichever of the notification/TTS are enabled.
+  ///
+  /// Both are best-effort: a notification-plugin hiccup or a wedged TTS
+  /// engine must cost this fix nothing beyond the alert it was trying to
+  /// deliver — the trip keeps recording either way.
+  Future<void> _maybeAlert(NavUpdate? update) async {
+    final policy = _alertPolicy;
+    if (policy == null || update == null || _stopped) return;
+    if (!policy.shouldAlert(update)) return;
+
+    final text = alertText(update);
+    final tasks = <Future<void>>[];
+    if (_hapticsEnabled) tasks.add(_postAlertNotification(text));
+    if (_ttsEnabled) tasks.add(_speaker.speak(text).catchError((_) {}));
+    await Future.wait(tasks);
+  }
+
+  /// Posts (or replaces) the single guidance-alert notification — high
+  /// importance, system sound + vibration, on the « guidage » channel — so
+  /// it is noticed with the screen off, unlike [_kChannelId]'s silent,
+  /// sticky trip notification.
+  Future<void> _postAlertNotification(String text) async {
+    try {
+      final notifications = _notifications ??= FlutterLocalNotificationsPlugin();
+      if (!_notificationsReady) {
+        // Each engine — this service's included — needs its own
+        // `initialize()` call; the plugin keeps no state across isolates.
+        await notifications.initialize(
+          settings: const InitializationSettings(
+            android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+          ),
+        );
+        _notificationsReady = true;
+      }
+      await notifications.show(
+        id: _kAlertNotificationId,
+        title: 'RandomWalk',
+        body: text,
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            _kAlertChannelId,
+            'Guidage',
+            channelDescription:
+                "Alerte sonore et vibration à l'approche d'une manœuvre.",
+            importance: Importance.high,
+            priority: Priority.high,
+            playSound: true,
+            enableVibration: true,
+            // The next alert replaces this one under the same id; a walker
+            // who never gets a next maneuver (trip ends first) still sees
+            // this clear itself rather than linger indefinitely.
+            timeoutAfter: 8000,
+          ),
+        ),
+      );
+      // A failed alert must never take the recording down with it — see
+      // [_onNavFix]'s own swallow-everything philosophy.
+    } catch (_) {
+      return;
     }
   }
 
@@ -502,7 +640,19 @@ class TripTaskHandler extends TaskHandler {
   /// the service has no Activity and so no platform channel of its own.
   @override
   void onReceiveData(Object data) {
-    if (data is Map && data['steps'] is int) _steps = data['steps'] as int;
+    if (data is! Map) return;
+    if (data['steps'] is int) _steps = data['steps'] as int;
+    if (data['hapticsEnabled'] is bool) {
+      _hapticsEnabled = data['hapticsEnabled'] as bool;
+    }
+    if (data['ttsEnabled'] is bool) {
+      final enabled = data['ttsEnabled'] as bool;
+      _ttsEnabled = enabled;
+      // Swap in the real speaker the moment it is turned on; turning it off
+      // just stops it being asked to speak (see [_maybeAlert]) rather than
+      // tearing down an engine mid-trip.
+      if (enabled && _speaker is NoopTtsSpeaker) _speaker = FlutterTtsSpeaker();
+    }
   }
 
   @override

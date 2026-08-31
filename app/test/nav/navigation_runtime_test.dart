@@ -102,6 +102,19 @@ void main() {
       expect(fields.distanceToManeuverM, closeTo(221, 5));
     });
 
+    test('lastUpdate exposes the raw follower update behind the fields',
+        () async {
+      final replan = FakeReplan([]);
+      final nav = runtime(replan);
+
+      expect(nav.lastUpdate, isNull);
+      final fields = await fixAt(nav, on(2), 0);
+
+      expect(nav.lastUpdate, isNotNull);
+      expect(nav.lastUpdate!.maneuverIndex, 1);
+      expect(nav.lastUpdate!.distanceToManeuverM, fields.distanceToManeuverM);
+    });
+
     test('an off-route walker triggers exactly one replan onto a fresh route',
         () async {
       final replacement = straightRoute(
