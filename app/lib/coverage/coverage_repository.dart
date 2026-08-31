@@ -240,23 +240,30 @@ class CoverageRepository {
   static const _keepVersionCount = 2;
 
   /// Disk-hygiene purge-by-count: deletes sibling `<root>/<version>/`
-  /// directories beyond the [_keepVersionCount] most recently touched ones,
-  /// so switching dataset versions repeatedly cannot grow disk usage
-  /// without bound. Runs unconditionally — including after a run whose
+  /// directories beyond the [_keepVersionCount] most complete/recently
+  /// touched ones, so switching dataset versions repeatedly cannot grow disk
+  /// usage without bound. Runs unconditionally — including after a run whose
   /// downloads failed (unlike the old failed==0-gated full purge this
   /// replaces).
   ///
   /// [activeVersion] — the directory this very run downloaded into/read
   /// from, i.e. the one backing the manifest cache — is never deleted,
-  /// regardless of its recency or tile contents: deleting it would break
-  /// the offline guarantee ensureCoverage/plan() provide for the version
+  /// regardless of its completeness or recency: deleting it would break the
+  /// offline guarantee ensureCoverage/plan() provide for the version
   /// currently in use. Sibling directories with no tile file at all (e.g.
-  /// leftover empty dirs) are swept unconditionally, since they cannot
-  /// serve any offline route anyway. The manifest cache file lives directly
-  /// under [root] (not inside a version dir) and is always left untouched.
+  /// leftover empty dirs) are swept unconditionally, since they cannot serve
+  /// any offline route anyway. The manifest cache file lives directly under
+  /// [root] (not inside a version dir) and is always left untouched.
+  ///
+  /// Item 10 (review carry-over): a sibling is kept over another primarily
+  /// because it has *more* tiles on disk, not because it is merely newer — a
+  /// version the app churned away from mid-download (or thinned by an
+  /// earlier LRU pass) is less useful offline than an older-but-fuller one,
+  /// even if its mtime looks more recent. Recency only breaks ties between
+  /// siblings with the same tile count.
   Future<void> _purgeByCount(String activeVersion) async {
     if (!root.existsSync()) return;
-    final candidates = <(Directory dir, DateTime newestTile)>[];
+    final candidates = <(Directory dir, int tileCount, DateTime newestTile)>[];
     for (final entry in root.listSync()) {
       if (entry is! Directory) continue;
       final name = entry.path.replaceAll('\\', '/').split('/').last;
@@ -276,13 +283,18 @@ class CoverageRepository {
       final newest = tiles
           .map((f) => f.lastModifiedSync())
           .reduce((a, b) => a.isAfter(b) ? a : b);
-      candidates.add((entry, newest));
+      candidates.add((entry, tiles.length, newest));
     }
     // The active version always occupies one of the kept slots.
     final otherSlots = _keepVersionCount - 1;
     if (candidates.length <= otherSlots) return;
-    candidates.sort((a, b) => b.$2.compareTo(a.$2));
-    for (final (dir, _) in candidates.skip(otherSlots)) {
+    // Completeness first (more tiles on disk survives), recency only as the
+    // tie-breaker between equally complete siblings.
+    candidates.sort((a, b) {
+      final byCompleteness = b.$2.compareTo(a.$2);
+      return byCompleteness != 0 ? byCompleteness : b.$3.compareTo(a.$3);
+    });
+    for (final (dir, _, _) in candidates.skip(otherSlots)) {
       await dir.delete(recursive: true);
     }
   }
