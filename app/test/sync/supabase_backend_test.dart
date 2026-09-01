@@ -270,20 +270,21 @@ void main() {
       );
     });
 
-    test('a PostgrestException with an HTTP-403-shaped code maps to '
-        'SyncAuthError', () {
+    test('a PostgrestException with a bare HTTP-403-shaped code (not a real '
+        'PostgREST SQLSTATE) maps to SyncNetworkError — a gateway/edge '
+        'layer rejection, not PostgREST itself saying no (fix round 2)', () {
       final mapped = SupabaseBackend.mapError(
         const PostgrestException(message: 'Forbidden', code: '403'),
       );
-      expect(mapped, isA<SyncAuthError>());
+      expect(mapped, isA<SyncNetworkError>());
     });
 
-    test('a PostgrestException with an HTTP-401-shaped code maps to '
-        'SyncAuthError', () {
+    test('a PostgrestException with a bare HTTP-401-shaped code (not a real '
+        'PostgREST SQLSTATE) maps to SyncNetworkError (fix round 2)', () {
       final mapped = SupabaseBackend.mapError(
         const PostgrestException(message: 'Unauthorized', code: '401'),
       );
-      expect(mapped, isA<SyncAuthError>());
+      expect(mapped, isA<SyncNetworkError>());
     });
 
     test('a PostgrestException with an unrelated code (e.g. a malformed 2xx '

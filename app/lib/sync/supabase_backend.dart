@@ -360,14 +360,27 @@ class SupabaseBackend implements SyncBackend {
   ///   carries a JWT whose `auth.uid()` still resolves to null inside the
   ///   function body — an edge case, not the common path);
   /// - a Postgres/PostgREST permission-denied response — `code == '42501'`
-  ///   (Postgres SQLSTATE `insufficient_privilege`) or an HTTP-401/403
-  ///   shaped `code` — which is the far more common way an *unauthenticated*
-  ///   caller actually gets rejected: `push_events`/`delete_account` are
-  ///   `REVOKE ALL FROM PUBLIC` + `GRANT EXECUTE ... TO authenticated` only
-  ///   (`supabase/migrations/0001_init.sql`), so a caller with no session
-  ///   runs as Postgres role `anon`, which has no grant at all — PostgREST
-  ///   rejects the call before the function body (and its own "auth
-  ///   required" raise) ever runs.
+  ///   (Postgres SQLSTATE `insufficient_privilege`) — which is the far more
+  ///   common way an *unauthenticated* caller actually gets rejected:
+  ///   `push_events`/`delete_account` are `REVOKE ALL FROM PUBLIC` + `GRANT
+  ///   EXECUTE ... TO authenticated` only (`supabase/migrations/0001_init.
+  ///   sql`), so a caller with no session runs as Postgres role `anon`,
+  ///   which has no grant at all — PostgREST rejects the call before the
+  ///   function body (and its own "auth required" raise) ever runs, and
+  ///   reports it as this SQLSTATE inside the (still-valid) PostgREST JSON
+  ///   error body.
+  ///
+  /// Deliberately NOT matched: a bare HTTP-401/403-shaped `code` on its
+  /// own. Reading `postgrest-dart`'s own response parsing
+  /// (`postgrest_builder.dart`'s `fromJson` path): a real PostgREST
+  /// rejection always carries the database's own SQLSTATE in the JSON body
+  /// (`'42501'`, handled above) — `code` only ends up looking like a raw
+  /// HTTP status string when the response body ISN'T valid PostgREST-shaped
+  /// JSON at all, which is the signature of a reverse proxy / gateway /
+  /// edge layer failing in front of PostgREST, not PostgREST itself saying
+  /// no. That's a transport-layer failure, so it stays [SyncNetworkError]
+  /// (fix round 2 — round 1 had matched bare `'401'`/`'403'` too, which
+  /// over-mapped this case into [SyncAuthError]).
   ///
   /// NOTE: matching on `code == '42501'` also catches a signed-in caller's
   /// row-level-security violation (e.g. `game_events_insert_own`'s `WITH
@@ -385,7 +398,5 @@ class SupabaseBackend implements SyncBackend {
   /// session at all") once a live project exists to test against.
   static bool _isAuthRejection(sb.PostgrestException error) =>
       error.message.contains('authentication required') ||
-      error.code == '42501' ||
-      error.code == '401' ||
-      error.code == '403';
+      error.code == '42501';
 }
