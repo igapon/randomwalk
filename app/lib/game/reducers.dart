@@ -233,17 +233,20 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// replay-order-independent results when every replay — on every device —
 /// processes events in the same, deterministic order.
 ///
-/// **Why type-precedence, not just `(ts, id)`:** every trip-ending emitter
-/// (`ExplorationRecorder._run`, `GameVisitConsumer._process`) stamps every
-/// event of one trip/visit with the exact same `ts`, and one hard
-/// requirement — the `xp_earned`-before-`energy_changed` ordering
-/// contract below — depends on which of two same-`ts` events applies
-/// first. [GameEvent.id]s are random uuids, so tie-breaking on `id` alone
-/// would decide that order at random (fix round 1 finding: roughly half of
-/// all trips would have silently applied the drain before the XP,
-/// collapsing the ×1.5 multiplier to ×0.5). [_typePrecedence] removes the
-/// randomness for exactly the one pair that needs it, without having to
-/// touch every emitter's timestamps.
+/// **Why type-precedence, not just `(ts, id)`:** every trip/visit-ending
+/// emitter (`ExplorationRecorder._run`, `GameVisitConsumer._process`)
+/// stamps every event of one trip/visit with the exact same `ts`, and TWO
+/// same-`ts` pairs have a hard ordering requirement — see
+/// [_typePrecedence]'s dartdoc for both: `xp_earned` before that trip's
+/// `energy_changed` drain, and `landmark_visited` before a same-visit
+/// `xp_earned` (so an energy-kind visit's refill is visible to that
+/// visit's own XP multiplier). [GameEvent.id]s are random uuids, so
+/// tie-breaking on `id` alone decides both at random (fix round 1: the
+/// xp/drain pair; fix round 2, Task 4 review C3 remainder: the
+/// landmark_visited/xp_earned pair, which fix round 1 missed by lumping
+/// `landmark_visited` into the same tier as `xp_earned`). [_typePrecedence]
+/// removes the randomness for exactly these pairs, without having to touch
+/// either emitter's timestamps.
 ///
 /// `(ts, type-precedence, id)` is still a total order (no unresolved ties):
 /// `id` is unique per event, so even two same-`ts`-same-precedence events
@@ -258,13 +261,15 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// energy-multiplier is evaluated against `state.energy` *at the moment
 /// each `xp_earned` event is applied*, i.e. "the multiplier reflects the
 /// energy you walked with", not what's left after paying for the trip.
-/// [_typePrecedence] gives `energy_changed` a strictly later tier than
-/// every other type, so this now holds regardless of `ts`-tie append order
-/// or `id` — emitters no longer need to coordinate ids to get this right,
-/// only to keep stamping one trip's events with one shared `ts` (already
-/// true of every emitter in this codebase). See
-/// reducers_test.dart's "ordering contract" group, which pins this for
-/// both append orders, plus a shuffled-replay and an M4-identity test.
+/// Symmetrically, within one landmark visit, `landmark_visited` must apply
+/// before that visit's own `xp_earned` (see [_typePrecedence]). Both now
+/// hold regardless of `ts`-tie append order or `id` — emitters no longer
+/// need to coordinate ids to get this right, only to keep stamping one
+/// trip/visit's events with one shared `ts` (already true of every emitter
+/// in this codebase). See reducers_test.dart's "ordering contract" group
+/// for the xp/drain pair and its "GameVisitConsumer-shaped ordering" group
+/// for the landmark_visited/xp_earned pair, each pinning both append
+/// orders plus a shuffled-replay and an M4-identity test.
 ///
 /// Every event id is deduplicated: an event whose `id` has already been
 /// seen earlier in the sorted sequence is skipped entirely (not even passed
@@ -305,23 +310,53 @@ int _byTsPrecedenceThenId(GameEvent a, GameEvent b) {
 }
 
 /// [reduceAll]'s sort-tiebreak table for two events sharing the exact same
-/// [GameEvent.ts] — LOWER sorts first. Deliberately tiny: [
-/// GameEventTypes.energyChanged] is the only type singled out (tier 1,
-/// applied last among same-`ts` events); every other type — including
-/// [GameEventTypes.xpEarned] and [GameEventTypes.landmarkVisited], the
-/// "gain" events the ordering contract exists to protect — shares one
-/// neutral tier (0). That is exactly what the contract needs: at equal
-/// `ts`, every gain-type event for a trip applies against that trip's
-/// *pre-drain* energy, and the relative order among tier-0 events
-/// themselves never matters (`edge_covered_batch`/`cell_revealed`/
-/// `streak_updated`/`loop_completed`/`badge_unlocked` are all
-/// order-independent set/counter updates; multiple `xp_earned`s for one
-/// trip all read the same pre-drain energy no matter their relative
-/// order — see the reducers for each type). No other reducer depends on
-/// same-`ts` ordering, which is why this table stays this small rather
-/// than growing a tier per type.
-int _typePrecedence(String type) =>
-    type == GameEventTypes.energyChanged ? 1 : 0;
+/// [GameEvent.ts] — LOWER sorts first.
+///
+/// **Fix round 2 (Task 4 review C3 remainder) — three tiers, not two.** The
+/// first pass of this fix (fix round 1) singled out only
+/// [GameEventTypes.energyChanged] and left every other type, including
+/// [GameEventTypes.landmarkVisited], in one shared tier — which missed a
+/// second same-`ts` pair with the identical hazard: `GameVisitConsumer.
+/// _process` (`game/visit_consumer.dart`) emits a `landmark_visited` of
+/// `kind: 'energy'` (whose reducer, `_applyEnergyVisit`, MUTATES
+/// `state.energy` — a cafe/restaurant refill) and, for a first-ever visit,
+/// an `xp_earned` right after it — both stamped with the visit's own `ts`.
+/// With both in one tier, their relative order was still decided by random
+/// `id` comparison: on the id-unlucky half, `xp_earned`'s energy multiplier
+/// would read the PRE-refill energy instead of the post-refill level the
+/// walker actually had at that landmark, diverging from `GameVisitConsumer`
+/// itself (which folds its own `toAppend` list via `reduceOne` in emitted
+/// order — `landmark_visited` then `xp_earned`, refill always first) and
+/// therefore breaking exactly the property `reduceAll`'s sort exists to
+/// guarantee: live and replayed state must agree.
+///
+/// So there are three tiers, matching both emitters' own append order
+/// exactly (`GameVisitConsumer`: `landmark_visited` then `xp_earned`;
+/// `ExplorationRecorder`: `xp_earned` then `energy_changed`):
+/// 1. [GameEventTypes.landmarkVisited] (tier 0) — applied FIRST among
+///    same-`ts` events specifically so an energy-kind visit's refill is
+///    already reflected in `state.energy` by the time a same-`ts`
+///    `xp_earned` reads it for its multiplier, matching the live fold.
+/// 2. Every other type except `energy_changed` (tier 1) — the neutral
+///    tier: `xp_earned`, `coins_earned`/`coins_spent`, `cell_revealed`,
+///    `streak_updated`, `loop_completed`, `badge_unlocked`,
+///    `edge_covered_batch`. The relative order *within* this tier still
+///    never matters (they're mutually order-independent set/counter
+///    updates, and multiple `xp_earned`s in one trip all read whatever
+///    energy tier 0 already settled, regardless of their order relative to
+///    EACH OTHER).
+/// 3. [GameEventTypes.energyChanged] (tier 2) — applied LAST, so a trip's
+///    own energy drain never affects that same trip's `xp_earned`
+///    multiplier or a same-`ts` landmark visit's refill amount.
+///
+/// No other reducer depends on same-`ts` ordering beyond these two pairs,
+/// which is why this table stays a fixed 3-tier lookup rather than growing
+/// a tier per type.
+int _typePrecedence(String type) => switch (type) {
+  GameEventTypes.landmarkVisited => 0,
+  GameEventTypes.energyChanged => 2,
+  _ => 1,
+};
 
 /// Applies a single [event] to [state] — exactly what one step of
 /// [reduceAll]'s left fold does (same per-type reducer via [_reduceOne],

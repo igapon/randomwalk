@@ -1155,6 +1155,140 @@ void main() {
     });
   });
 
+  group('GameVisitConsumer-shaped ordering (fix round 2, Task 4 review C3 '
+      'remainder)', () {
+    test('landmark_visited (energy kind) + xp_earned, same ts, in either '
+        "journal order: the visit's refill is always visible to the "
+        "multiplier — matches GameVisitConsumer's own live fold order "
+        '(landmark_visited appended, then xp_earned)', () {
+      final earlierTs = t0.subtract(const Duration(minutes: 1));
+      final drainToFortyFive = ev(GameEventTypes.energyChanged, earlierTs, {
+        'delta': -55,
+      }); // 100 -> 45
+      final visited = ev(GameEventTypes.landmarkVisited, t0, {
+        'poiId': 'cafe-1',
+        'kind': 'energy',
+        'subkind': 'cafe',
+      });
+      final xpEarned = ev(GameEventTypes.xpEarned, t0, {
+        'amount': 25,
+        'preMultiplied': false,
+      });
+
+      final visitedFirst = reduceAll([drainToFortyFive, visited, xpEarned]);
+      final xpFirst = reduceAll([drainToFortyFive, xpEarned, visited]);
+
+      expect(visitedFirst, xpFirst);
+      // Refill always applies first: 45 + 25 (cafe) = 70 -> x1.5 ->
+      // round(25 * 1.5) = 38. If xp_earned had applied first instead
+      // (the fix-round-1 bug this pins), it would have read energy 45
+      // (x1.0 tier) and yielded 25, not 38.
+      expect(visitedFirst.xp, 38);
+      expect(visitedFirst.energy, 70);
+    });
+
+    test('M4/live identity: reduceAll (replay, from a journal-order list) '
+        "produces the SAME state as GameVisitConsumer's own live fold "
+        '(reduceOne applied in emitted order) for a realistic visit batch '
+        'with non-sequential, deliberately-backwards ids', () {
+      final visitTs = DateTime.utc(2026, 3, 20, 14, 30);
+      final earlierTs = visitTs.subtract(const Duration(hours: 2));
+      final priorDrain = GameEvent(
+        id: '5f2c8e91',
+        ts: earlierTs,
+        type: GameEventTypes.energyChanged,
+        payload: const {'delta': -60.0},
+      ); // 100 -> 40
+      // Ids deliberately backwards alphabetically relative to emit
+      // order, so a stray reliance on id-as-tiebreak (rather than the
+      // landmark_visited tier) would sort `xpEarned` BEFORE `visited`.
+      final visited = GameEvent(
+        id: 'zzz-visit',
+        ts: visitTs,
+        type: GameEventTypes.landmarkVisited,
+        payload: const {
+          'poiId': 'chapel-1',
+          'kind': 'energy',
+          'subkind': 'restaurant',
+        },
+      );
+      final xpEarned = GameEvent(
+        id: 'aaa-xp',
+        ts: visitTs,
+        type: GameEventTypes.xpEarned,
+        payload: const {'amount': 25.0, 'preMultiplied': false},
+      );
+
+      // "Live": exactly what GameVisitConsumer._process itself does —
+      // fold events one at a time via reduceOne, in emitted order.
+      var live = const GameState();
+      for (final e in [priorDrain, visited, xpEarned]) {
+        live = reduceOne(live, e);
+      }
+
+      // "Replay": reduceAll from a DIFFERENT (journal/merge) order —
+      // a real journal can hold these in any order once M5 sync has
+      // merged events from elsewhere.
+      final replay = reduceAll([xpEarned, priorDrain, visited]);
+
+      expect(replay, live);
+      // 100 - 60 = 40; +40 (restaurant refill) = 80; xp: 80 -> x1.5 ->
+      // round(25 * 1.5) = 38.
+      expect(replay.xp, 38);
+      expect(replay.energy, 80);
+    });
+
+    test('a same-ts trio (landmark_visited energy-kind + xp_earned + '
+        'energy_changed) converges on the identical GameState across '
+        'every permutation, with the tier order — visited, then xp, then '
+        'drain — holding regardless of list position', () {
+      final earlierTs = t0.subtract(const Duration(hours: 1));
+      final priorDrain = ev(GameEventTypes.energyChanged, earlierTs, {
+        'delta': -55,
+      }); // 100 -> 45, outside the permuted trio
+
+      final visited = GameEvent(
+        id: 'zzz-visit',
+        ts: t0,
+        type: GameEventTypes.landmarkVisited,
+        payload: const {'poiId': 'cafe-1', 'kind': 'energy', 'subkind': 'cafe'},
+      );
+      final xpEarned = GameEvent(
+        id: 'aaa-xp',
+        ts: t0,
+        type: GameEventTypes.xpEarned,
+        payload: const {'amount': 20.0, 'preMultiplied': false},
+      );
+      final drain = GameEvent(
+        id: 'mmm-drain',
+        ts: t0,
+        type: GameEventTypes.energyChanged,
+        payload: const {'delta': -10.0},
+      );
+
+      final trioPermutations = [
+        [visited, xpEarned, drain],
+        [visited, drain, xpEarned],
+        [xpEarned, visited, drain],
+        [xpEarned, drain, visited],
+        [drain, visited, xpEarned],
+        [drain, xpEarned, visited],
+      ];
+
+      GameState? expected;
+      for (final perm in trioPermutations) {
+        final s = reduceAll([priorDrain, ...perm]);
+        expected ??= s;
+        expect(s, expected);
+      }
+
+      // 45 (after priorDrain) -> visited (+25 cafe) -> 70 -> xp
+      // (round(20 * 1.5) = 30) -> drain (-10) -> 60.
+      expect(expected!.xp, 30);
+      expect(expected.energy, 60);
+    });
+  });
+
   group('GameState equality and replay idempotence', () {
     test('two states with identical field values compare equal', () {
       final events = [
