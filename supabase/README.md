@@ -41,6 +41,12 @@ trois fonctions serveur (`push_events`, `top_profiles`, `delete_account`). Il
 ne doit être exécuté qu'**une seule fois**, sur un projet neuf — ce n'est pas
 un outil de migration incrémentale.
 
+Important : le coller et l'exécuter tel quel dans le **SQL Editor** du
+dashboard, comme indiqué ci-dessus — pas via un autre outil ou un autre rôle.
+C'est ce qui garantit que le script s'exécute avec le rôle `postgres` du
+projet, seul à disposer du droit nécessaire sur `auth.users` pour que la
+fonction `delete_account` (suppression de compte, étape 6) fonctionne.
+
 ## 3. Activer la connexion par e-mail (≈ 1 min)
 
 L'app se connecte par **code à usage unique envoyé par e-mail** (OTP à 6
@@ -129,3 +135,8 @@ Une fois l'APK ci-dessus installé sur un appareil :
 
 Si ces sept points sont vérifiés, la synchronisation Supabase est
 opérationnelle de bout en bout.
+
+**Dépannage suppression de compte :** si "Supprimer mon compte" échoue avec
+une erreur du type *"permission denied for table users"*, ré-exécutez
+`migrations/0001_init.sql` (étape 2) depuis le SQL Editor du dashboard — cela
+recrée `delete_account` avec les bons droits.
