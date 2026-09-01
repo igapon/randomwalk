@@ -48,6 +48,45 @@ avec wakelock (`allowWakeLock: true`) — voir aussi
   l'écran éteint et le téléphone immobile 15+ minutes (le temps que le
   système entre en Doze). **Résultat attendu** : les fixes GPS reprennent
   normalement une fois le mouvement repris ; pas de perte totale du suivi.
+- [ ] **Mode basse consommation — pause GPS à l'arrêt (M5 Task 2d)** —
+  Contexte : `app/lib/tracking/motion_policy.dart` (politique pure,
+  testée en CI), `app/android/.../MotionChannel.kt` (Activity Recognition
+  Transition API, `ACTIVITY_TRANSITION_STILL` enter/exit) ; ni la vraie
+  consommation batterie ni le fait que l'API native déclenche réellement
+  sur cet appareil ne sont vérifiables par la CI (émulateur = repli
+  step/GPS silencieux par construction).
+  - **Pause après immobilité soutenue** — démarrer un trajet libre, poser
+    le téléphone immobile **3 minutes** en extérieur (GPS fonctionnel).
+    **Résultat attendu** : la notification passe à « En pause — immobile »
+    ; `adb shell dumpsys batterystats` ou le profiler batterie doit montrer
+    une consommation nettement réduite pendant la pause (plus de fixes GPS
+    réguliers).
+  - **Reprise immédiate au mouvement** — reprendre la marche.
+    **Résultat attendu** : la notification revient à l'affichage normal
+    (distance/durée, ou l'instruction de guidage) quasi immédiatement, pas
+    après un délai de plusieurs secondes.
+  - **Un feu rouge ne doit jamais mettre en pause** — s'arrêter 1-2 minutes
+    (moins de 3 min) puis repartir. **Résultat attendu** : aucune pause ne
+    se déclenche, la notification ne change jamais.
+  - **Seuil doublé en navigation guidée** — répéter le test « pause après
+    immobilité soutenue » pendant une navigation guidée active (boucle ou
+    itinéraire). **Résultat attendu** : la pause ne se déclenche qu'après
+    **6 minutes** d'immobilité, pas 3.
+  - **Fix de sécurité toutes les 3 min** — une fois en pause, rester
+    immobile au-delà de 3 minutes supplémentaires. Via `adb logcat` ou le
+    profiler réseau/localisation, vérifier qu'un unique fix GPS isolé est
+    demandé toutes les ~3 min (pas de flux continu rouvert) tant que rien
+    n'indique un mouvement.
+  - **Repli step/GPS sur un appareil sans Activity Recognition** (ou avec
+    la permission ACTIVITY_RECOGNITION refusée après coup dans les
+    réglages système) — répéter le test de pause. **Résultat attendu** :
+    la pause/reprise fonctionne toujours (via le repli pas/GPS), sans
+    crash ni blocage du service.
+  - **Aucun impact sur un trajet qui se termine pendant une pause** —
+    déclencher une pause puis arrêter le trajet depuis l'app.
+    **Résultat attendu** : le trajet se termine normalement (distance,
+    trace, score) — la pause n'est ni un événement de fin ni une altération
+    de l'enregistrement.
 
 ## 2. TTS et alertes vocales
 
