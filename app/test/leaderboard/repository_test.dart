@@ -5,6 +5,11 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/settings/identity.dart';
+import 'package:randomwalk/sync/account_state.dart';
+import 'package:randomwalk/sync/providers.dart';
+import 'package:randomwalk/sync/supabase_leaderboard_repository.dart';
+
+import '../support/fake_sync_backend.dart';
 
 void main() {
   test('submit posts identity and km, parses rank', () async {
@@ -67,4 +72,61 @@ void main() {
       );
     },
   );
+
+  group('leaderboardRepositoryProvider switch (M5)', () {
+    test('stays HttpLeaderboardRepository (drive.lmqc.fr) when signedOut or '
+        'unconfigured — M4-identical default', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      expect(
+        container.read(leaderboardRepositoryProvider),
+        isA<HttpLeaderboardRepository>(),
+      );
+    });
+
+    test(
+      'switches to SupabaseLeaderboardRepository once AccountPhase.signedIn',
+      () {
+        final container = ProviderContainer(
+          overrides: [
+            syncBackendProvider.overrideWithValue(FakeSyncBackend()),
+            accountStateProvider.overrideWith(
+              (ref) => const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        expect(
+          container.read(leaderboardRepositoryProvider),
+          isA<SupabaseLeaderboardRepository>(),
+        );
+      },
+    );
+
+    test('switches back to HttpLeaderboardRepository after signing out', () {
+      final container = ProviderContainer(
+        overrides: [
+          syncBackendProvider.overrideWithValue(FakeSyncBackend()),
+          accountStateProvider.overrideWith(
+            (ref) => const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      expect(
+        container.read(leaderboardRepositoryProvider),
+        isA<SupabaseLeaderboardRepository>(),
+      );
+
+      container.read(accountStateProvider.notifier).state = container
+          .read(accountStateProvider)
+          .signOut();
+
+      expect(
+        container.read(leaderboardRepositoryProvider),
+        isA<HttpLeaderboardRepository>(),
+      );
+    });
+  });
 }

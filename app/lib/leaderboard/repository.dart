@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import '../settings/identity.dart';
+import '../sync/account_state.dart';
+import '../sync/providers.dart';
+import '../sync/supabase_leaderboard_repository.dart';
 
 /// Raised when the leaderboard backend returns a non-200 response.
 class LeaderboardException implements Exception {
@@ -100,7 +103,19 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
   }
 }
 
+/// The app's single [LeaderboardRepository] — `drive.lmqc.fr` (anonymous)
+/// by default, exactly as in M4. M5's decision (`task-4-brief.md`): once
+/// signed in on a configured backend, the SAME interface switches to
+/// [SupabaseLeaderboardRepository] instead — every existing caller
+/// (`leaderboard/leaderboard_screen.dart`, `main.dart`'s `_onSessionEnded`)
+/// needs no changes, they just start talking to a different backend. See
+/// [SupabaseLeaderboardRepository]'s own dartdoc for what does (and
+/// deliberately doesn't) carry over from the anonymous identity.
 final leaderboardRepositoryProvider = Provider<LeaderboardRepository>((ref) {
+  final account = ref.watch(accountStateProvider);
+  if (account.phase == AccountPhase.signedIn) {
+    return SupabaseLeaderboardRepository(ref.watch(syncBackendProvider));
+  }
   final client = http.Client();
   ref.onDispose(client.close);
   return HttpLeaderboardRepository(client);
