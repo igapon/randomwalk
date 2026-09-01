@@ -25,7 +25,12 @@ import 'identity.dart';
 /// binding decision for when Task 6 builds them: after
 /// `SyncBackend.deleteAccount()`'s RPC succeeds, the flow must also call
 /// `signOut()` locally and reset `accountStateProvider` — see
-/// `task-4-report.md` for the full writeup.
+/// `task-4-report.md` for the full writeup. Fix round 1 (Task 4 review
+/// C2): `SyncStateStore`'s checkpoint is now scoped by uid
+/// (`PrefsSyncStateStore`, `sync/sync_state_store.dart`), so a re-signup
+/// after delete (a fresh uid) automatically starts from a clean sync
+/// checkpoint with no separate reset step required for that part — Task 6
+/// only still needs the `signOut()`/`accountStateProvider` reset above.
 class AccountScreen extends ConsumerStatefulWidget {
   const AccountScreen({super.key});
 

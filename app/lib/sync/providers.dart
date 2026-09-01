@@ -38,12 +38,17 @@ final accountStateProvider = StateProvider<AccountState>((ref) {
 });
 
 /// Persists [SyncEngine]'s push/pull checkpoint (`sync/sync_state_store.
-/// dart`). One instance for the app's lifetime — `PrefsSyncStateStore`
-/// itself is cheap (each call goes through `SharedPreferences.getInstance()`,
-/// already a memoized singleton).
-final syncStateStoreProvider = Provider<SyncStateStore>(
-  (ref) => PrefsSyncStateStore(),
-);
+/// dart`), scoped to the currently signed-in account's uid (fix round 1,
+/// Task 4 review C2 — see [PrefsSyncStateStore]'s own dartdoc for why).
+/// Watches [accountStateProvider] so signing into a *different* account
+/// rebuilds this provider (and, transitively, [syncEngineProvider], which
+/// watches this one) with a store scoped to the new uid — `PrefsSyncStateStore`
+/// itself is cheap to construct either way (each call goes through
+/// `SharedPreferences.getInstance()`, already a memoized singleton).
+final syncStateStoreProvider = Provider<SyncStateStore>((ref) {
+  final uid = ref.watch(accountStateProvider).uid;
+  return PrefsSyncStateStore(uid ?? PrefsSyncStateStore.noAccountUid);
+});
 
 /// The app's single [SyncEngine], built from the same [gameJournalProvider]
 /// `gameStateProvider` reads (`game/game_state_provider.dart`) so a merge

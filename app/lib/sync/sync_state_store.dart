@@ -7,10 +7,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// **Push marker design (binding — see `task-4-report.md` for the full
 /// writeup): "last pushed journal line index + catch-up set".**
 ///
-/// - [pushedIndex] is the number of leading journal lines (in
-///   `GameJournal.readAll()`'s append order) that are known to exist on the
-///   server. Every sync push round only ever considers events at or past
-///   this index.
+/// - [pushedIndex] is an index into `GameJournal.readAll()`'s PARSED
+///   result (its append order, minus any line that call couldn't parse) —
+///   NOT a count of raw file lines. `readAll()` silently skips an
+///   unparseable line (e.g. a torn write from a crash mid-append,
+///   `GameJournal.skippedLines`), so this index shifts if a line that used
+///   to parse stops parsing (or vice versa) between two `sync()` calls;
+///   `SyncEngine._dropMarkerIfJournalIsCorrupt` resets it to 0 whenever
+///   that call's `readAll()` reports any skipped lines, rather than trust
+///   a position that may no longer mean what it did when it was written
+///   (fix round 1, Task 4 review I3). Every sync push round only ever
+///   considers events at or past this index.
 /// - [pushedCatchupIds] holds the ids of events *past* [pushedIndex] that
 ///   are already known server-side without this device ever pushing
 ///   them itself — specifically, events merged in from a pull (see
@@ -72,10 +79,42 @@ abstract class SyncStateStore {
 /// checkpoint per [write] call — [SyncEngine] decides when a checkpoint is
 /// due (see its own doc comment), this store just durably records whatever
 /// it's handed.
+///
+/// **Scoped by [uid] (fix round 1, Task 4 review C2).** The three
+/// `shared_preferences` keys embed [uid], the signed-in
+/// [AuthUser.uid](`sync/backend.dart`) — NOT the anonymous
+/// `drive.lmqc.fr`/`PlayerIdentity.userId` this store has nothing to do
+/// with. Without this, signing out and into a *different* account (or
+/// `deleteAccount` followed by re-signup, which yields a new uid) would
+/// reuse the previous account's checkpoint: [pullCursor] would resolve to
+/// `WHERE (inserted_at, id) > (old account's cursor)` against the NEW
+/// account's rows (RLS-scoped, so unrelated to the old account's
+/// `inserted_at` values) and silently skip that account's entire history,
+/// while [pushedIndex] would claim journal lines are already on a server
+/// that has never seen them, so they'd never be (re-)uploaded either —
+/// both silent and permanent. Scoping by [uid] means a *new* account
+/// simply reads back the zero [SyncCursorState] (nothing has ever been
+/// written under its key), which is exactly "full pull from the
+/// beginning, full push of everything local" — safe by the same
+/// idempotency [SyncEngine] already relies on. A *returning* account
+/// (same uid signs out and back in) resumes exactly where it left off,
+/// with no explicit sign-out cleanup needed — see `settings/account_screen
+/// .dart`'s `_signOut`.
 class PrefsSyncStateStore implements SyncStateStore {
-  static const _pushedIndexKey = 'sync_pushed_index';
-  static const _catchupIdsKey = 'sync_pushed_catchup_ids';
-  static const _pullCursorKey = 'sync_pull_cursor';
+  /// Key suffix used when no account is signed in yet — [SyncEngine] is
+  /// never actually invoked in that state (every call site gates on
+  /// `AccountPhase.signedIn` first, see `sync/auto_sync.dart`), so this
+  /// exists only so constructing this class never requires a non-null uid
+  /// up front.
+  static const noAccountUid = '_no_account';
+
+  final String uid;
+
+  const PrefsSyncStateStore(this.uid);
+
+  String get _pushedIndexKey => 'sync_pushed_index::$uid';
+  String get _catchupIdsKey => 'sync_pushed_catchup_ids::$uid';
+  String get _pullCursorKey => 'sync_pull_cursor::$uid';
 
   @override
   Future<SyncCursorState> read() async {

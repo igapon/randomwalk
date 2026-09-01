@@ -20,8 +20,23 @@ class FakeSyncBackend implements SyncBackend {
   /// exercise pagination without seeding hundreds of events.
   final int pageSize;
 
-  final List<GameEvent> _serverEvents = [];
-  final Set<String> _ids = {};
+  /// Which account's event set [pushEvents]/[pullEventsSince]/[seedServer]
+  /// operate against — stands in for a real backend's RLS scoping by the
+  /// signed-in `auth.uid()`. Defaults to one shared account (`'default'`),
+  /// so single-account tests (most of them) never need to touch this;
+  /// account-switch tests (Task 4 review C2) change it between `sync()`
+  /// rounds to simulate "this device signed out and into a different
+  /// account" while sharing one backend instance the way a real device
+  /// would share one `supabase_flutter` client across accounts.
+  String currentAccountKey = 'default';
+
+  final Map<String, List<GameEvent>> _serverEventsByAccount = {};
+  final Map<String, Set<String>> _idsByAccount = {};
+
+  List<GameEvent> get _serverEvents =>
+      _serverEventsByAccount.putIfAbsent(currentAccountKey, () => []);
+  Set<String> get _ids =>
+      _idsByAccount.putIfAbsent(currentAccountKey, () => {});
 
   int pushCallCount = 0;
   int pullCallCount = 0;
@@ -37,7 +52,22 @@ class FakeSyncBackend implements SyncBackend {
   /// When set, every [pullEventsSince] call throws this.
   Object? pullError;
 
+  /// Invoked once per [pullEventsSince] call, right before it returns a
+  /// page — lets a test simulate a local journal write landing WHILE the
+  /// pull "network call" is in flight, exactly the race Task 4 review
+  /// finding C1 documents (`ExplorationRecorder`/`GameVisitConsumer`
+  /// appending fire-and-forget, concurrently with a sync). `null` (the
+  /// default) does nothing.
+  Future<void> Function()? beforePullReturns;
+
   List<GameEvent> get serverEvents => List.unmodifiable(_serverEvents);
+
+  /// [serverEvents] for a specific [accountKey], regardless of
+  /// [currentAccountKey] — lets an account-switch test inspect what each
+  /// account's server-side state looks like without having to flip
+  /// [currentAccountKey] back and forth just to read it.
+  List<GameEvent> serverEventsFor(String accountKey) =>
+      List.unmodifiable(_serverEventsByAccount[accountKey] ?? const []);
 
   /// Queue of successive [currentUser] answers — each call pops the next
   /// entry, and the last entry repeats once the queue is drained. Lets a
@@ -49,9 +79,9 @@ class FakeSyncBackend implements SyncBackend {
   int _currentUserCallIndex = 0;
   int currentUserCallCount = 0;
 
-  /// Seeds server-side events directly, bypassing [pushEvents] — stands in
-  /// for "another device already pushed these before this test's engine
-  /// ever ran".
+  /// Seeds [currentAccountKey]'s server-side events directly, bypassing
+  /// [pushEvents] — stands in for "another device already pushed these
+  /// before this test's engine ever ran".
   void seedServer(List<GameEvent> events) {
     for (final e in events) {
       if (_ids.add(e.id)) _serverEvents.add(e);
@@ -79,10 +109,13 @@ class FakeSyncBackend implements SyncBackend {
   Future<PullPage> pullEventsSince(String? cursor) async {
     pullCallCount++;
     if (pullError != null) throw pullError!;
+    final events = _serverEvents;
     final start = cursor == null ? 0 : int.parse(cursor);
-    if (start >= _serverEvents.length) return const PullPage(events: []);
-    final end = (start + pageSize).clamp(0, _serverEvents.length);
-    final page = _serverEvents.sublist(start, end);
+    final hook = beforePullReturns;
+    if (hook != null) await hook();
+    if (start >= events.length) return const PullPage(events: []);
+    final end = (start + pageSize).clamp(0, events.length);
+    final page = events.sublist(start, end);
     return PullPage(
       events: page,
       nextCursor: page.isEmpty ? null : end.toString(),

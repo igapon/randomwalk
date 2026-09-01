@@ -40,6 +40,28 @@ class SyncReport {
 /// moment they form a contiguous run from it (the normal case, since merge
 /// always runs right after push within the same [sync] call).
 ///
+/// **Fix round 1 (Task 4 review, C1) — the index must be computed against
+/// the file, never a stale in-memory copy of it.** `sync()`'s local
+/// `events` variable is re-read from `journal.readAll()` immediately after
+/// every `journal.appendAll(fresh)` in the merge step (not patched in
+/// memory via `[...events, ...fresh]`), and [_compact] only ever walks
+/// positions in that freshly-read list. This matters because the local
+/// journal is not exclusively this engine's to write: `ExplorationRecorder`
+/// and `GameVisitConsumer` both append to it fire-and-forget, concurrently
+/// with a sync a post-trip `runAutoSync` call can start at almost the same
+/// moment (`trip_controller.dart`'s `_finalise`). If a local event landed
+/// on disk between this call's initial `readAll()` and the merge's
+/// `appendAll`, an in-memory-only patch would silently drop it from
+/// `events` — positions after it would be off by one, and [_compact] would
+/// advance `pushedIndex` past that real (unpushed) file row, permanently
+/// marking it "pushed" without it ever having been. Re-reading the file is
+/// the fix: the concurrently-appended event keeps its real position below
+/// `pushedIndex` and stays eligible for the next push, at the cost of one
+/// extra `readAll()` per merge round (only when something was actually
+/// pulled) — see `sync_engine_test.dart`'s "a local event appended between
+/// pull and merge is still pushed on the next sync" for the regression
+/// test this fix is pinned by.
+///
 /// ## Idempotency and crash safety
 ///
 /// - **Push** is naturally idempotent: [SyncBackend.pushEvents]'s contract
@@ -89,9 +111,48 @@ class SyncEngine {
     void Function()? onRecompute,
   }) : onRecompute = onRecompute ?? (() {});
 
-  Future<SyncReport> sync() async {
+  /// The currently in-flight [_runSync] call, if any — see [sync]'s doc
+  /// comment (fix round 1, Task 4 review I1).
+  Future<SyncReport>? _inFlight;
+
+  /// Reconciles the local journal with the backend — see the class
+  /// dartdoc's "push, pull, merge, recompute" for the shape.
+  ///
+  /// **Single-flight (fix round 1, Task 4 review I1):** nothing serialises
+  /// `runAutoSync`'s three call sites (launch, post-trip, the manual
+  /// button) against each other — a post-trip auto-sync can genuinely
+  /// overlap the manual button, or a slow launch sync. Two truly
+  /// independent `sync()` calls would each snapshot the journal before the
+  /// other's `appendAll`, so both would treat the same pulled page as
+  /// "fresh" and both append it — duplicate journal lines, and
+  /// `pushedIndex` further off from the file (the same failure shape as
+  /// C1, just from a different cause). Instead, a call made while one is
+  /// already running joins that SAME in-flight [Future] — both callers
+  /// `await` the one round of actual work and get back the identical
+  /// [SyncReport] — rather than starting a second, overlapping round.
+  Future<SyncReport> sync() {
+    final existing = _inFlight;
+    if (existing != null) return existing;
+    // `.whenComplete()`'s own returned future — not a second, separate one
+    // derived from `_runSync()` and left unconsumed — is what gets stored
+    // and returned: every caller (however many join this one round) and
+    // the `_inFlight = null` cleanup are then just multiple listeners on
+    // that SAME future, which `Future` supports natively. Splitting them
+    // into two different future objects (e.g. `_runSync()` stored in
+    // `_inFlight` while a *different* `.whenComplete(...)` chained off it
+    // gets discarded) would leave that second, unconsumed future's
+    // potential error unhandled — Dart reports that as a zone-level
+    // uncaught error even though the first future's error is properly
+    // caught by real callers.
+    final future = _runSync().whenComplete(() => _inFlight = null);
+    _inFlight = future;
+    return future;
+  }
+
+  Future<SyncReport> _runSync() async {
     var state = await stateStore.read();
     var events = await journal.readAll();
+    state = _dropMarkerIfJournalIsCorrupt(state);
 
     // ---- PUSH: local events with an id the server doesn't have yet ----
     final confirmed = <String>{...state.pushedCatchupIds};
@@ -126,7 +187,23 @@ class SyncEngine {
       ];
       if (fresh.isNotEmpty) {
         await journal.appendAll(fresh);
-        events = [...events, ...fresh];
+        // Fix round 1 (Task 4 review, C1): re-anchor to the file itself
+        // rather than patching the in-memory snapshot with
+        // `[...events, ...fresh]`. If a local event was appended to the
+        // journal by something else (ExplorationRecorder,
+        // GameVisitConsumer — both fire concurrently with a post-trip
+        // sync, see runAutoSync's callers) between this call's original
+        // `readAll()` and this `appendAll`, an in-memory patch would not
+        // contain it — yet `_compact` below walks positions in `events`,
+        // so it would advance `pushedIndex` past that real file slot
+        // anyway (indices computed from the stale, shorter list landing on
+        // the wrong file rows) and silently mark a never-pushed local
+        // event as pushed, forever. Re-reading here makes `events` (and
+        // therefore every index `_compact` computes) match the file
+        // exactly, so a concurrently-appended local event stays below
+        // `pushedIndex` and stays pushable.
+        events = await journal.readAll();
+        state = _dropMarkerIfJournalIsCorrupt(state);
         for (final e in fresh) {
           knownIds.add(e.id);
           confirmed.add(e.id); // remote-origin: already known server-side.
@@ -152,6 +229,29 @@ class SyncEngine {
     }
 
     return SyncReport(pushedCount: pushedCount, pulledCount: pulledCount);
+  }
+
+  /// Fix round 1 (Task 4 review I3): [SyncCursorState.pushedIndex] indexes
+  /// `journal.readAll()`'s PARSED result, not raw file lines — [GameJournal]
+  /// skips any line it cannot parse (a torn write from a crash mid-append)
+  /// and reports how many via [GameJournal.skippedLines], reflecting only
+  /// the call just made. A line that was parseable last sync but becomes
+  /// corrupt before this one (or vice versa) shifts every later index by
+  /// one relative to what [pushedIndex] assumed, which could otherwise
+  /// silently mis-mark a real, never-pushed event as already covered.
+  /// Since there is no way to tell whether the corruption fell before or
+  /// after [SyncCursorState.pushedIndex] from [skippedLines] alone, the
+  /// only safe response is to stop trusting the positional marker for this
+  /// round: reset it to 0 so the push phase reconsiders the whole journal.
+  /// A resulting redundant push is harmless (`ON CONFLICT DO NOTHING`,
+  /// same as every other idempotent-retry path this class relies on);
+  /// silently dropping an event is not. [pushedCatchupIds] is left as-is —
+  /// those ids are still filtered out of `toPush` by id regardless of
+  /// [pushedIndex], so keeping them avoids redundant re-uploads for
+  /// exactly the events this reset doesn't need to reconsider.
+  SyncCursorState _dropMarkerIfJournalIsCorrupt(SyncCursorState state) {
+    if (journal.skippedLines == 0) return state;
+    return state.copyWith(pushedIndex: 0);
   }
 
   /// Advances [state.pushedIndex] forward through [events] while each next
