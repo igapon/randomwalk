@@ -1,0 +1,268 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:randomwalk/game/events.dart';
+import 'package:randomwalk/sync/backend.dart';
+import 'package:randomwalk/sync/supabase_backend.dart';
+
+// These tests exercise only the pure mapping/encoding helpers
+// (GameEvent<->row json, cursor encode/decode, error mapping) — no
+// SupabaseClient is constructed and Supabase.initialize is never called,
+// per the M5 global constraint that nothing in this task's test suite
+// attempts network I/O. The RPC/PostgREST call sites themselves are
+// verified later against a live project by the owner (see the plan and
+// supabase/README.md).
+void main() {
+  group('eventToRow', () {
+    test('matches GameEvent.toJson shape with ts forced to UTC', () {
+      final localTs = DateTime(2026, 1, 2, 3, 4, 5); // not UTC
+      final event = GameEvent(
+        id: 'e1',
+        ts: localTs,
+        type: GameEventTypes.loopCompleted,
+        payload: const {'k': 'v'},
+      );
+
+      final row = SupabaseBackend.eventToRow(event);
+
+      expect(row['id'], 'e1');
+      expect(row['type'], GameEventTypes.loopCompleted);
+      expect(row['payload'], const {'k': 'v'});
+      expect(row['ts'], localTs.toUtc().toIso8601String());
+      // Explicit UTC/offset marker present — see supabase/notes.md's note
+      // that an offset-less string is ambiguous to push_events' ::timestamptz
+      // cast.
+      expect(row['ts'], endsWith('Z'));
+    });
+
+    test('an already-UTC ts round-trips unchanged (still ends in Z)', () {
+      final event = GameEvent(
+        id: 'e2',
+        ts: DateTime.utc(2026, 6, 1, 12),
+        type: GameEventTypes.coinsEarned,
+      );
+
+      final row = SupabaseBackend.eventToRow(event);
+
+      expect(row['ts'], '2026-06-01T12:00:00.000Z');
+    });
+
+    test('default empty payload is preserved', () {
+      final event = GameEvent(
+        id: 'e3',
+        ts: DateTime.utc(2026, 1, 1),
+        type: GameEventTypes.streakUpdated,
+      );
+
+      expect(SupabaseBackend.eventToRow(event)['payload'], const {});
+    });
+  });
+
+  group('rowToEvent', () {
+    test('maps a game_events select row back to a GameEvent', () {
+      final row = {
+        'id': 'e1',
+        'ts': '2026-01-02T03:04:05.000Z',
+        'type': GameEventTypes.badgeUnlocked,
+        'payload': {'badge': 'premiere_boucle'},
+        // Extra column present on the real row, not part of GameEvent —
+        // must be silently ignored.
+        'inserted_at': '2026-01-02T03:04:06.000Z',
+      };
+
+      final event = SupabaseBackend.rowToEvent(row);
+
+      expect(event.id, 'e1');
+      expect(event.ts, DateTime.parse('2026-01-02T03:04:05.000Z'));
+      expect(event.type, GameEventTypes.badgeUnlocked);
+      expect(event.payload, {'badge': 'premiere_boucle'});
+    });
+
+    test('null payload column maps to the empty map', () {
+      final row = {
+        'id': 'e2',
+        'ts': '2026-01-01T00:00:00.000Z',
+        'type': GameEventTypes.loopCompleted,
+        'payload': null,
+        'inserted_at': '2026-01-01T00:00:01.000Z',
+      };
+
+      expect(SupabaseBackend.rowToEvent(row).payload, const {});
+    });
+
+    test(
+      'push then pull round-trips id/type/payload and preserves the UTC instant',
+      () {
+        final original = GameEvent(
+          id: 'round-trip',
+          ts: DateTime(2026, 3, 4, 5, 6, 7), // local
+          type: GameEventTypes.xpEarned,
+          payload: const {'amount': 10},
+        );
+
+        final pushed = SupabaseBackend.eventToRow(original);
+        // Simulate the row coming back from a select (server adds inserted_at).
+        final pulledRow = {...pushed, 'inserted_at': pushed['ts']};
+        final pulled = SupabaseBackend.rowToEvent(pulledRow);
+
+        expect(pulled.id, original.id);
+        expect(pulled.type, original.type);
+        expect(pulled.payload, original.payload);
+        expect(pulled.ts.toUtc(), original.ts.toUtc());
+      },
+    );
+  });
+
+  group('rowToLeaderboardRow', () {
+    test('maps pseudo/total_km/rank, tolerating integral JSON numbers', () {
+      final row = SupabaseBackend.rowToLeaderboardRow({
+        'pseudo': 'Marcheur',
+        'total_km': 12, // integral value, arrives as int over JSON
+        'rank': 1,
+      });
+
+      expect(row.pseudo, 'Marcheur');
+      expect(row.totalKm, 12.0);
+      expect(row.rank, 1);
+    });
+
+    test('maps a fractional total_km and a tied rank', () {
+      final row = SupabaseBackend.rowToLeaderboardRow({
+        'pseudo': 'Randonneuse',
+        'total_km': 42.5,
+        'rank': 2,
+      });
+
+      expect(row.totalKm, 42.5);
+      expect(row.rank, 2);
+    });
+  });
+
+  group('cursor encode/decode', () {
+    test('round-trips inserted_at and id', () {
+      const insertedAt = '2026-09-01T10:00:00.123456+00:00';
+      const id = 'a1b2c3d4-0000-0000-0000-000000000001';
+
+      final cursor = SupabaseBackend.encodeCursor(
+        insertedAt: insertedAt,
+        id: id,
+      );
+      final decoded = SupabaseBackend.decodeCursor(cursor);
+
+      expect(decoded.insertedAt, insertedAt);
+      expect(decoded.id, id);
+    });
+
+    test('encoded cursor is inserted_at and id joined by a single |', () {
+      final cursor = SupabaseBackend.encodeCursor(
+        insertedAt: '2026-01-01T00:00:00Z',
+        id: 'uuid-1',
+      );
+      expect(cursor, '2026-01-01T00:00:00Z|uuid-1');
+    });
+
+    test('decodeCursor throws FormatException on a malformed cursor', () {
+      expect(
+        () => SupabaseBackend.decodeCursor('not-a-valid-cursor'),
+        throwsFormatException,
+      );
+    });
+
+    test('decodeCursor throws FormatException on an empty field', () {
+      expect(
+        () => SupabaseBackend.decodeCursor('|uuid-1'),
+        throwsFormatException,
+      );
+      expect(
+        () => SupabaseBackend.decodeCursor('2026-01-01T00:00:00Z|'),
+        throwsFormatException,
+      );
+    });
+
+    test('decodeCursor throws FormatException on extra separators', () {
+      expect(
+        () => SupabaseBackend.decodeCursor('a|b|c'),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group('userToAuthUser', () {
+    test('null user maps to null (no signed-in user is not an error)', () {
+      expect(SupabaseBackend.userToAuthUser(null), isNull);
+    });
+  });
+
+  group('mapError', () {
+    test('AuthRetryableFetchException maps to SyncNetworkError', () {
+      final mapped = SupabaseBackend.mapError(
+        AuthRetryableFetchException(message: 'fetch failed'),
+      );
+      expect(mapped, isA<SyncNetworkError>());
+      expect((mapped as SyncNetworkError).message, 'fetch failed');
+    });
+
+    test('a rejected-OTP AuthApiException maps to SyncAuthError', () {
+      final mapped = SupabaseBackend.mapError(
+        const AuthApiException('Token has expired or is invalid'),
+      );
+      expect(mapped, isA<SyncAuthError>());
+      expect(
+        (mapped as SyncAuthError).message,
+        'Token has expired or is invalid',
+      );
+    });
+
+    test('AuthSessionMissingException maps to SyncAuthError', () {
+      final mapped = SupabaseBackend.mapError(AuthSessionMissingException());
+      expect(mapped, isA<SyncAuthError>());
+    });
+
+    test('a PostgrestException carrying push_events\' "authentication '
+        'required" message maps to SyncAuthError', () {
+      final mapped = SupabaseBackend.mapError(
+        const PostgrestException(
+          message: 'push_events: authentication required',
+          code: 'P0001',
+        ),
+      );
+      expect(mapped, isA<SyncAuthError>());
+      expect(
+        (mapped as SyncAuthError).message,
+        'push_events: authentication required',
+      );
+    });
+
+    test('delete_account\'s "authentication required" message also maps to '
+        'SyncAuthError', () {
+      final mapped = SupabaseBackend.mapError(
+        const PostgrestException(
+          message: 'delete_account: authentication required',
+        ),
+      );
+      expect(mapped, isA<SyncAuthError>());
+    });
+
+    test('any other PostgrestException (e.g. an RLS rejection) maps to '
+        'SyncNetworkError', () {
+      final mapped = SupabaseBackend.mapError(
+        const PostgrestException(
+          message: 'new row violates row-level security policy',
+          code: '42501',
+        ),
+      );
+      expect(mapped, isA<SyncNetworkError>());
+      expect(
+        (mapped as SyncNetworkError).message,
+        'new row violates row-level security policy',
+      );
+    });
+
+    test(
+      'an unrecognized error (e.g. no connectivity) maps to SyncNetworkError',
+      () {
+        final mapped = SupabaseBackend.mapError(const FormatException('boom'));
+        expect(mapped, isA<SyncNetworkError>());
+      },
+    );
+  });
+}

@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'account_state.dart';
 import 'backend.dart';
 import 'config.dart';
+import 'supabase_backend.dart';
 
 /// The app's single [SyncBackend] instance.
 ///
@@ -10,18 +11,14 @@ import 'config.dart';
 /// --dart-define=SUPABASE_ANON_KEY=...`, which is the default and the case
 /// this task's identity test pins down.
 ///
-/// Task 3 adds the real branch: when a [SupabaseConfig] is present, this
-/// will construct and return a `SupabaseBackend` instead. Until then, a
-/// configured build still gets [UnconfiguredBackend] here — there is no
-/// `SupabaseBackend` yet — so setting the dart-defines alone does not turn
-/// on networking; it only starts a build that is ready for Task 3 to wire
-/// up.
+/// Otherwise constructs a [SupabaseBackend] (Task 3's thin
+/// `supabase_flutter` adapter) — merely constructing it does not touch the
+/// network; `supabase_flutter` itself is only initialized lazily, on that
+/// backend's first real call (see [SupabaseBackend]'s dartdoc).
 final syncBackendProvider = Provider<SyncBackend>((ref) {
   final config = SupabaseConfig.fromEnvironment();
   if (config == null) return const UnconfiguredBackend();
-  // TODO(Task 3): return SupabaseBackend(config) once that thin
-  // supabase_flutter adapter exists.
-  return const UnconfiguredBackend();
+  return SupabaseBackend(config);
 });
 
 /// The account/sync flow's current [AccountState], seeded from

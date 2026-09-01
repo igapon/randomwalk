@@ -53,9 +53,12 @@ class LeaderboardRow {
 /// - A `null` cursor passed IN to [SyncBackend.pullEventsSince] means "from
 ///   the beginning" — the oldest event on the server.
 /// - The cursor is otherwise opaque to callers: its string format is a
-///   backend implementation detail (Task 3: a serialized Supabase
-///   `inserted_at` timestamp), never parsed or compared outside the
-///   backend that issued it — only ever passed back verbatim.
+///   backend implementation detail (Task 3: a serialized `(inserted_at,
+///   id)` pair — the row's server-assigned insertion timestamp is not by
+///   itself a total order, since a batched push can insert many rows in
+///   one transaction sharing one `inserted_at`; see
+///   `supabase/notes.md`), never parsed or compared outside the backend
+///   that issued it — only ever passed back verbatim.
 class PullPage {
   final List<GameEvent> events;
   final String? nextCursor;
