@@ -522,5 +522,67 @@ void main() {
       final state = reduceAll(await journal.readAll());
       expect(state.coins, 100);
     });
+
+    test('a visit lost to a transient journal.readAll() failure is retried on '
+        'the next consume() call with the same batch, and rewarded exactly '
+        'once (final review item 3 — _remember must not run ahead of the '
+        'fallible state read)', () async {
+      // Same on-disk journal `journal` reads from, so a successful append
+      // on the second attempt is visible to both.
+      final flaky = FlakyReadJournal(journal.dir)..failNext = true;
+      final consumer = GameVisitConsumer(
+        journal: flaky,
+        notify: (text) async => alerts.add(text),
+        newId: () => 'evt-${idCounter++}',
+      );
+      final visit = reveal();
+
+      // First attempt: readAll() throws. Before the fix, the visit was
+      // already `_remember`ed at this point and would never be looked at
+      // again — a silent, permanent loss.
+      await consumer.consume([visit]);
+      expect(
+        await journal.readAll(),
+        isEmpty,
+        reason: 'nothing should have been appended yet',
+      );
+
+      // Second attempt, the SAME batch — exactly what the service does:
+      // it republishes its whole rolling window of detections on every
+      // snapshot until the trip ends (see PendingVisit's doc comment).
+      // readAll() now succeeds, so the visit is processed and rewarded.
+      await consumer.consume([visit]);
+      var events = await journal.readAll();
+      expect(
+        events.any((e) => e.type == GameEventTypes.landmarkVisited),
+        isTrue,
+      );
+      expect(events.where((e) => e.type == GameEventTypes.xpEarned).length, 1);
+
+      // A third call with the same batch must not reward again: now that
+      // it actually succeeded, the visit is remembered and deduplicated.
+      await consumer.consume([visit]);
+      events = await journal.readAll();
+      expect(events.where((e) => e.type == GameEventTypes.xpEarned).length, 1);
+    });
   });
+}
+
+/// A [GameJournal] whose [readAll] throws exactly once (while [failNext] is
+/// true, cleared as soon as it fires) rather than every time — models a
+/// transient I/O hiccup, not a permanently broken journal (already covered
+/// by `ThrowingJournal` in `exploration_recorder_test.dart`'s sibling test).
+class FlakyReadJournal extends GameJournal {
+  FlakyReadJournal(super.dir);
+
+  bool failNext = false;
+
+  @override
+  Future<List<GameEvent>> readAll() async {
+    if (failNext) {
+      failNext = false;
+      throw StateError('transient disk hiccup');
+    }
+    return super.readAll();
+  }
 }

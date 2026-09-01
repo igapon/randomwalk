@@ -112,12 +112,33 @@ class GameVisitConsumer {
   /// fully re-replaying the whole journal again to see it: for a batch of
   /// N already-undetected visits this is one `readAll`/one base `reduceAll`
   /// plus N cheap single-event folds, instead of up to 2N full replays.
+  ///
+  /// Final review item 3: a visit is only [_remember]ed once its own
+  /// `_process` call has actually appended its events — never up front,
+  /// before the fallible [journal.readAll]/[_process] calls below run. The
+  /// service republishes its whole rolling window of detections on every
+  /// snapshot for the rest of the trip (see [PendingVisit]'s doc comment on
+  /// `TripSnapshot.pendingVisits`), which is exactly what makes retrying
+  /// safe — but only if a visit lost to a transient failure here is still
+  /// eligible to be retried on the NEXT `consume` call with the same batch.
+  /// Marking it seen before that succeeded, as this used to do, permanently
+  /// dropped the whole batch on nothing more than a hiccup: a single
+  /// `readAll` I/O error, or one bad visit throwing inside `_process`, and
+  /// every visit already `_remember`ed would never be looked at again — an
+  /// under-reward the walker has no way to notice or recover from, unlike a
+  /// duplicate (which the reducers' own idempotency already absorbs, see
+  /// this class's doc comment).
   Future<void> consume(List<PendingVisit> visits) async {
     final toProcess = <PendingVisit>[];
+    final keysToProcess = <String>[];
     for (final visit in visits) {
       final key = '${visit.poiId}@${visit.ts.toIso8601String()}';
       if (_seen.contains(key)) continue;
-      _remember(key);
+      // Not `_remember`ed yet — see the doc comment above. Guards against
+      // the same key appearing twice within one `visits` batch, which
+      // `_seen` alone (not yet updated) would otherwise let through twice.
+      if (keysToProcess.contains(key)) continue;
+      keysToProcess.add(key);
       toProcess.add(visit);
     }
     if (toProcess.isEmpty) return;
@@ -128,13 +149,21 @@ class GameVisitConsumer {
     } catch (_) {
       // Can't safely proceed without a known starting state; the next
       // snapshot's republished visits (see the "ack design" doc comment on
-      // `TripSnapshot.pendingVisits`) will simply retry this batch later.
+      // `TripSnapshot.pendingVisits`) will simply retry this batch later —
+      // nothing in `toProcess` was `_remember`ed, so that retry is not
+      // blocked by this attempt having half-marked it seen.
       return;
     }
 
-    for (final visit in toProcess) {
+    for (var i = 0; i < toProcess.length; i++) {
+      final visit = toProcess[i];
       try {
         state = await _process(visit, state);
+        // Only remembered once its events are durably appended — a visit
+        // whose `_process` call throws stays un-remembered, so it is
+        // retried (rather than silently lost) the next time the service
+        // republishes this same detection.
+        _remember(keysToProcess[i]);
       } catch (_) {
         // A single bad visit must never stop the rest of this batch, or the
         // trip it came from — `state` deliberately stays whatever it was
