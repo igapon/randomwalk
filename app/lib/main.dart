@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -21,6 +22,7 @@ import 'package:randomwalk/session/recorder.dart';
 import 'package:randomwalk/session/session_screen.dart';
 import 'package:randomwalk/settings/identity.dart';
 import 'package:randomwalk/settings/settings_screen.dart';
+import 'package:randomwalk/sync/auto_sync.dart';
 import 'package:randomwalk/theme/theme.dart';
 import 'package:randomwalk/theme/tokens.dart';
 import 'package:randomwalk/tracking/permission_rationale.dart';
@@ -232,6 +234,14 @@ class _HomeShellState extends ConsumerState<HomeShell>
     final trip = ref.read(tripControllerProvider);
     trip.onSessionEnded = _onSessionEnded;
     trip.onSessionError = _onSessionError;
+    // M5 launch auto-sync: fire-and-forget, best-effort, silent (per
+    // task-4-brief.md — errors are only ever surfaced on the account
+    // screen). Not awaited: initState can't be async, and this must never
+    // delay the first frame. A no-op with no backend call at all unless a
+    // configured backend already has a restored session — see
+    // restoreAccountAndAutoSync's own doc comment, in particular for how
+    // it keeps an unconfigured build byte-identical to M4.
+    unawaited(restoreAccountAndAutoSync(ref));
   }
 
   @override
@@ -256,6 +266,13 @@ class _HomeShellState extends ConsumerState<HomeShell>
   /// truth; it is retried on the next trip end or the next time the
   /// leaderboard tab opens.
   Future<void> _onSessionEnded(double totalKm) async {
+    // M5 post-trip auto-sync: fire-and-forget, best-effort, never blocking
+    // or delaying the trip flow — `_finalise` (trip/trip_controller.dart)
+    // awaits this whole method, so this call is deliberately NOT awaited.
+    // A no-op unless already signedIn, same as every other auto-sync
+    // trigger — see runAutoSync's own doc comment.
+    unawaited(runAutoSync(ref));
+
     final messenger = ScaffoldMessenger.of(context);
     try {
       final identity = await ref.read(identityStoreProvider).get();
