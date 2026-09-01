@@ -788,12 +788,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
         _searchResults = results;
         _searching = false;
       });
-    } on GeocodingException {
+    } on GeocodingException catch (e) {
       if (!mounted || !_searchGeneration.isCurrent(gen)) return;
       setState(() {
         _searchResults = [];
         _searching = false;
-        _searchError = 'Recherche indisponible hors ligne.';
+        // Task 2b: honest, cause-specific message instead of always
+        // claiming "hors ligne" — see `searchErrorMessage`.
+        _searchError = searchErrorMessage(e.kind);
       });
     }
   }

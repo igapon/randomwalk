@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show SocketException;
 import 'package:flutter_test/flutter_test.dart';
@@ -114,5 +115,105 @@ void main() {
     );
     final service = PhotonGeocodingService(client: client);
     expect(service.search('x'), throwsA(isA<GeocodingException>()));
+  });
+
+  group('task 2b — failure classification', () {
+    test('a SocketException is classified offline', () async {
+      final client = MockClient(
+        (req) async => throw const SocketException('offline'),
+      );
+      final service = PhotonGeocodingService(client: client);
+      await expectLater(
+        service.search('x'),
+        throwsA(
+          isA<GeocodingException>().having(
+            (e) => e.kind,
+            'kind',
+            GeocodingFailureKind.offline,
+          ),
+        ),
+      );
+    });
+
+    test('a hung connection times out and is classified offline', () async {
+      final client = MockClient((req) => Completer<http.Response>().future);
+      final service = PhotonGeocodingService(
+        client: client,
+        timeout: const Duration(milliseconds: 10),
+      );
+      await expectLater(
+        service.search('x'),
+        throwsA(
+          isA<GeocodingException>().having(
+            (e) => e.kind,
+            'kind',
+            GeocodingFailureKind.offline,
+          ),
+        ),
+      );
+    });
+
+    test(
+      '429 is classified server, with the status code in the message',
+      () async {
+        final client = MockClient(
+          (req) async => http.Response('rate limited', 429),
+        );
+        final service = PhotonGeocodingService(client: client);
+        await expectLater(
+          service.search('x'),
+          throwsA(
+            isA<GeocodingException>()
+                .having((e) => e.kind, 'kind', GeocodingFailureKind.server)
+                .having((e) => e.message, 'message', contains('429')),
+          ),
+        );
+      },
+    );
+
+    test('invalid JSON is classified invalid', () async {
+      final client = MockClient(
+        (req) async => http.Response('not json at all {{{', 200),
+      );
+      final service = PhotonGeocodingService(client: client);
+      await expectLater(
+        service.search('x'),
+        throwsA(
+          isA<GeocodingException>().having(
+            (e) => e.kind,
+            'kind',
+            GeocodingFailureKind.invalid,
+          ),
+        ),
+      );
+    });
+
+    test('search() sends the RandomWalk User-Agent header', () async {
+      String? seenUserAgent;
+      final client = MockClient((req) async {
+        seenUserAgent = req.headers['User-Agent'];
+        return http.Response(jsonEncode(featureCollection([])), 200);
+      });
+      final service = PhotonGeocodingService(client: client);
+      await service.search('x');
+      expect(seenUserAgent, GeocodingConfig.userAgent);
+    });
+  });
+
+  group('task 2b — searchErrorMessage', () {
+    test('maps each kind to the expected French message', () {
+      expect(
+        searchErrorMessage(GeocodingFailureKind.offline),
+        'Recherche indisponible hors ligne.',
+      );
+      expect(
+        searchErrorMessage(GeocodingFailureKind.server),
+        'Service de recherche momentanément indisponible. Réessaie dans un instant.',
+      );
+      expect(
+        searchErrorMessage(GeocodingFailureKind.invalid),
+        'Réponse inattendue du service de recherche.',
+      );
+    });
   });
 }
