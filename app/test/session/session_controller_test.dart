@@ -546,6 +546,101 @@ void main() {
       await session.pause();
       expect(session.isRecording, isTrue);
     });
+
+    test(
+      'fix round 1 — C1: a resume landing while pause() is still awaiting '
+      'cancel() wins — the stream ends up running, never permanently closed',
+      () async {
+        final store = FakeStore();
+        final controllers = <StreamController<Position>>[];
+        final cancelGate = Completer<void>();
+
+        Stream<Position> mockStream(LocationSettings settings) {
+          // Only the FIRST subscription's cancel() is gated — a resubscribe
+          // (the second controller, if resume wins) must not itself hang.
+          final gate = controllers.isEmpty ? cancelGate.future : null;
+          final c = StreamController<Position>(onCancel: () => gate);
+          controllers.add(c);
+          return c.stream;
+        }
+
+        final session = SessionController(
+          store: store,
+          getPositionStream: mockStream,
+          checkPermissions: () async => true,
+        );
+
+        await session.start();
+        expect(controllers, hasLength(1));
+
+        // pause() starts cancelling controllers[0] and suspends on
+        // cancelGate. pumpEventQueue() lets that reconcile step actually
+        // reach (and suspend inside) its `await sub.cancel()` — the exact
+        // C1 window — before resume() is called; a resume() called
+        // synchronously right after pause() (no intervening await) never
+        // reaches that window at all, since both would-be transitions
+        // collapse into one no-op reconcile that never touches the stream.
+        final pauseFuture = session.pause();
+        await pumpEventQueue();
+        final resumeFuture = session.resume();
+
+        cancelGate.complete();
+        await Future.wait([pauseFuture, resumeFuture]);
+
+        // Resume won: a fresh stream was opened. Before the fix, resume()'s
+        // synchronous `_positionStream != null` guard would have read the
+        // not-yet-nulled stream and silently no-op'd, leaving the trip
+        // recording nothing for the rest of its duration.
+        expect(controllers, hasLength(2));
+      },
+    );
+
+    test('fix round 1 — I1: updateLocationSettings while paused records the '
+        'change without reopening the stream; resume applies it', () async {
+      final store = FakeStore();
+      final controllers = <StreamController<Position>>[];
+      final requestedFilters = <int?>[];
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        requestedFilters.add(settings.distanceFilter);
+        final c = StreamController<Position>();
+        controllers.add(c);
+        return c.stream;
+      }
+
+      final session = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+        locationSettings: const LocationSettings(distanceFilter: 3),
+      );
+
+      await session.start();
+      expect(requestedFilters, [3]);
+
+      await session.pause();
+      expect(controllers, hasLength(1));
+
+      // Adaptive GPS (M2) tries to tighten the filter while paused — this
+      // must not fight the pause for the stream (I1: two owners, low-
+      // power mode wins).
+      await session.updateLocationSettings(
+        const LocationSettings(distanceFilter: 12),
+      );
+      expect(
+        controllers,
+        hasLength(1),
+        reason: 'must not reopen the stream while paused',
+      );
+
+      await session.resume();
+      expect(controllers, hasLength(2));
+      expect(
+        requestedFilters,
+        [3, 12],
+        reason: 'the pending adaptive-GPS change applies on resume',
+      );
+    });
   });
 
   group('takeSafetyFix (M5 Task 2d, low-power mode)', () {

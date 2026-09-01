@@ -31,6 +31,38 @@ class SessionController {
   bool _isStarting = false;
   StreamSubscription<Position>? _positionStream;
 
+  /// Low-power mode (M5 Task 2d, fix round 1 — C1): the *desired* stream
+  /// state, as last requested by [pause]/[resume] — independent of whatever
+  /// [_positionStream] happens to be doing at any given instant, which can
+  /// lag behind while a cancel/resubscribe is still in flight. This is the
+  /// single source of truth [_reconcile] converges the real stream towards.
+  ///
+  /// Previously [pause]/[resume] each guarded on `_positionStream`'s own
+  /// nullability — a resume landing while `pause()`'s `await
+  /// _positionStream.cancel()` was still suspended read a non-null stream
+  /// (not yet nulled) and silently no-op'd, leaving the stream closed with
+  /// nothing left to ever reopen it. Routing every request through
+  /// [_desiredRunning] plus one serialized queue ([_enqueueReconcile])
+  /// closes that: whichever of [pause]/[resume] is called *last* always
+  /// gets the final say, however their awaits happen to land, because
+  /// [_reconcile] always re-reads [_desiredRunning] fresh at the moment it
+  /// actually runs rather than trusting whatever it was when enqueued.
+  bool _desiredRunning = false;
+
+  /// Serializes every [pause]/[resume]/[updateLocationSettings] request:
+  /// each call enqueues its own [_reconcile] step *after* whatever is
+  /// already queued, so two overlapping requests can never interleave their
+  /// awaits into an inconsistent state — the second one's reconciliation
+  /// simply runs once the first's has fully settled.
+  Future<void> _transitionChain = Future<void>.value();
+
+  /// Set by [updateLocationSettings] while paused (fix round 1 — I1):
+  /// records that the stream needs to be reopened with the new settings
+  /// once a [resume] actually happens, instead of reopening it immediately
+  /// — low-power mode owns whether the stream is open at all, adaptive GPS
+  /// only ever owns *which* `distanceFilter` it reopens with.
+  bool _pendingResubscribe = false;
+
   /// Callback when a session ends (successful stop or error).
   /// Invoked with the total km accumulated in the session.
   Future<void> Function(double totalKm)? onSessionEnded;
@@ -122,6 +154,7 @@ class SessionController {
       _lastFixAt = null;
 
       _subscribe();
+      _desiredRunning = true;
 
       _isRecording = true;
       return true;
@@ -164,24 +197,27 @@ class SessionController {
   /// churn of tearing down and reopening the platform's location provider —
   /// this method does not itself rate-limit anything.
   ///
-  /// Re-checks [_isRecording] after the awaited `cancel()` (fix-round
-  /// finding): `stop()` can race in during that gap — it also awaits
-  /// cancelling the very same subscription — and without the re-check, a
-  /// session `stop()` already ended in the meantime would still get a fresh
-  /// stream reopened underneath it.
-  Future<void> updateLocationSettings(LocationSettings settings) async {
-    if (!_isRecording) return;
-    await _positionStream?.cancel();
-    if (!_isRecording) return;
+  /// Fix round 1 — I1: while [pause] has [_desiredRunning] false, this
+  /// records [settings] and marks [_pendingResubscribe] rather than
+  /// reopening the stream immediately — low-power mode owns *whether* the
+  /// stream is open at all; adaptive GPS only ever owns *which*
+  /// `distanceFilter` it reopens with once [resume] actually happens
+  /// (which already re-subscribes against [_locationSettings], so recording
+  /// the new value here is enough — the change simply takes effect on the
+  /// next resume instead of fighting the pause for the stream right now).
+  Future<void> updateLocationSettings(LocationSettings settings) {
+    if (!_isRecording) return Future<void>.value();
     _locationSettings = settings;
-    _subscribe();
+    _pendingResubscribe = true;
+    if (!_desiredRunning) return Future<void>.value();
+    return _enqueueReconcile();
   }
 
   /// Low-power mode (M5 Task 2d, owner brief): shuts off the continuous
   /// position stream without ending the session — [_isRecording], the
   /// [_recorder] and everything it has accumulated survive untouched, so
   /// [resume] simply reopens the stream where this left off. A no-op while
-  /// nothing is recording, or already paused.
+  /// nothing is recording.
   ///
   /// Deliberately distinct from [stop]: [_finishSession] banks the distance,
   /// nulls [_recorder] and fires [onSessionEnded] — appropriate for a trip
@@ -189,18 +225,70 @@ class SessionController {
   /// few minutes (the trip must read as still recording throughout, per the
   /// task brief: "l'enregistrement du trajet n'est pas terminé/altéré par la
   /// pause").
-  Future<void> pause() async {
-    if (!_isRecording || _positionStream == null) return;
-    await _positionStream?.cancel();
-    _positionStream = null;
+  ///
+  /// Fix round 1 — C1: routes through [_enqueueReconcile] rather than
+  /// cancelling the stream directly — see [_desiredRunning]'s doc comment
+  /// for why a direct cancel here could race a concurrent [resume] into a
+  /// permanently-closed stream.
+  Future<void> pause() {
+    if (!_isRecording) return Future<void>.value();
+    _desiredRunning = false;
+    return _enqueueReconcile();
   }
 
   /// Reopens the position stream [pause] shut off, at the [LocationSettings]
-  /// still in effect when it was cancelled. A no-op while nothing is
-  /// recording, or not currently paused.
-  Future<void> resume() async {
-    if (!_isRecording || _positionStream != null) return;
-    _subscribe();
+  /// currently in effect (including any [updateLocationSettings] change
+  /// that arrived while paused — see [_pendingResubscribe]). A no-op while
+  /// nothing is recording.
+  ///
+  /// Fix round 1 — C1: same serialized-reconciliation path as [pause] — a
+  /// resume requested while a pause is still in flight always wins, because
+  /// this request's own [_reconcile] step is enqueued *after* the pause's
+  /// and re-reads [_desiredRunning] fresh when it runs.
+  Future<void> resume() {
+    if (!_isRecording) return Future<void>.value();
+    _desiredRunning = true;
+    return _enqueueReconcile();
+  }
+
+  /// Chains one more [_reconcile] step onto [_transitionChain] and returns
+  /// it. A failed reconcile is swallowed here (not left to propagate) so a
+  /// single broken step can never wedge every later `pause()`/`resume()`
+  /// call behind a permanently-rejected chain link.
+  Future<void> _enqueueReconcile() {
+    final next = _transitionChain.then((_) => _reconcile());
+    _transitionChain = next.catchError((_) {});
+    return next;
+  }
+
+  /// Brings [_positionStream] in line with [_desiredRunning] (and
+  /// [_pendingResubscribe]), as of *this* moment — not as of whenever the
+  /// request that queued this step was made. That distinction is the whole
+  /// fix: by the time this actually runs, [_desiredRunning] may already
+  /// reflect a later request than the one that enqueued it, and reading it
+  /// fresh here is what makes the *last* request always win.
+  Future<void> _reconcile() async {
+    if (!_isRecording) return;
+    if (_desiredRunning) {
+      if (_positionStream == null) {
+        _subscribe();
+      } else if (_pendingResubscribe) {
+        _pendingResubscribe = false;
+        final sub = _positionStream;
+        _positionStream = null;
+        await sub?.cancel();
+        if (_isRecording && _desiredRunning) _subscribe();
+      }
+      return;
+    }
+    final sub = _positionStream;
+    if (sub == null) return;
+    // Nulled *before* awaiting the cancel, not after (fix round 1 — C1):
+    // a resume() landing in this exact window must see a stream it can act
+    // on (subscribe fresh) rather than one that still looks "already open"
+    // and silently no-ops.
+    _positionStream = null;
+    await sub.cancel();
   }
 
   /// One isolated position request while [pause] has the stream shut off —
@@ -250,6 +338,8 @@ class SessionController {
     if (!_isRecording) return null;
 
     _isRecording = false;
+    _desiredRunning = false;
+    _pendingResubscribe = false;
     await _positionStream?.cancel();
     _positionStream = null;
 
