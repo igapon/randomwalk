@@ -216,9 +216,25 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
   return true;
 }
 
-/// Replays [events] in the order given (the journal's append order — this
-/// function never reorders by timestamp) through the pure reducer, folding
-/// them into a single [GameState] starting from the zero state.
+/// Replays [events] through the pure reducer, folding them into a single
+/// [GameState] starting from the zero state.
+///
+/// **M5 sync ordering (binding since Task 4):** [events] is first sorted by
+/// `(ts, id)` — timestamp ascending, then id ascending as a tiebreaker for
+/// two events sharing the exact same [GameEvent.ts]. This is no longer the
+/// journal's raw append order: M5's [SyncEngine] merges remote events onto
+/// the tail of the local journal (see `sync/sync_engine.dart`), so the same
+/// device can end up with an out-of-chronological-order append sequence
+/// (e.g. a landmark visit recorded offline, then a same-day-earlier event
+/// pulled from another device after reconnecting). Cooldowns
+/// (`_cooldownPassed`) and the streak (`_reduceStreakUpdated`) only produce
+/// device-independent, replay-order-independent results when every replay
+/// — on every device — processes events in the same, `ts`-derived order.
+/// `id` is unique per event (see [GameEvent]), so `(ts, id)` is a total
+/// order with no ties: any correct sort (Dart's `List.sort` included, which
+/// does not itself guarantee stability) yields the one well-defined result,
+/// so "stable" here describes the *comparator*, not a requirement on the
+/// sort algorithm's implementation.
 ///
 /// **Ordering contract for emitters (Tasks 3/5):** within one trip, the
 /// `xp_earned` event(s) for that trip MUST be appended to the journal
@@ -227,14 +243,22 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// each `xp_earned` event is applied* — "the multiplier reflects the energy
 /// you walked with", i.e. the energy level going into the trip, not what's
 /// left after paying for it. Appending the drain first would under-multiply
-/// (or wrongly deflate) the XP earned for that same trip. See the
-/// `xp_earned` ordering test in reducers_test.dart, which pins both orders'
-/// (different, intentional) results.
+/// (or wrongly deflate) the XP earned for that same trip. Both events share
+/// the same trip's `ts`, so the `(ts, id)` sort above does not reorder them
+/// relative to each other — emitters must still mint `xp_earned`'s `id`
+/// before `energy_changed`'s only insofar as ids happen to tie-break equal
+/// `ts` values consistently; in practice every emitter in this codebase
+/// gives each event of a trip the exact same `ts` and appends them in the
+/// intended order, and [GameEvent.id]s are random uuids, so this ordering
+/// contract is really about append order for same-`ts` events from a single
+/// emitter, not about the cross-device sort. See the `xp_earned` ordering
+/// test in reducers_test.dart, which pins both orders' (different,
+/// intentional) results.
 ///
 /// Every event id is deduplicated: an event whose `id` has already been
-/// seen earlier in [events] is skipped entirely (not even passed to the
-/// per-type reducer) — essential once M5 sync can redeliver the same event
-/// more than once.
+/// seen earlier in the sorted sequence is skipped entirely (not even passed
+/// to the per-type reducer) — essential once M5 sync can redeliver the same
+/// event more than once.
 ///
 /// Any event whose `type` isn't one of [GameEventTypes]'s constants is
 /// ignored (forward compat with journals written by a newer app version). A
@@ -247,15 +271,22 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// unlock the instant their underlying condition is met, not only when a
 /// `badge_unlocked` event happens to be replayed.
 GameState reduceAll(Iterable<GameEvent> events) {
+  final sorted = events.toList()..sort(_byTsThenId);
   var state = const GameState();
   final seenIds = <String>{};
-  for (final event in events) {
+  for (final event in sorted) {
     if (!seenIds.add(event.id)) {
       continue; // Duplicate delivery of an already-applied event id: skip.
     }
     state = reduceOne(state, event);
   }
   return state;
+}
+
+int _byTsThenId(GameEvent a, GameEvent b) {
+  final byTs = a.ts.compareTo(b.ts);
+  if (byTs != 0) return byTs;
+  return a.id.compareTo(b.id);
 }
 
 /// Applies a single [event] to [state] — exactly what one step of

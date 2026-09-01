@@ -966,23 +966,88 @@ void main() {
     );
   });
 
-  group('ordering (reduceAll never re-sorts by timestamp)', () {
-    test('reduceAll applies non-streak events strictly in the order given', () {
-      // Feeding the 24h-later (rewarded) visit BEFORE the first-ever visit
-      // (in list order, regardless of ts) makes the first list item behave
-      // as the "first-ever" reward (100) and the second as blocked, because
-      // its ts is only 1h after the (list-)first one's ts.
-      final s = reduceAll([
-        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(hours: 24)), {
+  group('ordering (reduceAll sorts by (ts, id), M5 Task 4)', () {
+    test('two rewarded coin visits fed in reverse-append order still cooldown '
+        'correctly by ts, not by list/append position', () {
+      final early = ev(GameEventTypes.landmarkVisited, t0, {
+        'poiId': 'bank-1',
+        'kind': 'coins',
+      });
+      final late = ev(
+        GameEventTypes.landmarkVisited,
+        t0.add(const Duration(hours: 25)),
+        {'poiId': 'bank-1', 'kind': 'coins'},
+      );
+      // Appended out of chronological order — exactly what an M5
+      // SyncEngine merge can leave in the local journal (see
+      // sync/sync_engine.dart): `late` first, `early` second.
+      final outOfOrder = reduceAll([late, early]);
+      final inOrder = reduceAll([early, late]);
+      expect(outOfOrder, inOrder);
+      expect(outOfOrder.coins, 100 + 50); // both rewarded, 25h apart
+    });
+
+    test(
+      'a visit appended out of order but within 24h of the '
+      'chronologically-earlier one still earns nothing for the later visit',
+      () {
+        final early = ev(GameEventTypes.landmarkVisited, t0, {
           'poiId': 'bank-1',
           'kind': 'coins',
-        }),
-        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(hours: 25)), {
-          'poiId': 'bank-1',
-          'kind': 'coins',
-        }),
-      ]);
-      expect(s.coins, 100); // only the list-first visit was rewarded
+        });
+        final late = ev(
+          GameEventTypes.landmarkVisited,
+          t0.add(const Duration(hours: 1)),
+          {'poiId': 'bank-1', 'kind': 'coins'},
+        );
+        final s = reduceAll([late, early]); // append order reversed
+        expect(s.coins, 100); // only the ts-earlier visit was rewarded
+        expect(s.visitCountByPoi['bank-1::coins'], 1);
+      },
+    );
+
+    test('an energy visit appended out of order still respects the 6h '
+        'cooldown by ts, not by append position', () {
+      // Three distinct ts (no ties, so this isolates the ts-sort itself
+      // from the id tiebreak covered by the test below).
+      final drain = ev(GameEventTypes.energyChanged, t0, {'delta': -50});
+      final early = ev(
+        GameEventTypes.landmarkVisited,
+        t0.add(const Duration(minutes: 1)),
+        {'poiId': 'cafe-1', 'kind': 'energy', 'subkind': 'cafe'},
+      );
+      final late = ev(
+        GameEventTypes.landmarkVisited,
+        t0.add(const Duration(hours: 1)),
+        {'poiId': 'cafe-1', 'kind': 'energy', 'subkind': 'cafe'},
+      );
+      final s = reduceAll([late, drain, early]); // fully scrambled append
+      // ts order is drain, early, late: 100 - 50 (drain) + 25 (cafe,
+      // `early`) = 75; `late` is only 59min after `early`, inside the 6h
+      // cooldown, so it restores nothing.
+      expect(s.energy, 75);
+    });
+
+    test('(ts, id) is a total order: two events sharing the same ts break '
+        'ties by id, deterministically, regardless of append order', () {
+      final a = GameEvent(
+        id: 'aaa',
+        ts: t0,
+        type: GameEventTypes.coinsEarned,
+        payload: const {'amount': 1},
+      );
+      final b = GameEvent(
+        id: 'bbb',
+        ts: t0,
+        type: GameEventTypes.coinsEarned,
+        payload: const {'amount': 2},
+      );
+      // coins_earned is itself order-insensitive (pure addition), so this
+      // only pins that same-ts events never get lost or double-applied
+      // regardless of append order — the id tiebreak matters for reducers
+      // like the coins cooldown above, covered by the tests above.
+      expect(reduceAll([a, b]).coins, 3);
+      expect(reduceAll([b, a]).coins, 3);
     });
   });
 
