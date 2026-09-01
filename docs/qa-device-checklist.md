@@ -329,6 +329,35 @@ couverture — voir section 3).
   requise) apparaissent chacun dans leur scénario propre et ne se
   chevauchent/masquent pas mutuellement à l'écran.
 
+## 8. Compte et synchronisation (M5)
+
+Contexte : `app/lib/sync/`, `app/lib/settings/account_screen.dart` — le
+moteur de sync (`SyncEngine`) et l'écran de compte sont testés à blanc
+(fakes) en CI ; les points ci-dessous ne peuvent être vérifiés que contre
+un vrai projet Supabase configuré (`SUPABASE_URL`/`SUPABASE_ANON_KEY`).
+
+- [ ] **Forme exacte des erreurs PostgREST sans session** — appeler les
+  chemins `push_events`/`delete_account` (RPC) sans être connecté sur le
+  vrai projet, et confirmer qu'ils atterrissent bien en `SyncAuthError`
+  (pas `SyncNetworkError`) côté app — voir `SupabaseBackend.mapError`
+  (`app/lib/sync/supabase_backend.dart`) et le point non vérifié noté dans
+  `task-3-report.md`/`task-4-report.md` (concern (c) : le code/message
+  PostgREST exact pour un appelant `anon` n'a été lu que dans la doc
+  postgrest-dart, jamais observé contre un projet réel).
+- [ ] **Copie française à la déconnexion forcée** — pendant que l'app est
+  connectée, révoquer la session côté Supabase (dashboard) ou attendre son
+  expiration, puis déclencher une synchronisation (bouton manuel ou
+  automatique). **Résultat attendu** : `AccountScreen` affiche « Session
+  expirée — reconnectez-vous. » (le mapping `SyncAuthError` de
+  `runAutoSync`/`auto_sync.dart`), pas un message réseau générique.
+- [ ] **Restauration de session au lancement (course froide)** — se
+  connecter, tuer complètement l'app, la rouvrir. **Résultat attendu** :
+  reconnecté automatiquement sans repasser par l'écran OTP (tolère le
+  délai de `supabase_flutter`'s session recovery — voir
+  `restoreAccountAndAutoSync`, `app/lib/sync/auto_sync.dart`) ; si ce
+  n'est pas le cas de façon reproductible, le correctif actuel (une seule
+  retentative après 300 ms) est probablement insuffisant sur cet appareil.
+
 ---
 
 ## Suivi des anomalies trouvées
