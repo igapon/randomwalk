@@ -21,9 +21,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../loop/loop_planner.dart';
 import '../valhalla/models.dart';
 
-/// The three planning modes shown by the `SegmentedButton` above the search
-/// bar. Persisted verbatim (`.name`) — see [PlanModeStore].
-enum PlanMode { itinerary, loop, duration }
+/// The planning modes shown by the `SegmentedButton` above the search bar —
+/// Task 7 adds [explore] (« Explorer »), a fourth mode biased toward
+/// unrevealed ground. Persisted verbatim (`.name`) — see [PlanModeStore].
+enum PlanMode {
+  itinerary,
+  loop,
+  duration,
+
+  /// « Explorer » (task 7): loops biased toward the walker's unrevealed
+  /// grid cells (`exploration/explore_planner.dart`'s `exploreBearings`,
+  /// fed `GameState.revealedCellKeys`). Shares Distance's slider/floor
+  /// rules verbatim ([buildLoopRequest] routes it through the exact same
+  /// `loopTargetKm` branch as [loop]) — the only behavioral differences are
+  /// the bearing bias and that a pinned destination is never honored (see
+  /// [buildLoopRequest]'s doc comment and [shouldShowPlanDestinationChip]).
+  explore,
+}
 
 // ---- Boucle: distance target ----------------------------------------------
 
@@ -134,6 +148,23 @@ int nextSeed(int seed) => seed + 1;
 /// `ArgumentError` to catch: the slider/duration clamps above already
 /// guarantee it, and an assertion here catches a caller that bypasses them
 /// before the request ever reaches the planner.
+///
+/// [preferredBearingsDeg] and [explorationBonus] pass straight through to
+/// the identically-named [LoopRequest] fields — task 7's caller
+/// (`map_screen.dart`'s `_proposeCandidates`) only ever supplies them for
+/// [PlanMode.explore], having computed them itself from `exploreBearings`
+/// and `GameState.revealedCellKeys`; every other mode leaves them `null`,
+/// which is exactly what made every pre-task-7 call site (and every
+/// pre-task-7 test) keep working unchanged.
+///
+/// **Explorer never honours a pinned destination.** A walker in Explorer
+/// mode wants a loop biased toward the unknown, not a fixed-target A→B
+/// through whatever pin happens to still be set (possibly left over from
+/// another mode) — see [shouldShowPlanDestinationChip], which hides the chip
+/// that would otherwise show/clear that pin for exactly this mode. [mode]
+/// `== `[PlanMode.explore] therefore always builds a [PlanKind.loop] request
+/// regardless of [destination]; [PlanMode.loop] and [PlanMode.duration] keep
+/// the existing task-8 behavior of honouring it.
 LoopRequest? buildLoopRequest({
   required PlanMode mode,
   required double loopTargetKm,
@@ -143,15 +174,20 @@ LoopRequest? buildLoopRequest({
   required (double, double) start,
   (double, double)? destination,
   required int seed,
+  List<double>? preferredBearingsDeg,
+  double Function(RouteResult route)? explorationBonus,
 }) {
   if (mode == PlanMode.itinerary) return null;
 
-  final targetKm = mode == PlanMode.loop
-      ? loopTargetKm
-      : durationToTargetKm(durationTarget, speedKmh);
+  // Explorer shares Distance's slider/target — both read loopTargetKm
+  // verbatim; only Durée converts its own duration slider into a distance.
+  final targetKm = mode == PlanMode.duration
+      ? durationToTargetKm(durationTarget, speedKmh)
+      : loopTargetKm;
   assert(targetKm > 0, 'targetKm must be positive');
 
-  final kind = destination != null ? PlanKind.toDestination : PlanKind.loop;
+  final honoursDestination = mode != PlanMode.explore && destination != null;
+  final kind = honoursDestination ? PlanKind.toDestination : PlanKind.loop;
 
   return LoopRequest(
     kind: kind,
@@ -160,6 +196,8 @@ LoopRequest? buildLoopRequest({
     targetKm: targetKm,
     profile: profile,
     seed: seed,
+    preferredBearingsDeg: preferredBearingsDeg,
+    explorationBonus: explorationBonus,
   );
 }
 
@@ -244,10 +282,18 @@ String formatDestinationLabel((double, double) point) {
 /// all, but the check is still explicit here rather than assumed by the
 /// caller, so the rule is the same single tested fact
 /// [shouldClearDestinationOnModeSwitch] already is.
+///
+/// [PlanMode.explore] (task 7) is the one further exception: Explorer never
+/// honours a pin (see [buildLoopRequest]'s doc comment), so showing a
+/// chip — implying the pin is in effect and offering to clear something
+/// that was never being used — would just be confusing.
 bool shouldShowPlanDestinationChip({
   required PlanMode mode,
   required bool hasDestination,
-}) => mode != PlanMode.itinerary && hasDestination;
+}) =>
+    mode != PlanMode.itinerary &&
+    mode != PlanMode.explore &&
+    hasDestination;
 
 // ---- Fullscreen candidate selection (task 8) --------------------------------
 
@@ -318,18 +364,22 @@ bool shouldInterceptBackForCandidates({
   required bool isRecording,
 }) => !isRecording && (hasCandidates || candidatePlanning);
 
-/// « Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ » — the plan-target panel's
-/// collapsed line (task-8 brief point 2). Uses the renamed « Distance »
-/// label (point 3) even though [PlanMode.loop] is the underlying identifier
-/// (kept stable for [PlanModeStore] persistence compatibility).
+/// « Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ » / « Explorer · 5,0 km ▸ »
+/// — the plan-target panel's collapsed line (task-8 brief point 2). Uses the
+/// renamed « Distance » label (point 3) even though [PlanMode.loop] is the
+/// underlying identifier (kept stable for [PlanModeStore] persistence
+/// compatibility); [PlanMode.explore] (task 7) gets its own « Explorer »
+/// prefix on the same km formatting, since it shares Distance's slider/
+/// target but is a visibly different mode to the walker.
 String planPanelCollapsedLabel({
   required PlanMode mode,
   required double loopTargetKm,
   required Duration durationTarget,
 }) {
-  if (mode == PlanMode.loop) {
+  if (mode == PlanMode.loop || mode == PlanMode.explore) {
     final km = loopTargetKm.toStringAsFixed(1).replaceAll('.', ',');
-    return 'Distance · $km km ▸';
+    final label = mode == PlanMode.explore ? 'Explorer' : 'Distance';
+    return '$label · $km km ▸';
   }
   final hours = durationTarget.inHours;
   final minutes = durationTarget.inMinutes % 60;

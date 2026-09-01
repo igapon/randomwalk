@@ -62,6 +62,35 @@ class LoopRequest {
   /// same candidates for the same request (see [LoopPlanner]'s `rng`).
   final int seed;
 
+  /// Task 7 (« Explorer » mode): overrides the rng-drawn `startBearingDeg`
+  /// (`draw * 360` in [LoopPlanner._locationsFor]) for [PlanKind.loop]
+  /// candidates — entry `i` becomes candidate `i`'s starting bearing,
+  /// verbatim. `null` (every mode but Explorer) or an index past the end of
+  /// the list falls back to the usual rng draw for that candidate, so this
+  /// can supply fewer bearings than [LoopPlanner.candidateCount] without
+  /// leaving later candidates unset.
+  ///
+  /// Ignored for [PlanKind.toDestination] — an A→B bulge has no bearing to
+  /// seed, only a side (already alternated by candidate index).
+  ///
+  /// The planner never computes these itself: they are the caller's job
+  /// (`explore_planner.dart`'s `exploreBearings`, fed `GameState.
+  /// revealedCellKeys`), which is what keeps this file free of any
+  /// dependency on the game/grid.
+  final List<double>? preferredBearingsDeg;
+
+  /// Task 7: an optional per-route exploration score folded into
+  /// [LoopPlanner.scoreOf] (`score -= 0.3 * explorationBonus(route)`) —
+  /// higher is better, so a route through more unrevealed ground sorts
+  /// ahead of one that just retraces known streets at the same distance
+  /// accuracy/self-overlap. `null` (every mode but Explorer) leaves scoring
+  /// exactly as it was before this field existed.
+  ///
+  /// Computed by the caller as a closure over `GameState.revealedCellKeys`
+  /// — the planner never imports the grid or the game state itself, only
+  /// calls this function with the [RouteResult] it already has.
+  final double Function(RouteResult route)? explorationBonus;
+
   LoopRequest({
     required this.kind,
     required this.start,
@@ -69,6 +98,8 @@ class LoopRequest {
     required this.targetKm,
     required this.profile,
     required this.seed,
+    this.preferredBearingsDeg,
+    this.explorationBonus,
   }) {
     // ArgumentError rather than assert: both invariants must also hold in
     // release builds, where the whole search would otherwise divide by zero
@@ -217,7 +248,8 @@ class LoopPlanner {
       }
     }
 
-    final scored = _scoreAndSort(request.kind, request.targetKm, routes);
+    final scored = _scoreAndSort(request.kind, request.targetKm, routes,
+        explorationBonus: request.explorationBonus);
     // Measured before deduplication, on purpose: dedup keeps the
     // better-*scored* survivor of a duplicate pair, which is not necessarily
     // the closest-*distance* one. "Closest we found" has to mean closest
@@ -337,12 +369,16 @@ class LoopPlanner {
   ) {
     final (startLat, startLon) = request.start;
     if (request.kind == PlanKind.loop) {
+      final preferred = request.preferredBearingsDeg;
+      final startBearingDeg = (preferred != null && index < preferred.length)
+          ? preferred[index]
+          : draw * 360;
       final waypoints = circleWaypoints(
         lat: startLat,
         lon: startLon,
         radiusM: param,
         count: waypointCount,
-        startBearingDeg: draw * 360,
+        startBearingDeg: startBearingDeg,
       );
       return [request.start, ...waypoints, request.start];
     }
@@ -356,11 +392,19 @@ class LoopPlanner {
     return [request.start, ...waypoints, request.end!];
   }
 
+  /// Weight applied to [LoopRequest.explorationBonus] in the final score —
+  /// subtracted, since lower is better (see [scoreOf]). Task 7's binding
+  /// number: a route through more unrevealed ground should be able to
+  /// outrank a marginally more accurate/less-repeating one, but never
+  /// swamp the distance-accuracy term the way a larger weight would.
+  static const double explorationBonusWeight = 0.3;
+
   List<LoopCandidate> _scoreAndSort(
     PlanKind kind,
     double targetKm,
-    List<RouteResult> routes,
-  ) {
+    List<RouteResult> routes, {
+    double Function(RouteResult route)? explorationBonus,
+  }) {
     final cellM = (targetKm * 1000 / 40)
         .clamp(minRepeatedCellM, maxRepeatedCellM)
         .toDouble();
@@ -368,11 +412,15 @@ class LoopPlanner {
     for (final route in routes) {
       final gapRatio = (route.distanceKm - targetKm) / targetKm;
       final repeatedRatio = repeatedSegmentRatio(route.shape, cellM: cellM);
+      final baseScore = scoreOf(kind, gapRatio, repeatedRatio);
+      final score = explorationBonus == null
+          ? baseScore
+          : baseScore - explorationBonusWeight * explorationBonus(route);
       scored.add(LoopCandidate(
         route: route,
         gapRatio: gapRatio,
         repeatedRatio: repeatedRatio,
-        score: scoreOf(kind, gapRatio, repeatedRatio),
+        score: score,
       ));
     }
     // Index tie-break: List.sort is not stable, and equal-scoring

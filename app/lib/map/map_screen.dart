@@ -15,6 +15,9 @@ import 'plan_mode.dart';
 import 'replan_line.dart';
 import 'route_controller.dart';
 import '../coverage/manifest.dart' show DatasetVersionMismatch;
+import '../exploration/explore_planner.dart';
+import '../game/game_state_provider.dart';
+import '../game/grid.dart' show corridorCells;
 import '../loop/loop_planner.dart';
 import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
@@ -993,6 +996,42 @@ class MapScreenState extends ConsumerState<MapScreen> {
       setState(() => _downloadProgress = (done: done, total: total));
     };
 
+    // Task 7 (Explorer): compute the unrevealed-ground bias before the plan
+    // itself is built. Best-effort, like every other game-side read — "le
+    // jeu ne bloque jamais l'outil" (Global Constraints): a failure reading
+    // the journal falls back to an empty revealed set (gameStateProvider
+    // already degrades to a fresh GameState on its own errors; the extra
+    // try/catch here is belt-and-braces against this call site specifically
+    // never being allowed to fail a Proposer request). An empty revealed set
+    // is exactly the virgin-state input `exploreBearings`/the bonus closure
+    // already handle: no bias to apply, so Explorer behaves like Distance.
+    List<double>? preferredBearingsDeg;
+    double Function(RouteResult)? explorationBonus;
+    if (_planMode == PlanMode.explore) {
+      var revealedCellKeys = const <String>{};
+      try {
+        revealedCellKeys =
+            (await ref.read(gameStateProvider.future)).revealedCellKeys;
+      } catch (_) {
+        // Falls through with the empty set above.
+      }
+      if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
+      preferredBearingsDeg = exploreBearings(
+        start: (departure.latitude, departure.longitude),
+        targetKm: _loopTargetKm,
+        revealedCellKeys: revealedCellKeys,
+        count: LoopPlanner.candidateCount,
+        seed: _planSeed,
+      );
+      explorationBonus = (route) {
+        final cells = corridorCells(route.shape);
+        if (cells.isEmpty) return 0.0;
+        final unrevealed =
+            cells.where((c) => !revealedCellKeys.contains(c.key)).length;
+        return unrevealed / cells.length;
+      };
+    }
+
     try {
       // Final review item 7: built *inside* the try. [LoopRequest]'s
       // constructor throws `ArgumentError` on an invalid target, and outside
@@ -1008,6 +1047,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
         start: (departure.latitude, departure.longitude),
         destination: plan.destination,
         seed: _planSeed,
+        preferredBearingsDeg: preferredBearingsDeg,
+        explorationBonus: explorationBonus,
       );
       if (request == null) {
         // PlanMode.itinerary never reaches here (Proposer isn't shown), but
@@ -1382,16 +1423,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
           _searching || _searchError != null || _searchResults.isNotEmpty;
       topOverlay = Column(
         children: [
-          SegmentedButton<PlanMode>(
-            segments: const [
-              ButtonSegment(
-                  value: PlanMode.itinerary, label: Text('Itinéraire')),
-              ButtonSegment(value: PlanMode.loop, label: Text('Distance')),
-              ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
-            ],
-            selected: {_planMode},
-            onSelectionChanged:
-                trip.isRecording ? null : (s) => _onPlanModeChanged(s.first),
+          PlanModeSegmentedButton(
+            selected: _planMode,
+            onChanged: trip.isRecording ? null : _onPlanModeChanged,
           ),
           const SizedBox(height: 8),
           _SearchBar(
@@ -1715,6 +1749,61 @@ class _CandidateProgressBanner extends StatelessWidget {
   }
 }
 
+/// The plan-mode selector — « Itinéraire » / « Distance » / « Durée » /
+/// « Explorer » (task 7 adds Explorer). Promoted out of `build()`'s inline
+/// `SegmentedButton` (and made public, matching every other sub-widget this
+/// file promotes for isolated testing — see map_screen_widgets_test.dart)
+/// specifically to wrap it in horizontal scrolling.
+///
+/// **Why scrolling, not icons/shorter labels**: `SegmentedButton` lays its
+/// segments out like a `Row` with no overflow handling of its own — it does
+/// not wrap, shrink its labels, or scroll by itself. Three French labels
+/// already ran close to the edge on a narrow phone; the fourth (« Explorer »)
+/// pushes a plain `SegmentedButton` here past a 360dp-wide screen's
+/// available width, which without this wrapper is a real
+/// `RenderFlex overflowed` exception, not just a visual squeeze (see
+/// map_screen_widgets_test.dart's narrow-phone group for the pinned
+/// regression). Icons-only or abbreviated labels were the other option the
+/// task-7 brief allowed, but the four mode names are exactly the
+/// walker-facing strings the task 6/7 briefs specify, and shortening or
+/// iconizing them would cost every walker on every device some clarity to
+/// fix a problem only the narrowest phones actually have. A horizontally
+/// scrolling row costs nothing on a phone wide enough to show all four
+/// already (nothing to scroll to), and costs a one-finger swipe on the ones
+/// that need it.
+class PlanModeSegmentedButton extends StatelessWidget {
+  const PlanModeSegmentedButton({
+    super.key,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final PlanMode selected;
+
+  /// `null` disables the selector entirely (e.g. `trip.isRecording`) — same
+  /// convention as the Marche/Vélo `SegmentedButton` right below this one.
+  final ValueChanged<PlanMode>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: SegmentedButton<PlanMode>(
+        segments: const [
+          ButtonSegment(
+              value: PlanMode.itinerary, label: Text('Itinéraire')),
+          ButtonSegment(value: PlanMode.loop, label: Text('Distance')),
+          ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
+          ButtonSegment(value: PlanMode.explore, label: Text('Explorer')),
+        ],
+        selected: {selected},
+        onSelectionChanged:
+            onChanged == null ? null : (s) => onChanged!(s.first),
+      ),
+    );
+  }
+}
+
 /// Distance/Durée's mode-specific controls (task 6, redesigned by task 8
 /// point 2 — the owner's own words: « l'écran est très cramped »): a
 /// destination chip (shared by both modes — brief point 3), and either a
@@ -1797,13 +1886,17 @@ class _PlanTargetPanel extends StatelessWidget {
           ),
         ),
       );
-    } else if (mode == PlanMode.loop) {
+    } else if (mode == PlanMode.loop || mode == PlanMode.explore) {
+      // Task 7: Explorer shares Distance's slider/floor rules verbatim (see
+      // buildLoopRequest's doc comment) — only the label prefix tells the
+      // two apart here.
+      final label = mode == PlanMode.explore ? 'Explorer' : 'Distance';
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-              'Distance : '
+              '$label : '
               '${loopTargetKm.toStringAsFixed(1).replaceAll('.', ',')} km',
               style: theme.textTheme.bodyMedium),
           Slider(

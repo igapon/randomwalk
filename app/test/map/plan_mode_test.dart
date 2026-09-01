@@ -269,6 +269,102 @@ void main() {
     });
   });
 
+  group('buildLoopRequest — Task 7: explore mode', () {
+    const start = (46.52, 6.63);
+    const destination = (46.55, 6.70);
+
+    test('behaves exactly like Distance for slider/floor rules: same '
+        'kind/start/targetKm/profile/seed for the same inputs, no '
+        'destination pinned', () {
+      final distanceReq = buildLoopRequest(
+        mode: PlanMode.loop,
+        loopTargetKm: 7.5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        seed: 3,
+      );
+      final exploreReq = buildLoopRequest(
+        mode: PlanMode.explore,
+        loopTargetKm: 7.5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        seed: 3,
+      );
+      expect(exploreReq, isNotNull);
+      expect(exploreReq!.kind, distanceReq!.kind);
+      expect(exploreReq.start, distanceReq.start);
+      expect(exploreReq.targetKm, distanceReq.targetKm);
+      expect(exploreReq.profile, distanceReq.profile);
+      expect(exploreReq.seed, distanceReq.seed);
+      expect(exploreReq.end, isNull);
+    });
+
+    test('never honours a pinned destination — stays a closed loop, unlike '
+        'Distance mode with the same pin', () {
+      final distanceReq = buildLoopRequest(
+        mode: PlanMode.loop,
+        loopTargetKm: 7.5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        destination: destination,
+        seed: 3,
+      );
+      final exploreReq = buildLoopRequest(
+        mode: PlanMode.explore,
+        loopTargetKm: 7.5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        destination: destination,
+        seed: 3,
+      );
+      expect(distanceReq!.kind, PlanKind.toDestination); // baseline sanity
+      expect(exploreReq!.kind, PlanKind.loop);
+      expect(exploreReq.end, isNull);
+      expect(exploreReq.targetKm, 7.5);
+    });
+
+    test('passes preferredBearingsDeg/explorationBonus straight through to '
+        'the request', () {
+      double bonus(RouteResult r) => 1.0;
+      final request = buildLoopRequest(
+        mode: PlanMode.explore,
+        loopTargetKm: 5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        seed: 1,
+        preferredBearingsDeg: const [10, 130, 250],
+        explorationBonus: bonus,
+      );
+      expect(request!.preferredBearingsDeg, [10, 130, 250]);
+      expect(request.explorationBonus, same(bonus));
+    });
+
+    test('other modes leave preferredBearingsDeg/explorationBonus null when '
+        'not supplied (regression — every pre-task-7 call site)', () {
+      final request = buildLoopRequest(
+        mode: PlanMode.loop,
+        loopTargetKm: 5,
+        durationTarget: kDurationTargetDefault,
+        speedKmh: 4.5,
+        profile: RoutingProfile.walk,
+        start: start,
+        seed: 1,
+      );
+      expect(request!.preferredBearingsDeg, isNull);
+      expect(request.explorationBonus, isNull);
+    });
+  });
+
   group('shouldClearDestinationOnModeSwitch', () {
     test('clears when leaving Itinéraire for Boucle with no route on screen',
         () {
@@ -506,6 +602,20 @@ void main() {
       expect(
         shouldShowPlanDestinationChip(
             mode: PlanMode.itinerary, hasDestination: true),
+        isFalse,
+      );
+    });
+
+    test('never shown in Explorer, even with a pinned destination — task 7: '
+        'Explorer never honours a pin (see buildLoopRequest)', () {
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.explore, hasDestination: true),
+        isFalse,
+      );
+      expect(
+        shouldShowPlanDestinationChip(
+            mode: PlanMode.explore, hasDestination: false),
         isFalse,
       );
     });
@@ -785,6 +895,17 @@ void main() {
             loopTargetKm: 5.0,
             durationTarget: const Duration(minutes: 45)),
         'Durée · 45 min ▸',
+      );
+    });
+
+    test('Explorer mode: "Explorer · X,X km ▸" (task 7 — same km formatting '
+        'as Distance, distinct prefix)', () {
+      expect(
+        planPanelCollapsedLabel(
+            mode: PlanMode.explore,
+            loopTargetKm: 5.0,
+            durationTarget: kDurationTargetDefault),
+        'Explorer · 5,0 km ▸',
       );
     });
   });

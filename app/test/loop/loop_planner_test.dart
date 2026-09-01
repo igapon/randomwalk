@@ -301,6 +301,138 @@ void main() {
     });
   });
 
+  group('LoopPlanner — Task 7: explore-mode bias', () {
+    test('preferredBearingsDeg overrides the rng bearing for the candidates '
+        'it covers, leaving the rest on their usual rng draw', () async {
+      final fake = FakeRouter();
+      final request = LoopRequest(
+        kind: PlanKind.loop,
+        start: start,
+        targetKm: 5,
+        profile: RoutingProfile.walk,
+        seed: 42,
+        preferredBearingsDeg: const [10, 130], // covers candidates 0 and 1 only
+      );
+      await LoopPlanner(router: fake.route).plan(request);
+
+      final degrees =
+          probedBearings(fake).map((b) => b / 10.0).toSet();
+      expect(degrees, hasLength(LoopPlanner.candidateCount));
+      expect(degrees.any((b) => (b - 10).abs() < 0.5), isTrue,
+          reason: 'candidate 0 should probe ~10°: $degrees');
+      expect(degrees.any((b) => (b - 130).abs() < 0.5), isTrue,
+          reason: 'candidate 1 should probe ~130°: $degrees');
+    });
+
+    test('preferredBearingsDeg is ignored for A->B (no bearing to seed)',
+        () async {
+      final fake = FakeRouter();
+      final end = destinationPoint(start.$1, start.$2, 90, 4000);
+      final request = LoopRequest(
+        kind: PlanKind.toDestination,
+        start: start,
+        end: end,
+        targetKm: 6,
+        profile: RoutingProfile.walk,
+        seed: 7,
+        preferredBearingsDeg: const [10, 130, 250],
+      );
+      final result = await LoopPlanner(router: fake.route).plan(request);
+      // Still routes fine — the field is simply a no-op for A->B, never a
+      // crash or a behavior change to the ellipse-bulge search.
+      expect(result.candidates, isNotEmpty);
+    });
+
+    test('explorationBonus shifts candidate ranking toward more-unexplored '
+        'routes', () async {
+      // Every candidate hits its own scripted distance within tolerance on
+      // the very first probe, so there is exactly one router call per
+      // candidate — call index 0, 1, 2 — each getting the *same* shape (so
+      // repeatedRatio is identical for all three) but a distinct distance:
+      // candidate 0 is the worst distance match (8% gap), candidate 1 the
+      // best (0% gap), candidate 2 in between (4%). Without a bonus,
+      // candidate 1 wins on distance accuracy alone (see the regression
+      // test below); `explorationBonus` favoring candidate 0's distance
+      // must be able to overturn that.
+      final sharedShape = densify([start, start], 4);
+      final router = ScriptedRouter([5.4, 5.0, 5.2],
+          shapeFor: (_) => sharedShape);
+
+      final favored = LoopRequest(
+        kind: PlanKind.loop,
+        start: start,
+        targetKm: 5,
+        profile: RoutingProfile.walk,
+        seed: 1,
+        explorationBonus: (route) => route.distanceKm == 5.4 ? 1.0 : 0.0,
+      );
+      final favoredResult =
+          await LoopPlanner(router: router.route).plan(favored);
+      expect(favoredResult.candidates.first.route.distanceKm, 5.4,
+          reason: 'the bonus-favored candidate (worst distance match) '
+              'should now win over the two better-but-unbonused ones');
+    });
+
+    test('explorationBonus absent leaves scoring/ranking exactly as before '
+        '(regression)', () async {
+      final router = ScriptedRouter(
+        [5.0],
+        shapeFor: (callIndex) => [
+          (46.52, 6.63),
+          (46.52 + callIndex * 0.001, 6.63),
+          (46.52, 6.63),
+        ],
+      );
+      final plain = LoopRequest(
+        kind: PlanKind.loop,
+        start: start,
+        targetKm: 5,
+        profile: RoutingProfile.walk,
+        seed: 1,
+      );
+      final result = await LoopPlanner(router: router.route).plan(plain);
+      // No bonus to break the tie: the first-scored (lowest index) candidate
+      // survives dedup, exactly the pre-Task-7 tie-break behavior.
+      expect(result.candidates.first.route.shape[1].$1, closeTo(46.52, 1e-9));
+    });
+
+    test('a uniform (virgin-state) explorationBonus does not change the '
+        'candidate ranking — Explorer degrades to Distance behavior when '
+        'nothing is revealed yet', () async {
+      final fake = FakeRouter();
+      final withoutBonus = await LoopPlanner(router: fake.route)
+          .plan(loopRequest(seed: 5));
+
+      final fake2 = FakeRouter();
+      final withUniformBonus = await LoopPlanner(router: fake2.route).plan(
+        LoopRequest(
+          kind: PlanKind.loop,
+          start: start,
+          targetKm: 5,
+          profile: RoutingProfile.walk,
+          seed: 5,
+          // Every route scores the same bonus — a fully-unrevealed area,
+          // exactly like a fresh install's GameState.revealedCellKeys.
+          explorationBonus: (route) => 1.0,
+        ),
+      );
+
+      // Subtracting the same constant from every candidate's score cannot
+      // change their relative order, so the two plans pick the same
+      // candidates in the same order (only the absolute score differs).
+      expect(withUniformBonus.candidates.length,
+          withoutBonus.candidates.length);
+      for (var i = 0; i < withoutBonus.candidates.length; i++) {
+        expect(withUniformBonus.candidates[i].route.shape,
+            withoutBonus.candidates[i].route.shape);
+        expect(
+          withUniformBonus.candidates[i].score,
+          closeTo(withoutBonus.candidates[i].score - 0.3, 1e-9),
+        );
+      }
+    });
+  });
+
   group('LoopPlanner — repeated-segment weighting', () {
     // A route that retraces itself completely: repeatedRatio ~= 1.0, so the
     // repeated weight (0.4 loop / 0.3 A->B) is the whole score once the
