@@ -5,7 +5,7 @@ void main() {
   group('distance thinning', () {
     test('the first point is always kept', () {
       final sampler = TrackSampler();
-      expect(sampler.add(46.52, 6.63), isTrue);
+      expect(sampler.add(46.52, 6.63).kept, isTrue);
       expect(sampler.points, [(46.52, 6.63)]);
     });
 
@@ -14,8 +14,9 @@ void main() {
       final sampler = TrackSampler(minStepM: 25);
       sampler.add(46.52, 6.63);
       // ~1 m east at this latitude — well under the 25 m threshold.
-      final kept = sampler.add(46.52, 6.630012);
-      expect(kept, isFalse);
+      final result = sampler.add(46.52, 6.630012);
+      expect(result.kept, isFalse);
+      expect(result.thinned, isFalse);
       expect(sampler.length, 1);
     });
 
@@ -23,8 +24,9 @@ void main() {
       final sampler = TrackSampler(minStepM: 25);
       sampler.add(46.52, 6.63);
       // ~40 m north.
-      final kept = sampler.add(46.5204, 6.63);
-      expect(kept, isTrue);
+      final result = sampler.add(46.5204, 6.63);
+      expect(result.kept, isTrue);
+      expect(result.thinned, isFalse);
       expect(sampler.length, 2);
     });
 
@@ -66,6 +68,40 @@ void main() {
       for (var i = 1; i < sampler.points.length; i++) {
         expect(sampler.points[i].$1, greaterThan(sampler.points[i - 1].$1));
       }
+    });
+
+    test('"thinned" is true on exactly the calls that halve the buffer, '
+        'false on every other kept call', () {
+      final sampler = TrackSampler(minStepM: 1, maxPoints: 4);
+      var lat = 46.5;
+      final thinnedFlags = <bool>[];
+      for (var i = 0; i < 10; i++) {
+        lat += 0.0001;
+        thinnedFlags.add(sampler.add(lat, 6.63).thinned);
+      }
+      // Fills to 4 (points 1-4: never thinned), then hits the cap on point 5
+      // (thinned: halves 4 -> 2, then adds -> 3), fills to 4 again by point
+      // 6, hits the cap again on point 7, etc. -> thinned on points 5, 7, 9.
+      expect(thinnedFlags, [
+        false, false, false, false, // 1-4: room to spare
+        true, // 5: cap hit, thin then add
+        false, // 6: room again (3 -> 4)
+        true, // 7: cap hit again
+        false, // 8: room again
+        true, // 9: cap hit again
+        false, // 10: room again (3 -> 4)
+      ]);
+    });
+
+    test('a rejected (too-close) point never reports thinned, even right at '
+        'the cap', () {
+      final sampler = TrackSampler(minStepM: 1000, maxPoints: 2);
+      sampler.add(46.5, 6.63);
+      sampler.add(46.51, 6.63); // far enough, kept, at cap now
+      final result = sampler.add(46.510001, 6.63); // rejected: too close
+      expect(result.kept, isFalse);
+      expect(result.thinned, isFalse);
+      expect(sampler.length, 2);
     });
   });
 

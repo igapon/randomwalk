@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/exploration/edges_store.dart';
 import 'package:randomwalk/exploration/exploration_recorder.dart';
+import 'package:randomwalk/exploration/track_sampler.dart' show kTrackMaxPoints;
 import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/game/grid.dart';
 import 'package:randomwalk/game/reducers.dart';
@@ -15,6 +16,7 @@ class FakeTraceEngine implements RoutingEngine {
   String? reply;
   Object? failure;
   int calls = 0;
+  String? lastRequestJson;
 
   @override
   Future<void> init(String tileDirPath) async {}
@@ -30,6 +32,7 @@ class FakeTraceEngine implements RoutingEngine {
   @override
   Future<String> trace(String requestJson) async {
     calls++;
+    lastRequestJson = requestJson;
     final f = failure;
     if (f != null) throw f;
     return reply ?? jsonEncode({'edges': <dynamic>[]});
@@ -389,6 +392,93 @@ void main() {
       await writeTrack([(46.52, 6.63), (46.5202, 6.63)]);
       await buildRecorder().process(const FinishedTrip(km: 1.0));
       expect(await trackFile.exists(), isFalse);
+    });
+
+    test(
+        'an oversized on-disk track file (more than kTrackMaxPoints lines) '
+        'is capped before being handed to the map-matcher — fix round 1 '
+        'finding 2 (recorder-side belt-and-suspenders)', () async {
+      final points = <(double, double)>[
+        for (var i = 0; i < kTrackMaxPoints + 1000; i++)
+          (46.5 + i * 0.00001, 6.63),
+      ];
+      await writeTrack(points);
+      engine.reply = jsonEncode({'edges': <dynamic>[]});
+
+      await buildRecorder().process(const FinishedTrip(km: 3.0));
+
+      final sentShape =
+          (jsonDecode(engine.lastRequestJson!) as Map)['shape'] as List;
+      expect(sentShape.length, lessThanOrEqualTo(kTrackMaxPoints));
+    });
+  });
+
+  group('gap handling (fix round 1: no straight line across a gap)', () {
+    test(
+        'a gap greater than 200 m between consecutive track points does not '
+        'reveal a straight-line corridor across it', () async {
+      final a = _centerOf(const CellId(30, 0));
+      final b = _centerOf(const CellId(30, 4)); // ~600 m north, gap > 200 m
+      const midpoint = CellId(30, 2);
+      await writeTrack([a, b]);
+
+      await buildRecorder().process(const FinishedTrip(km: 0.6));
+
+      final events = await journal.readAll();
+      final cellEvent =
+          events.firstWhere((e) => e.type == GameEventTypes.cellRevealed);
+      final cells = (cellEvent.payload['cells'] as List).cast<String>();
+      expect(cells, isNot(contains(midpoint.key)));
+      // Sanity: each endpoint's own cell IS still revealed — splitting on
+      // the gap must not lose the corridor around each side of it.
+      expect(cells, contains(const CellId(30, 0).key));
+      expect(cells, contains(const CellId(30, 4).key));
+    });
+  });
+
+  group('splitOnGaps (pure)', () {
+    test('an empty shape yields no segments', () {
+      expect(splitOnGaps(const []), isEmpty);
+    });
+
+    test('a single-point shape yields one segment with that point', () {
+      expect(splitOnGaps(const [(46.52, 6.63)]), [
+        [(46.52, 6.63)],
+      ]);
+    });
+
+    test('a shape with no gap above the threshold yields one segment', () {
+      const shape = [(46.52, 6.63), (46.5201, 6.63), (46.5202, 6.63)];
+      expect(splitOnGaps(shape), [shape]);
+    });
+
+    test('a single gap over 200 m splits into two segments', () {
+      const a = (46.52, 6.63);
+      const b = (46.5205, 6.63); // ~55 m — under threshold, same segment
+      final c = _centerOf(const CellId(30, 20)); // far away
+      final segments = splitOnGaps([a, b, c]);
+      expect(segments, [
+        [a, b],
+        [c],
+      ]);
+    });
+
+    test('multiple gaps split into multiple segments, in order', () {
+      final p1 = _centerOf(const CellId(0, 0));
+      final p2 = _centerOf(const CellId(0, 10));
+      final p3 = _centerOf(const CellId(0, 20));
+      expect(splitOnGaps([p1, p2, p3]), [
+        [p1],
+        [p2],
+        [p3],
+      ]);
+    });
+
+    test('a custom maxGapM is honored', () {
+      const a = (46.52, 6.63);
+      const b = (46.5202, 6.63); // ~22 m apart
+      expect(splitOnGaps(const [a, b], maxGapM: 10).length, 2);
+      expect(splitOnGaps(const [a, b], maxGapM: 50).length, 1);
     });
   });
 }

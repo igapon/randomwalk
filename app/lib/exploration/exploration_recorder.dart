@@ -7,9 +7,11 @@ import 'package:uuid/uuid.dart';
 import '../game/events.dart';
 import '../game/grid.dart';
 import '../game/reducers.dart';
+import '../nav/polyline_math.dart';
 import '../valhalla/engine.dart';
 import 'edges_store.dart';
 import 'matcher.dart';
+import 'track_sampler.dart';
 
 /// XP awarded per kilometer of a finished trip's own distance (Global
 /// Constraints §Économie: "+10/km"). Applied to [FinishedTrip.km], not to
@@ -33,6 +35,48 @@ const kEnergyPerKm = -4.0;
 /// Fraction of a quartier's cells that must be revealed to unlock the
 /// `quartier_25` badge (Global Constraints: "25 % d'un « quartier »").
 const kQuartierBadgeThreshold = 0.25;
+
+/// Above this gap (meters) between two consecutive track points, the ground
+/// "between" them is not assumed walked (fix round 1 finding: a straight
+/// line reveal — see [splitOnGaps]).
+const kTrackGapMaxM = 200.0;
+
+/// Splits [shape] into maximal runs of consecutive points no more than
+/// [maxGapM] meters apart.
+///
+/// `corridorCells` (grid.dart) interpolates a straight line between every
+/// pair of consecutive shape points to build the fog-reveal corridor — the
+/// right thing to do for two GPS fixes a normal walking/riding step apart,
+/// but exactly wrong across a genuine gap: a GPS dropout, a tunnel, or (M4
+/// now samples every trip's raw track, not just route-bound ones) a bus or
+/// train leg between two logged fixes. Feeding the whole shape to
+/// `corridorCells` in that case would silently reveal — and pay XP,
+/// possibly `quartier_25`, for — a corridor of ground nobody walked.
+/// Splitting first and corridor-revealing each run independently means the
+/// empty space between two runs reveals nothing at all.
+///
+/// An empty [shape] yields no segments; a shape with no gap above [maxGapM]
+/// yields exactly one segment equal to the whole input.
+List<List<(double, double)>> splitOnGaps(
+  List<(double, double)> shape, {
+  double maxGapM = kTrackGapMaxM,
+}) {
+  if (shape.isEmpty) return const [];
+  final segments = <List<(double, double)>>[];
+  var current = <(double, double)>[shape.first];
+  for (var i = 1; i < shape.length; i++) {
+    final (lat1, lon1) = shape[i - 1];
+    final (lat2, lon2) = shape[i];
+    if (metersBetween(lat1, lon1, lat2, lon2) > maxGapM) {
+      segments.add(current);
+      current = <(double, double)>[shape[i]];
+    } else {
+      current.add(shape[i]);
+    }
+  }
+  segments.add(current);
+  return segments;
+}
 
 /// One finished trip's exploration-relevant facts, as [TripController]
 /// (the only caller) knows them once a trip has stopped and been banked.
@@ -172,7 +216,14 @@ class ExplorationRecorder {
 
     await _tryMatchAndStore(shape, now);
 
-    final corridor = corridorCells(shape);
+    // Matching (above) gets the whole, un-split shape — a gap in the GPS
+    // record is Valhalla's problem to reconcile against the road network,
+    // not something to hide from it. Reveal geometry is different: each
+    // gap-free run is corridor-revealed on its own so a gap never becomes a
+    // straight-line reveal across ground nobody walked (see [splitOnGaps]).
+    final corridor = <CellId>{
+      for (final segment in splitOnGaps(shape)) ...corridorCells(segment),
+    };
     if (corridor.isEmpty) return 0;
 
     final state = reduceAll(await journal.readAll());
@@ -224,22 +275,32 @@ class ExplorationRecorder {
   /// one. A missing file, an unreadable one, or one containing corrupt lines
   /// all degrade gracefully: missing/unreadable yields no points at all, and
   /// a corrupt line costs only that one point rather than the whole track.
+  ///
+  /// Fix round 1 finding 2 (belt-and-suspenders): points are folded through
+  /// a [TrackSampler] via [TrackSampler.seed] — which bounds the result at
+  /// [kTrackMaxPoints] by the same halving-thin `tracking_service.dart`
+  /// itself uses — rather than returned as a raw, unbounded list. The
+  /// service already keeps the on-disk file bounded during a normal trip;
+  /// this is a second, independent safety net against a file that somehow
+  /// grew past that (a corrupted write, a future bug, an old app version's
+  /// file), so a single `process()` call can never be handed an unbounded
+  /// shape to map-match/corridor-reveal.
   Future<List<(double, double)>> _readAndClearTrack() async {
     try {
       if (!await trackFile.exists()) return const [];
       final lines = await trackFile.readAsLines();
-      final points = <(double, double)>[];
+      final sampler = TrackSampler();
       for (final line in lines) {
         if (line.trim().isEmpty) continue;
         try {
           final j = jsonDecode(line) as Map<String, dynamic>;
-          points.add(
-              ((j['lat'] as num).toDouble(), (j['lon'] as num).toDouble()));
+          sampler.seed(
+              (j['lat'] as num).toDouble(), (j['lon'] as num).toDouble());
         } catch (_) {
           // One corrupt line costs one point, not the whole track.
         }
       }
-      return points;
+      return sampler.points;
     } catch (_) {
       return const [];
     } finally {

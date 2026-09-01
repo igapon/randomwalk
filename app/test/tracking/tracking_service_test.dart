@@ -4,8 +4,10 @@ import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:randomwalk/exploration/track_sampler.dart' show kTrackMaxPoints;
 import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/nav/tts.dart';
+import 'package:randomwalk/session/recorder.dart' show GpsSample;
 import 'package:randomwalk/tracking/adaptive_gps.dart';
 import 'package:randomwalk/tracking/nav_seed.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
@@ -408,6 +410,140 @@ void main() {
       await handler.onStart(
           DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
       expect(handler.debugIsRecording, isTrue);
+    });
+
+    test(
+        'a freshly-seeded on-disk snapshot (updatedAt == startedAt) is NOT '
+        'treated as a restart even though its status is recording — fix '
+        'round 1 finding 1: isRecording alone was the whole bug', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final trackPath = '${tempDir.path}/active_track.jsonl';
+      // Mirrors exactly what ForegroundServiceTripTracker.start() itself
+      // writes to disk for a brand-new trip, before it ever calls
+      // startService — see that method's own doc comment. Before fix round
+      // 1, `persisted.isRecording` alone made this indistinguishable from a
+      // genuine restart, and the leftover track below would have survived.
+      final freshOnDisk = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      await File(snapshotPath).writeAsString(jsonEncode(freshOnDisk.toJson()));
+      await File(trackPath)
+          .writeAsString('${jsonEncode({'lat': 1.0, 'lon': 2.0})}\n');
+      await seedPrefs(snapshotPath);
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+
+      expect(await File(trackPath).exists(), isFalse);
+    });
+
+    test(
+        'the on-disk track stays bounded at kTrackMaxPoints even after far '
+        'more fixes than that, kept in sync via the thinned-rewrite — fix '
+        'round 1 finding 2', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final trackPath = '${tempDir.path}/active_track.jsonl';
+      await seedPrefs(snapshotPath);
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+
+      // Each step is ~33 m north — comfortably over the 25 m distance
+      // filter default, so every fix is kept by TrackSampler.
+      var lat = 46.5;
+      for (var i = 0; i < kTrackMaxPoints + 500; i++) {
+        lat += 0.0003;
+        await handler.debugOnFix(GpsSample(
+          lat: lat,
+          lon: 6.63,
+          accuracyM: 5,
+          speedMps: 1.2,
+          time: DateTime.utc(2026, 8, 31, 9, 0, 0, i),
+        ));
+      }
+
+      final lines = await File(trackPath).readAsLines();
+      expect(lines.length, lessThanOrEqualTo(kTrackMaxPoints));
+      // Not merely bounded — genuinely still recording new ground, not
+      // stuck at some tiny prefix.
+      expect(lines.length, greaterThan(kTrackMaxPoints ~/ 2));
+    });
+  });
+
+  group('isFreshTripSeed (fix round 1 finding 1)', () {
+    test('a brand-new TripSnapshot.starting is fresh', () {
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      expect(isFreshTripSeed(seed), isTrue);
+    });
+
+    test(
+        'a snapshot whose updatedAt has moved past startedAt (a real '
+        'restart, or a resume) is not fresh', () {
+      final seed = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.0,
+        steps: 10,
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        updatedAt: DateTime.utc(2026, 8, 31, 9, 5),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      expect(isFreshTripSeed(seed), isFalse);
+    });
+
+    test(
+        'a resumeInterrupted-style seed (same startedAt, freshly-stamped '
+        'updatedAt) is not fresh', () {
+      final original = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+        distanceKm: 2.4,
+      );
+      // Mirrors TripController.resumeInterrupted's own
+      // `copyWith(status: recording, updatedAt: _clock(), ...)`.
+      final resumedSeed = original.copyWith(
+        status: TripStatus.recording,
+        updatedAt: DateTime.utc(2026, 8, 31, 9, 20),
+      );
+      expect(isFreshTripSeed(resumedSeed), isFalse);
+    });
+  });
+
+  group('ForegroundServiceTripTracker.deleteTrackFile (fix round 1 finding 1)',
+      () {
+    late Directory tempDir;
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_delete_track_test');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+    });
+
+    test('deletes the sibling active_track.jsonl file if present', () async {
+      final snapshotFile = File('${tempDir.path}/trip_snapshot.json');
+      final trackFile = File('${tempDir.path}/active_track.jsonl');
+      await trackFile.writeAsString('leftover\n');
+      final tracker = ForegroundServiceTripTracker(snapshotFile);
+
+      await tracker.deleteTrackFile();
+
+      expect(await trackFile.exists(), isFalse);
+    });
+
+    test('is a silent no-op when no track file exists', () async {
+      final snapshotFile = File('${tempDir.path}/trip_snapshot.json');
+      final tracker = ForegroundServiceTripTracker(snapshotFile);
+      await expectLater(tracker.deleteTrackFile(), completes);
     });
   });
 }

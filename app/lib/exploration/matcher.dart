@@ -21,6 +21,17 @@ class MatchResult {
 
   /// Sum of every matched edge's `length` field, in kilometers (Valhalla's
   /// default `trace_attributes` unit).
+  ///
+  /// Diagnostic only — **not** what feeds `edge_covered_batch.km`. The
+  /// Task 1 event contract fixes that payload to the trip's own TOTAL
+  /// odometer distance (`FinishedTrip.km`, from `SessionRecorder`'s GPS
+  /// accumulation), not however much of it the matcher could confirm: a
+  /// trip through an area with no tiles, or one the matcher only partially
+  /// snapped, would otherwise silently under-report — and under-pay XP for
+  /// — ground the walker actually covered. Kept on [MatchResult] anyway
+  /// because it is a genuinely useful match-quality signal (how much of the
+  /// trip the map-matcher could account for at all) for future diagnostics/
+  /// QA, even though no M4 event consumes it today.
   final double matchedKm;
 
   const MatchResult({required this.wayIds, required this.matchedKm});

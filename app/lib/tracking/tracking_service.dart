@@ -117,6 +117,30 @@ const _kHapticsEnabledKey = 'randomwalk_haptics_enabled';
 /// isolate, post-trip) reads and deletes this file once the trip ends.
 const _kTrackFileName = 'active_track.jsonl';
 
+/// Whether [snapshot] is a genuinely fresh trip start — never once resumed
+/// or written back by the service — as opposed to a restart (Android's
+/// `allowAutoRestart` reviving a killed service mid-trip) or a « Reprendre »
+/// resume of an interrupted trip.
+///
+/// [TripSnapshot.starting] sets `updatedAt: startedAt` (the literal same
+/// value, not merely a close one) for exactly this reason: nothing has
+/// touched the snapshot since it was created. Anything that has — a
+/// periodic service write, or `TripController.resumeInterrupted`'s own
+/// `copyWith(updatedAt: _clock())` — moves `updatedAt` strictly after
+/// `startedAt`.
+///
+/// This is the ONE reliable discriminator available on both sides of the
+/// UI/service boundary: [ForegroundServiceTripTracker.start] always writes
+/// the seed snapshot to disk (with `status: recording`) *before* starting
+/// the service (see its own doc comment), so by the time
+/// [TripTaskHandler.onStart] reads it back, `persisted.isRecording` is true
+/// for a brand-new trip exactly as it is for a genuine restart — that check
+/// alone cannot tell the two apart, which is what let a fresh trip's
+/// `active_track.jsonl` deletion become dead code before this function
+/// existed (fix round 1 finding 1).
+bool isFreshTripSeed(TripSnapshot snapshot) =>
+    !snapshot.updatedAt.isAfter(snapshot.startedAt);
+
 /// The maneuver-alert notification channel — distinct from [_kChannelId]'s
 /// silent, sticky trip notification: this one is meant to be noticed with
 /// the screen off, so it gets sound and vibration.
@@ -232,6 +256,24 @@ class ForegroundServiceTripTracker implements TripTracker {
     _configure();
     await attach();
 
+    // M4 exploration (fix round 1 finding 1): this is THE unambiguous seam
+    // for "a genuinely new trip is starting" — unlike the service-side
+    // `_resumePoint`, which can only ever see a snapshot this same method is
+    // about to write. A leftover `active_track.jsonl` from a previous trip
+    // (its own ExplorationRecorder failing to open, a kill between `stop()`
+    // and the recorder actually reading it, ...) would otherwise become
+    // this new trip's prefix: `corridorCells` would interpolate a straight
+    // line from wherever that old track ended to wherever this trip's first
+    // real fix lands, revealing (and paying XP/possibly `quartier_25` for)
+    // ground nobody walked. Deleting unconditionally here — `seed` is only
+    // ever a fresh `TripSnapshot.starting(...)` in this branch, never a
+    // `resumeInterrupted()` seed (see [isFreshTripSeed]) — means the file a
+    // brand-new trip's [TripTaskHandler] sees is always either absent or
+    // genuinely this trip's own.
+    if (isFreshTripSeed(seed)) {
+      await deleteTrackFile();
+    }
+
     // Written before the service starts so the isolate never races the UI
     // for its own starting state, and so a service that dies before its
     // first snapshot still leaves a resumable trip behind.
@@ -261,6 +303,28 @@ class ForegroundServiceTripTracker implements TripTracker {
       callback: startTrackingTask,
     );
     return result is ServiceRequestSuccess;
+  }
+
+  /// Deletes this instance's sibling `active_track.jsonl` (see
+  /// [_kTrackFileName]), if any. Best-effort — a filesystem hiccup here must
+  /// never stop a trip from starting.
+  ///
+  /// Non-private (though internal — no other class calls it) specifically
+  /// so a unit test can exercise this exact deletion decision directly,
+  /// without going through [start] itself: [start] also drives
+  /// `FlutterForegroundTask.startService`/`init`, which need a real Android
+  /// foreground-service platform channel this package's unit tests have no
+  /// way to mock (every other test of this tracker goes through the
+  /// `FakeTripTracker` fake instead; see `trip_fakes.dart`).
+  @visibleForTesting
+  Future<void> deleteTrackFile() async {
+    try {
+      final trackFile =
+          File('${snapshotFile.parent.path}/$_kTrackFileName');
+      if (await trackFile.exists()) await trackFile.delete();
+    } catch (_) {
+      // Best-effort; see the doc comment above.
+    }
   }
 
   @override
@@ -497,6 +561,17 @@ class TripTaskHandler extends TaskHandler {
   @visibleForTesting
   bool get debugIsRecording => _session?.isRecording ?? false;
 
+  /// Test-only entry point that feeds [sample] through the exact same fix
+  /// pipeline ([_onFix]) a real GPS position would take — track sampling,
+  /// then navigation. `SessionController`'s position stream has no
+  /// injectable override reachable from here (every other GPS-driven
+  /// behaviour in this class is instead exercised via `onFix` on
+  /// `SessionController` itself; see `session_controller_test.dart`), but
+  /// M4's on-disk track-file bounding (fix round 1 finding 2) can only be
+  /// observed by actually driving fixes through [_sampleTrack].
+  @visibleForTesting
+  Future<void> debugOnFix(GpsSample sample) => _onFix(sample);
+
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     final path = await FlutterForegroundTask.getData<String>(
@@ -643,17 +718,36 @@ class TripTaskHandler extends TaskHandler {
   /// map-match once the trip ends. Never worth failing, or even slowing,
   /// the recording trip over: a lost point just means a slightly coarser
   /// fog reveal for this trip, not a broken one.
+  ///
+  /// Fix round 1 finding 2: [TrackSampler.add]'s `thinned` flag is checked
+  /// on every call. A plain append-per-kept-point write would let the file
+  /// grow forever — the in-memory buffer is bounded ([TrackSampler]'s
+  /// `maxPoints`/halving), but nothing would ever shrink the *file* to
+  /// match, desyncing the two. When `thinned` is true this rewrites the
+  /// whole file from [TrackSampler.points] instead of appending, keeping
+  /// the on-disk track bounded at the same size as the in-memory one.
   Future<void> _sampleTrack(GpsSample sample) async {
+    if (_stopped) return;
     final sampler = _trackSampler;
     final file = _trackFile;
     if (sampler == null || file == null) return;
-    if (!sampler.add(sample.lat, sample.lon)) return;
+    final result = sampler.add(sample.lat, sample.lon);
+    if (!result.kept) return;
     try {
-      await file.writeAsString(
-        '${jsonEncode({'lat': sample.lat, 'lon': sample.lon})}\n',
-        mode: FileMode.append,
-        flush: true,
-      );
+      if (result.thinned) {
+        final buffer = StringBuffer();
+        for (final (lat, lon) in sampler.points) {
+          buffer.writeln(jsonEncode({'lat': lat, 'lon': lon}));
+        }
+        await file.writeAsString(buffer.toString(),
+            mode: FileMode.write, flush: true);
+      } else {
+        await file.writeAsString(
+          '${jsonEncode({'lat': sample.lat, 'lon': sample.lon})}\n',
+          mode: FileMode.append,
+          flush: true,
+        );
+      }
     } catch (_) {
       // Best-effort; see the doc comment above.
     }
@@ -914,11 +1008,20 @@ class TripTaskHandler extends TaskHandler {
 
   /// Resolves where this incarnation picks the trip up from, plus whether
   /// doing so is a genuine restart of an already-recording trip (Android's
-  /// `allowAutoRestart` bringing a killed service back) as opposed to a
-  /// brand-new trip start. [_initTrackSampler] needs exactly that
-  /// distinction: a restart should pick the on-disk track back up where it
-  /// left off, a fresh start should not risk inheriting a stale leftover
-  /// track from whatever trip last used this instance's files.
+  /// `allowAutoRestart` bringing a killed service back, or `resumeInterrupted`'s
+  /// « Reprendre ») as opposed to a brand-new trip start. [_initTrackSampler]
+  /// needs exactly that distinction: a restart should pick the on-disk track
+  /// back up where it left off, a fresh start should not risk inheriting a
+  /// stale leftover track from whatever trip last used this instance's files
+  /// (the UI-side [ForegroundServiceTripTracker.start] already deletes it in
+  /// that case — see [isFreshTripSeed] — but this is kept as an independent
+  /// second check rather than assuming that always ran first).
+  ///
+  /// `persisted.isRecording` ALONE cannot make this distinction (fix round 1
+  /// finding 1): [ForegroundServiceTripTracker.start] always writes the seed
+  /// to disk with `status: recording` *before* starting the service, so a
+  /// brand-new trip's `persisted` reads exactly as "recording" as a genuine
+  /// restart's does. [isFreshTripSeed] is what actually tells them apart.
   Future<({TripSnapshot? snapshot, bool isRestart})> _resumePoint(
       TripSnapshotStore store) async {
     final persisted = await store.read();
@@ -928,7 +1031,9 @@ class TripTaskHandler extends TaskHandler {
         : TripSnapshot.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     return (
       snapshot: resumePoint(persisted, seed),
-      isRestart: persisted != null && persisted.isRecording,
+      isRestart: persisted != null &&
+          persisted.isRecording &&
+          !isFreshTripSeed(persisted),
     );
   }
 

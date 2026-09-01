@@ -35,23 +35,33 @@ class TrackSampler {
 
   int get length => _points.length;
 
-  /// Considers a freshly-arrived fix. Returns `true` (and keeps the point)
-  /// when it is the very first point, or at least [minStepM] meters from the
-  /// last kept point; returns `false` (and keeps state unchanged) otherwise
-  /// — the caller should only persist a point when this returns `true`.
+  /// Considers a freshly-arrived fix. `kept` is `true` when it is the very
+  /// first point, or at least [minStepM] meters from the last kept point —
+  /// callers persisting to disk should only write a point when `kept` is
+  /// `true`. `thinned` is `true` exactly on the call where accepting this
+  /// point required halving the buffer first (see [_thin]) — a disk-backed
+  /// caller (`tracking_service.dart`) MUST treat that as "rewrite the whole
+  /// file from [points]", not "append this one point": every other call
+  /// only appends, so an append-only writer that never checks `thinned`
+  /// would silently let the on-disk file grow unbounded and desync from
+  /// this bounded in-memory buffer — exactly the bug this flag exists to
+  /// prevent a caller from reintroducing.
   ///
   /// When accepting a point would exceed [maxPoints], the buffer is thinned
-  /// first (see [_thin]) rather than refusing new points outright: an
-  /// unusually long trip should keep tracing its whole route at coarser
-  /// resolution, not stop recording new ground after some arbitrary prefix.
-  bool add(double lat, double lon) {
+  /// first rather than refusing new points outright: an unusually long trip
+  /// should keep tracing its whole route at coarser resolution, not stop
+  /// recording new ground after some arbitrary prefix.
+  ({bool kept, bool thinned}) add(double lat, double lon) {
     if (_points.isNotEmpty) {
       final (lastLat, lastLon) = _points.last;
-      if (metersBetween(lastLat, lastLon, lat, lon) < minStepM) return false;
+      if (metersBetween(lastLat, lastLon, lat, lon) < minStepM) {
+        return (kept: false, thinned: false);
+      }
     }
-    if (_points.length >= maxPoints) _thin();
+    final thinned = _points.length >= maxPoints;
+    if (thinned) _thin();
     _points.add((lat, lon));
-    return true;
+    return (kept: true, thinned: thinned);
   }
 
   /// Restores a point read back from disk (e.g. a service restart resuming

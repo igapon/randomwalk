@@ -103,14 +103,29 @@ Future<TripController> _buildTripController() async {
   );
 }
 
-/// Builds and initializes a fresh [RoutingEngine] for one
+/// Builds and initializes a [RoutingEngine] for one
 /// [ExplorationRecorder.process] call's map-matching, or `null` when no tile
 /// directory has been downloaded yet or the engine fails to initialize —
 /// either way, [ExplorationRecorder] treats that exactly like a failed
-/// match (see its `engineProvider` doc comment). A new instance per call
-/// rather than a cached one: exploration processing runs at most once per
-/// finished trip, far too infrequently to be worth keeping a native actor
-/// (and its mmapped tiles) resident between trips.
+/// match (see its `engineProvider` doc comment).
+///
+/// Fix round 1 correction: a fresh [ChannelRoutingEngine] here is NOT a
+/// private, isolated native actor. Per `ValhallaChannel.kt`'s own doc
+/// comment, the native `Valhalla` actor is one-per-`FlutterEngine` (the UI
+/// engine gets exactly one `ValhallaChannel`), and `init` *replaces* that
+/// shared actor (`actor?.close(); actor = Valhalla(...)`) rather than
+/// standing up a second, independent one. So every post-trip
+/// `ExplorationRecorder.process()` call reopens — and briefly stalls
+/// (mmapping tiles again, on the channel's single-threaded executor) — the
+/// same native actor `routingEngineProvider` (`route_controller.dart`) hands
+/// the live route planner. This is accepted rather than fixed here: reusing
+/// the planner's own engine would mean reading `routingEngineProvider`
+/// (Riverpod), and `_buildTripController` — hence this function — runs
+/// before `runApp`/`ProviderScope` exist (see its own doc comment on why),
+/// so no `ref` is reachable at this call site without a larger restructuring
+/// of `main()`'s startup order. Each call staying independent and stateless
+/// (nothing here assumes the actor it built still exists by the time it
+/// returns) is what keeps that safe rather than merely convenient.
 Future<RoutingEngine?> _buildExplorationEngine(
     CoverageRepository coverage) async {
   final tileDirPath = await coverage.cachedTileDirPath();
