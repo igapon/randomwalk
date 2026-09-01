@@ -107,6 +107,24 @@ class TripController extends ChangeNotifier {
   /// throw, so this is a second, independent guard rather than the only one.
   final Future<void> Function(FinishedTrip trip)? processTripExploration;
 
+  /// M4 exploration Task 5: resolves the current `pois.json.gz` path (if
+  /// any) for [tracker.start] to hand the service — mirrors
+  /// [resolveTileDir]'s "read only what's already on disk" contract. Null,
+  /// or a resolver that throws or returns null, simply means this trip
+  /// detects no landmark visits; never a reason to refuse starting one (see
+  /// [_resolvePoisFilePath]).
+  final Future<String?> Function()? resolvePoisFile;
+
+  /// M4 exploration Task 5: best-effort, fire-and-forget landmark-visit
+  /// processing (see `GameVisitConsumer`) — journal events plus a discreet
+  /// alert for whatever `TripSnapshot.pendingVisits` a newly-adopted
+  /// snapshot carries. Null in every test that does not care about the
+  /// game layer, and wherever the game is disabled entirely. Never awaited
+  /// (see [_maybeProcessGameVisits]) — same "never blocks the tool"
+  /// relationship [processTripExploration] has to `_finalise`, just fired
+  /// from [_adopt] instead of trip end, since visits arrive mid-trip.
+  final Future<void> Function(List<PendingVisit> visits)? processGameVisits;
+
   /// Notified when the map should turn its "follow me" camera mode on
   /// (route-bound trip start) or off (trip stop / manual pan elsewhere).
   /// Mutable so the map screen — the only widget holding the actual
@@ -151,6 +169,8 @@ class TripController extends ChangeNotifier {
     this.resolveTileDir,
     this.onCameraFollowChanged,
     this.processTripExploration,
+    this.resolvePoisFile,
+    this.processGameVisits,
     AlertSettingsStore? alertSettings,
   })  : _totals = totalStore,
         _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
@@ -327,6 +347,18 @@ class TripController extends ChangeNotifier {
     }
   }
 
+  /// M4 exploration Task 5: best-effort — a failure resolving the POI asset
+  /// path must never stop a trip from starting, same as [_tileDirPath].
+  Future<String?> _resolvePoisFilePath() async {
+    final resolve = resolvePoisFile;
+    if (resolve == null) return null;
+    try {
+      return await resolve();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// « Reprendre » on the interrupted-trip banner: restarts the service
   /// seeded with the distance and steps already banked, and with the
   /// original start time so the elapsed clock does not reset.
@@ -404,7 +436,8 @@ class TripController extends ChangeNotifier {
         return false;
       }
 
-      if (!await tracker.start(seed, nav: nav)) {
+      final poisFilePath = await _resolvePoisFilePath();
+      if (!await tracker.start(seed, nav: nav, poisFilePath: poisFilePath)) {
         _lastStartFailure = TripStartFailure.serviceUnavailable;
         notifyListeners();
         return false;
@@ -605,6 +638,22 @@ class TripController extends ChangeNotifier {
     _snapshot = snapshot.copyWith(
         steps: steps > snapshot.steps ? steps : snapshot.steps);
     notifyListeners();
+    // M4 exploration Task 5: fed the just-adopted snapshot's OWN
+    // pendingVisits (not `_snapshot`'s field again) since that is exactly
+    // what the service published this time, from either channel (live or
+    // polled) that reached [_adopt].
+    _maybeProcessGameVisits(snapshot.pendingVisits);
+  }
+
+  /// M4 exploration Task 5: fire-and-forget, exactly like
+  /// [processTripExploration] — a slow or throwing `GameVisitConsumer` must
+  /// never delay adopting a snapshot or block the trip in any way.
+  void _maybeProcessGameVisits(List<PendingVisit> visits) {
+    final process = processGameVisits;
+    if (process == null || visits.isEmpty) return;
+    unawaited(process(visits).catchError((e) {
+      debugPrint('TripController: game visit processing failed, continuing: $e');
+    }));
   }
 
   /// Persists the planned route. Called by the map screen on every planning

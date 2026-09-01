@@ -4,7 +4,8 @@ import 'package:randomwalk/loop/speed_history.dart';
 import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
-import 'package:randomwalk/tracking/trip_snapshot.dart';
+import 'package:randomwalk/tracking/trip_snapshot.dart'
+    show TripSnapshot, TripStatus, PendingVisit;
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
 import 'package:randomwalk/valhalla/models.dart';
@@ -48,6 +49,8 @@ void main() {
     Future<TrackingMode> Function()? readTrackingMode,
     SpeedHistoryStore? speedHistoryOverride,
     Future<void> Function(FinishedTrip trip)? processTripExploration,
+    Future<String?> Function()? resolvePoisFile,
+    Future<void> Function(List<PendingVisit> visits)? processGameVisits,
   }) =>
       TripController(
         tracker: tracker,
@@ -66,6 +69,8 @@ void main() {
         loadProfile: loadProfile ?? () async => null,
         onCameraFollowChanged: onCameraFollowChanged,
         processTripExploration: processTripExploration,
+        resolvePoisFile: resolvePoisFile,
+        processGameVisits: processGameVisits,
       );
 
   setUp(() {
@@ -755,6 +760,95 @@ void main() {
 
       expect(distance, closeTo(2.4, 1e-9));
       expect(trip.state, TripState.idle);
+    });
+  });
+
+  group('game visits wiring (M4 Task 5)', () {
+    test('startTrip resolves poisFilePath and hands it to tracker.start',
+        () async {
+      final trip =
+          build(resolvePoisFile: () async => '/tiles/v1/pois.json.gz');
+      await trip.startTrip();
+
+      expect(tracker.startedPoisFilePath.single, '/tiles/v1/pois.json.gz');
+    });
+
+    test('a null/absent resolvePoisFile still starts the trip with a null '
+        'poisFilePath', () async {
+      final trip = build(); // resolvePoisFile left null.
+      expect(await trip.startTrip(), isTrue);
+      expect(tracker.startedPoisFilePath.single, isNull);
+    });
+
+    test('a throwing resolvePoisFile never stops the trip from starting',
+        () async {
+      final trip =
+          build(resolvePoisFile: () async => throw StateError('disk error'));
+      expect(await trip.startTrip(), isTrue);
+      expect(tracker.startedPoisFilePath.single, isNull);
+    });
+
+    test('a snapshot carrying pendingVisits invokes processGameVisits',
+        () async {
+      final calls = <List<PendingVisit>>[];
+      final trip = build(processGameVisits: (v) async => calls.add(v));
+      await trip.startTrip();
+
+      final visit = PendingVisit(
+        poiId: 'node/1',
+        kind: 'reveal',
+        lat: 46.5,
+        lon: 6.6,
+        ts: now,
+      );
+      tracker.emit(recordingSnapshot(distanceKm: 1.0)
+          .copyWith(pendingVisits: [visit]));
+      // Fire-and-forget (`unawaited`): give its microtask a turn.
+      await Future<void>.delayed(Duration.zero);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.single.poiId, 'node/1');
+    });
+
+    test('an empty pendingVisits list never invokes processGameVisits',
+        () async {
+      var calls = 0;
+      final trip = build(processGameVisits: (v) async => calls++);
+      await trip.startTrip();
+
+      tracker.emit(recordingSnapshot(distanceKm: 1.0));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(calls, 0);
+    });
+
+    test('a throwing processGameVisits never breaks snapshot adoption',
+        () async {
+      final trip = build(
+          processGameVisits: (v) async => throw StateError('consumer boom'));
+      await trip.startTrip();
+
+      final visit = PendingVisit(
+          poiId: 'node/1', kind: 'coins', lat: 46.5, lon: 6.6, ts: now);
+      tracker.emit(recordingSnapshot(distanceKm: 3.0)
+          .copyWith(pendingVisits: [visit]));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(trip.distanceKm, closeTo(3.0, 1e-9));
+      expect(trip.state, TripState.recording);
+    });
+
+    test('no processGameVisits configured is a silent no-op', () async {
+      final trip = build(); // processGameVisits left null.
+      await trip.startTrip();
+
+      final visit = PendingVisit(
+          poiId: 'node/1', kind: 'coins', lat: 46.5, lon: 6.6, ts: now);
+      tracker.emit(recordingSnapshot(distanceKm: 1.0)
+          .copyWith(pendingVisits: [visit]));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(trip.state, TripState.recording);
     });
   });
 
