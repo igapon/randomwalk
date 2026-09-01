@@ -3,20 +3,6 @@
 /// for a while gains nothing from a GPS fix every couple of seconds — this
 /// is the pure decision layer that says when to stop asking for them, and
 /// when to start again.
-///
-/// Deliberately clock-free rather than clock-injected like
-/// `AdaptiveGpsRateLimiter`/`ThrottledSnapshotWriter`: every method here
-/// takes the moment it applies to as an explicit parameter instead of
-/// reading a clock closure, because [MotionPolicy] is driven by two
-/// completely different notions of "now" depending on the caller —
-/// `TripTaskHandler.onRepeatEvent`'s own `timestamp` for [MotionPolicy.tick],
-/// and a GPS fix's or a native transition event's own timestamp for
-/// [MotionPolicy.stillEntered]/[MotionPolicy.stillExited]/
-/// [GpsStillnessTracker.onFix] — forcing both through one internal clock
-/// would either ignore the more precise timestamps callers already have, or
-/// need two clocks. This also happens to be exactly what makes the pinned
-/// 3/6 minute thresholds testable without a fake-async harness: a test can
-/// walk `DateTime`s forward by hand.
 library;
 
 /// What a caller must do in response to a [MotionPolicy] transition.
@@ -62,20 +48,29 @@ const kMotionNavGuidedStillThreshold = Duration(minutes: 6);
 const kMotionSafetyFixInterval = Duration(minutes: 3);
 
 /// Turn-by-turn state machine behind low-power mode: still/active, and
-/// paused/not — see the library doc comment for why it takes an explicit
-/// `DateTime` on every call rather than owning a clock.
+/// paused/not.
 ///
-/// Signal-source agnostic by design: it does not know or care whether
-/// [stillEntered]/[stillExited] came from the native Activity Recognition
-/// Transition API (`MotionChannel`) or from [GpsStillnessTracker]'s
-/// step/GPS fallback — both translate into the same two calls, which is
-/// exactly what lets a device with no native support degrade to the
-/// fallback silently (brief §1, §3): nothing downstream of this class can
-/// tell the difference.
+/// **Fix round 1, I5**: [_clock] is the *sole* time authority for every
+/// threshold computation this class makes. Earlier this class took an
+/// explicit `DateTime` on every call instead, trusting whatever timestamp
+/// each caller happened to have to hand — a GPS fix's own `sample.time` for
+/// [stillEntered]/[stillExited], the foreground-task framework's own
+/// `timestamp` for [tick]. Those are two different clocks (the device
+/// location provider's vs. the system's), and comparing a provider-supplied
+/// instant against a system-supplied one in the same subtraction can shorten
+/// the pinned 3/6 minute window under nothing more exotic than ordinary
+/// clock skew — silently breaking the brief's absolute "un feu rouge ne doit
+/// JAMAIS suspendre" pin. Reading [_clock] internally, on every signal, at
+/// the moment this class actually processes it, makes that skew structurally
+/// impossible: whatever timestamp a fix or a native event carries is used
+/// for everything *except* deciding how long the walker has been still.
+/// Defaults to `DateTime.now` in production; tests inject a controllable
+/// one, same pattern as `AdaptiveGpsRateLimiter`/`ThrottledSnapshotWriter`.
 class MotionPolicy {
   final Duration stillThreshold;
   final Duration navGuidedStillThreshold;
   final Duration safetyFixInterval;
+  final DateTime Function() _clock;
 
   /// Whether this trip is under active turn-by-turn guidance right now —
   /// doubles [stillThreshold] to [navGuidedStillThreshold] (brief: "en
@@ -93,7 +88,15 @@ class MotionPolicy {
     this.navGuidedStillThreshold = kMotionNavGuidedStillThreshold,
     this.safetyFixInterval = kMotionSafetyFixInterval,
     this.navGuided = false,
-  });
+    DateTime Function()? clock,
+  }) : _clock = clock ?? DateTime.now;
+
+  /// The single, authoritative "now" this policy has ever used for a
+  /// threshold — see the class doc comment's I5 account. `_reconcileStream`
+  /// (`tracking_service.dart`) reads this for its own bookkeeping (e.g.
+  /// resetting the GPS-silence clock on resume) rather than a second,
+  /// separately-sourced `DateTime.now()`, for the same reason.
+  DateTime get now => _clock();
 
   bool get isPaused => _paused;
 
@@ -114,8 +117,8 @@ class MotionPolicy {
   ///
   /// A no-op while already [isPaused] — pausing again would gain nothing,
   /// and must never disturb [_nextSafetyFixAt]'s schedule.
-  MotionAction stillEntered(DateTime at) {
-    if (!_paused) _stillSince ??= at;
+  MotionAction stillEntered() {
+    if (!_paused) _stillSince ??= _clock();
     return MotionAction.none;
   }
 
@@ -127,7 +130,7 @@ class MotionPolicy {
   /// threshold must never have paused in the first place — this is what
   /// keeps it from doing so), and, while [isPaused], resumes immediately
   /// (brief: "reprise IMMÉDIATE sur STILL-exit"/"delta de pas en fallback").
-  MotionAction stillExited(DateTime at) {
+  MotionAction stillExited() {
     _stillSince = null;
     if (_paused) {
       _paused = false;
@@ -152,7 +155,8 @@ class MotionPolicy {
   /// after *this* tick — cadenced off of whenever the fix actually happens
   /// to be taken, not off a fixed schedule from the original pause moment,
   /// so a delayed tick does not make every subsequent fix late forever.
-  MotionAction tick(DateTime now) {
+  MotionAction tick() {
+    final now = _clock();
     if (_paused) {
       final due = _nextSafetyFixAt;
       if (due != null && !now.isBefore(due)) {
@@ -190,6 +194,10 @@ class MotionPolicy {
 ///    just that one fix, checked against the anchor recorded (via [seed])
 ///    at the moment the pause began, as a guard against a missed native
 ///    STILL-exit broadcast.
+///
+/// Purely spatial — no timestamp involved (fix round 1, I5: [MotionPolicy]
+/// itself sources every "now" it needs from its own injected clock, so a
+/// fix's own timestamp is no longer threaded through here at all).
 class GpsStillnessTracker {
   final MotionPolicy policy;
   final double movementThresholdM;
@@ -217,16 +225,16 @@ class GpsStillnessTracker {
   /// still — not moved — from that fix's own position: if the walker
   /// genuinely stays there, the sustained-stillness timer should count from
   /// this first reading, not wait for a second one to confirm it.
-  MotionAction onFix(double lat, double lon, DateTime at) {
+  MotionAction onFix(double lat, double lon) {
     final anchor = _anchor;
     if (anchor == null) {
       _anchor = (lat, lon);
-      return policy.stillEntered(at);
+      return policy.stillEntered();
     }
     if (distance(lat, lon, anchor.$1, anchor.$2) > movementThresholdM) {
       _anchor = (lat, lon);
-      return policy.stillExited(at);
+      return policy.stillExited();
     }
-    return policy.stillEntered(at);
+    return policy.stillEntered();
   }
 }
