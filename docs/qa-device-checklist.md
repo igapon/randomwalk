@@ -119,8 +119,8 @@ Contexte : `app/lib/map/plan_mode.dart`, `app/lib/map/candidate_chips_bar.dart`
 
 Contexte : `app/lib/adventure/`, `app/lib/game/` — logique pure et testée en
 CI, mais dépend en pratique de vrais fixes GPS et du rythme réel de
-déplacement de la carte. *Aucune note « device-QA » explicite n'existe encore
-dans le code pour cette zone : à combler après cette première passe.*
+déplacement de la carte. Les points ci-dessous sont la première passe de
+notes « device-QA » explicites pour cette zone.
 
 - [ ] **Révélation du brouillard en marchant** — marcher un trajet réel avec
   l'onglet Aventure ouvert (ou revenir dessus après le trajet).
@@ -131,6 +131,15 @@ dans le code pour cette zone : à combler après cette première passe.*
   d'un point de vue ou d'une tour référencés (rayon de détection 25 m,
   maintien 5 s). **Résultat attendu** : notification discrète type
   « ⚑ Nom du lieu — +25 XP », révélation à 400 m autour du point, XP crédité.
+- [ ] **Faux positif à 25 m — passer PRÈS d'un landmark sans jamais entrer
+  dans le rayon** (`kVisitRadiusM`, `app/lib/game/visits.dart:7`) — marcher un
+  trajet qui passe volontairement à côté (pas devant) d'un lieu de culte/point
+  de vue référencé, par exemple sur le trottoir opposé d'une rue assez large
+  pour rester au-delà de 25 m tout le long. **Résultat attendu** : aucune
+  notification, aucune entrée dans `pendingVisits`/le journal pour ce lieu —
+  le geofence ne doit jamais se déclencher sur simple proximité de rue, y
+  compris en marchant lentement ou en s'arrêtant (feu, photo) juste en dehors
+  du rayon.
 - [ ] **Banque/ATM visité** — s'arrêter 5 s dans les 25 m d'une banque/ATM.
   **Résultat attendu** : pièces créditées (100 à la première visite du lieu,
   rendement décroissant 50/25/10 aux visites suivantes, cooldown 24 h/lieu —
@@ -144,14 +153,84 @@ dans le code pour cette zone : à combler après cette première passe.*
 - [ ] **Écran badges/stats** — ouvrir l'écran badges depuis le HUD :
   pourcentage du quartier courant, streak de jours, km cumulés cohérents
   avec le trajet réellement parcouru.
+- [ ] **Le pourcentage de quartier suit la caméra, pas une valeur figée** —
+  depuis l'écran badges/stats (ou le HUD, selon l'écran courant), déplacer
+  (pan) manuellement la carte vers un quartier différent de celui où le
+  trajet a lieu. **Résultat attendu** : le pourcentage affiché change pour
+  refléter le quartier maintenant sous la caméra (généralement 0 % s'il n'a
+  jamais été exploré) plutôt que de rester bloqué sur le pourcentage du
+  quartier de départ — un pourcentage qui ne bouge jamais en pannant est le
+  signe d'un calcul figé sur la position GPS plutôt que sur le centre caméra.
 - [ ] **Streak après redémarrage** — effectuer une sortie un jour, tuer
   complètement l'app, la rouvrir le lendemain avec une nouvelle sortie.
   **Résultat attendu** : le streak progresse (journal d'événements relu au
   démarrage, tolérant aux lignes corrompues).
 - [ ] **Jeu indisponible ne bloque jamais l'outil** — si possible, simuler
-  l'absence de POIs (ancien manifeste sans clé `pois`) ou un journal corrompu.
+  l'absence de POIs (ancien manifeste sans clé `pois`) ou un journal corrompu
+  (tronquer/altérer une ligne de `game_events.jsonl`).
   **Résultat attendu** : navigation/boucles/sessions restent 100%
   fonctionnelles ; le jeu se désactive proprement, sans crash ni blocage.
+  Logs concrets à vérifier :
+  - Absence de POIs / manifeste sans `pois`, ou init de la couche
+    exploration en échec : `adb logcat` doit montrer la ligne
+    `flutter: main: exploration layer unavailable, game disabled: ...`
+    (`app/lib/main.dart:118`) au démarrage — jamais de crash ni de stack
+    trace non catchée juste après.
+  - Journal corrompu : il n'existe **volontairement** aucune ligne de log
+    dédiée (`GameJournal.readAll` compte silencieusement les lignes ignorées
+    via `skippedLines`, `app/lib/game/events.dart:83`) — vérifier plutôt
+    l'absence de comportement aberrant à l'écran (HUD/badges cohérents, pas
+    de valeur `NaN`/négative) plutôt qu'une trace logcat.
+  - Un trajet qui vient de se terminer (`ExplorationRecorder.process()` en
+    échec quelque part dans son pipeline) loggue
+    `flutter: ExplorationRecorder: failed, continuing: ...`
+    (`app/lib/exploration/exploration_recorder.dart:167`) — présence normale
+    en cas d'échec best-effort, mais ne doit jamais s'accompagner d'un crash
+    de l'app ni d'un blocage de la session suivante.
+
+### Performance (usage prolongé / zone dense)
+
+Contexte : rien ci-dessous n'a de seuil d'échec/réussite strict — le but est
+de repérer un ressenti « qui rame » qu'un émulateur ou un jeu de données de
+test ne révèle jamais.
+
+- [ ] **`trace_attributes` (map-matching) sur une trace de ~2000 points** —
+  faire une sortie longue (~1-2 h, GPS continu) puis arrêter le trajet.
+  Chronométrer (montre, ou `adb logcat` horodaté) le temps entre l'arrêt et
+  la fin du traitement `ExplorationRecorder.process()`
+  (`app/lib/exploration/exploration_recorder.dart`, appel Valhalla
+  `trace_attributes` dans `matcher.dart`). **Résultat attendu** : quelques
+  secondes maximum, pas de gel perceptible de l'UI pendant le calcul (il
+  tourne en fire-and-forget, voir le commentaire de classe
+  d'`ExplorationRecorder`).
+- [ ] **Cadence d'écriture du fichier de trace** — pendant une sortie longue,
+  vérifier que `active_track.jsonl` (répertoire de session) ne grossit pas
+  sans limite et que les écritures successives n'introduisent pas de à-coups
+  visibles dans la distance/le tracé affiché (le fichier est borné à
+  `kTrackMaxPoints`, `app/lib/exploration/track_sampler.dart` — un dépassement
+  silencieux serait le signe d'une régression de ce plafond).
+- [ ] **Coût de `PoiStore.near` par fix, en zone urbaine dense** —
+  démarrer un trajet Aventure dans un centre-ville dense en POIs
+  (`app/lib/game/pois.dart`, `PoiStore.near` interrogé à chaque fix via
+  `VisitDetector`, `app/lib/game/visits.dart`). **Résultat attendu** : pas de
+  ralentissement perceptible de la fréquence des fixes GPS affichés ni de
+  la réactivité de l'écran carte comparé à une zone peu dense, même avec
+  plusieurs centaines de POIs dans le disque de recherche.
+- [ ] **Latence « Proposer » juste après l'arrêt d'un trajet (« shared-actor
+  stall »)** — arrêter un trajet Aventure/navigation, puis immédiatement
+  (dans la seconde qui suit) lancer une proposition de boucle/itinéraire
+  (bouton « Proposer », `app/lib/map/map_screen.dart`). **Contexte** : le
+  moteur natif Valhalla est un acteur unique partagé par isolate
+  (`ValhallaChannel.kt`) — le post-traitement du trajet qui vient de se
+  terminer (`_buildExplorationEngine`, `app/lib/main.dart:159`) réinitialise
+  ce même acteur (fermeture + réouverture, remmapping des tuiles), ce qui
+  peut brièvement geler l'acteur que le planificateur de route utilise
+  aussi. **Résultat attendu** : la proposition finit par arriver (pas
+  d'erreur), mais noter tout délai visiblement plus long que d'habitude —
+  un délai de plusieurs secondes juste après l'arrêt, absent en dehors de
+  cette fenêtre, confirme ce chevauchement et n'est pas un bug à corriger
+  dans cette passe (limitation connue, voir le commentaire de
+  `_buildExplorationEngine`).
 
 ## 5. Permissions
 
@@ -208,7 +287,19 @@ QA device (tag `RandomwalkPlugin`).
   stop pendant un trajet, par ex.), vérifier dans les logs qu'il n'y a pas de
   fuite du thread/worker natif Valhalla signalée (point relevé pour la QA
   device en tâche 5 : `flutterEngine.destroy()` peut ne jamais s'exécuter si
-  l'isolate est trop gravement bloqué).
+  l'isolate est trop gravement bloqué). Il n'existe pas de ligne de log
+  dédiée à cette fuite spécifiquement (le worker Valhalla —
+  `Executors.newSingleThreadExecutor()`, `ValhallaChannel.kt:50` — ne loggue
+  rien à sa propre fermeture) ; les signaux concrets à chercher sont :
+  - `adb logcat -s RandomwalkPlugin` : la ligne symétrique
+    `detached from engine` (voir section 6, deux lignes plus haut) doit
+    apparaître pour CHAQUE `attached to engine` — une `attached` sans
+    `detached` correspondante après l'arrêt anormal indique que le moteur du
+    service isolate n'a jamais été détruit proprement.
+  - `adb shell dumpsys activity services fr.lmqc.randomwalk` (ou le profiler
+    Android Studio, onglet Threads) juste après l'arrêt anormal : un thread
+    nommé `pool-*-thread-1` toujours vivant plusieurs minutes après que le
+    service a été tué est le worker Valhalla resté bloqué.
 
 ## 7. Bannières GPS et couverture
 
