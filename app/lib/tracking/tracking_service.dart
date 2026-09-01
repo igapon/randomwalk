@@ -839,33 +839,41 @@ class TripTaskHandler extends TaskHandler {
     final store = _poiStore;
     if (store == null || store.count == 0) return;
 
-    final center = _poiQueryCenter;
-    if (center == null ||
-        metersBetween(sample.lat, sample.lon, center.$1, center.$2) >
-            _poiRequeryThresholdM) {
-      final candidates = store
-          .near(sample.lat, sample.lon, _poiDiscRadiusM)
-          .where((p) => !_visitedThisTrip.contains(p.id))
-          .toList();
-      _visitDetector = VisitDetector(candidates);
-      _poiQueryCenter = (sample.lat, sample.lon);
-    }
+    // Belt-and-braces on top of every other guard in this method: a
+    // pathological fix (NaN/Infinity lat/lon, however that might arise)
+    // must cost this one fix's landmark detection, never take `_onNavFix`
+    // (called right after this, from the same `_onFix`) down with it.
+    try {
+      final center = _poiQueryCenter;
+      if (center == null ||
+          metersBetween(sample.lat, sample.lon, center.$1, center.$2) >
+              _poiRequeryThresholdM) {
+        final candidates = store
+            .near(sample.lat, sample.lon, _poiDiscRadiusM)
+            .where((p) => !_visitedThisTrip.contains(p.id))
+            .toList();
+        _visitDetector = VisitDetector(candidates);
+        _poiQueryCenter = (sample.lat, sample.lon);
+      }
 
-    final visit = _visitDetector?.onFix(sample.lat, sample.lon, sample.time);
-    if (visit == null) return;
+      final visit = _visitDetector?.onFix(sample.lat, sample.lon, sample.time);
+      if (visit == null) return;
 
-    _visitedThisTrip.add(visit.poi.id);
-    _pendingVisits.add(PendingVisit(
-      poiId: visit.poi.id,
-      kind: visit.poi.kind.name,
-      subkind: visit.poi.subkind,
-      name: visit.poi.name,
-      lat: visit.poi.lat,
-      lon: visit.poi.lon,
-      ts: visit.ts,
-    ));
-    while (_pendingVisits.length > kPendingVisitsMax) {
-      _pendingVisits.removeAt(0);
+      _visitedThisTrip.add(visit.poi.id);
+      _pendingVisits.add(PendingVisit(
+        poiId: visit.poi.id,
+        kind: visit.poi.kind.name,
+        subkind: visit.poi.subkind,
+        name: visit.poi.name,
+        lat: visit.poi.lat,
+        lon: visit.poi.lon,
+        ts: visit.ts,
+      ));
+      while (_pendingVisits.length > kPendingVisitsMax) {
+        _pendingVisits.removeAt(0);
+      }
+    } catch (_) {
+      // Best-effort; see the doc comment above.
     }
   }
 
