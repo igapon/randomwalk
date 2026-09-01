@@ -5,6 +5,7 @@ import '../session/recorder.dart';
 import '../tracking/device_channel.dart';
 import '../tracking/permissions.dart';
 import '../trip/trip_controller.dart';
+import 'account_tile.dart';
 import 'alert_settings.dart';
 import 'battery_optimization.dart';
 import 'identity.dart';
@@ -153,7 +154,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               final ttsEnabled = snapshot.data!.ttsEnabled;
               final hapticsEnabled = snapshot.data!.hapticsEnabled;
               return SafeArea(
-                child: Padding(
+                child: SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
                   child: Form(
                     key: _formKey,
@@ -231,6 +232,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                         const Divider(height: 32),
                         const AboutDataTile(),
+                        const AccountTile(),
                       ],
                     ),
                   ),
