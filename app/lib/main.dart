@@ -8,6 +8,7 @@ import 'package:randomwalk/coverage/coverage_repository.dart';
 import 'package:randomwalk/exploration/edges_store.dart';
 import 'package:randomwalk/exploration/exploration_recorder.dart';
 import 'package:randomwalk/game/events.dart';
+import 'package:randomwalk/game/visit_consumer.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/map/map_screen.dart';
@@ -20,6 +21,7 @@ import 'package:randomwalk/theme/tokens.dart';
 import 'package:randomwalk/tracking/permission_rationale.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
+import 'package:randomwalk/tracking/trip_snapshot.dart' show PendingVisit;
 import 'package:randomwalk/trip/active_route_store.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
@@ -72,21 +74,33 @@ Future<TripController> _buildTripController() async {
   );
 
   // M4 exploration: best-effort post-trip processing (map-matching, covered
-  // edges, fog reveal, journal events). `EdgesStore.open` is the only
-  // `await` here that can fail outright (sqflite hiccup) — if it does, the
-  // whole game layer stays off for this run rather than the app failing to
-  // start; every other exploration failure mode is handled inside
-  // `ExplorationRecorder` itself.
+  // edges, fog reveal, journal events) plus, since Task 5, mid-trip
+  // landmark-visit processing sharing the same journal. `EdgesStore.open`
+  // is the only `await` here that can fail outright (sqflite hiccup) — if
+  // it does, the whole game layer stays off for this run rather than the
+  // app failing to start; every other exploration/visit failure mode is
+  // handled inside `ExplorationRecorder`/`GameVisitConsumer` themselves.
   Future<void> Function(FinishedTrip trip)? processTripExploration;
+  Future<void> Function(List<PendingVisit> visits)? processGameVisits;
   try {
+    final journal = GameJournal(Directory('${dir.path}/game'));
     final edgesStore = await EdgesStore.open('${dir.path}/covered_edges.db');
     final recorder = ExplorationRecorder(
       engineProvider: () => _buildExplorationEngine(coverage),
       edgesStore: edgesStore,
-      journal: GameJournal(Directory('${dir.path}/game')),
+      journal: journal,
       trackFile: File('${dir.path}/active_track.jsonl'),
     );
     processTripExploration = recorder.process;
+    // Shares `journal` with the recorder above — one `game_events.jsonl`,
+    // appended to by whichever of the two fires for a given trip (landmark
+    // visits mid-trip via this consumer, trip-level km/cells/loop XP and
+    // the energy drain post-trip via the recorder).
+    final visitConsumer = GameVisitConsumer(
+      journal: journal,
+      notify: GuidanceAlertNotifier().call,
+    );
+    processGameVisits = visitConsumer.consume;
   } catch (e) {
     debugPrint('main: exploration layer unavailable, game disabled: $e');
   }
@@ -99,7 +113,9 @@ Future<TripController> _buildTripController() async {
     ensurePermissions: permissions.ensureForTrip,
     readTrackingMode: permissions.currentTrackingMode,
     resolveTileDir: coverage.cachedTileDirPath,
+    resolvePoisFile: () async => (await coverage.poisFile())?.path,
     processTripExploration: processTripExploration,
+    processGameVisits: processGameVisits,
   );
 }
 
