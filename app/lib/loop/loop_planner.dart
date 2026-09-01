@@ -13,7 +13,11 @@
 ///     radius whose circumference equals the target).
 ///   * A→B: waypoints sit on a half-sine bulge between start and end; the
 ///     free parameter is the bulge height ("detour"), seeded from the
-///     surplus the user asked for beyond the direct distance.
+///     surplus the user asked for beyond the direct distance. Candidate
+///     diversity for A→B is structurally limited to which side of the
+///     start-end line the bulge sits on plus how tall it is — a richer
+///     search (e.g. varying the bulge's shape or waypoint spacing) is not
+///     implemented here and is deferred.
 ///   * That parameter is then bisected against the distance the router
 ///     actually reports, with a hard budget of
 ///     [LoopPlanner.maxRouterCallsPerCandidate] router calls per candidate.
