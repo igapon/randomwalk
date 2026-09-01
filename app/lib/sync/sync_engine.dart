@@ -152,7 +152,7 @@ class SyncEngine {
   Future<SyncReport> _runSync() async {
     var state = await stateStore.read();
     var events = await journal.readAll();
-    state = _dropMarkerIfJournalIsCorrupt(state);
+    state = await _reconcileCorruption(state, journal.skippedLines);
 
     // ---- PUSH: local events with an id the server doesn't have yet ----
     final confirmed = <String>{...state.pushedCatchupIds};
@@ -203,7 +203,7 @@ class SyncEngine {
         // exactly, so a concurrently-appended local event stays below
         // `pushedIndex` and stays pushable.
         events = await journal.readAll();
-        state = _dropMarkerIfJournalIsCorrupt(state);
+        state = await _reconcileCorruption(state, journal.skippedLines);
         for (final e in fresh) {
           knownIds.add(e.id);
           confirmed.add(e.id); // remote-origin: already known server-side.
@@ -231,7 +231,8 @@ class SyncEngine {
     return SyncReport(pushedCount: pushedCount, pulledCount: pulledCount);
   }
 
-  /// Fix round 1 (Task 4 review I3): [SyncCursorState.pushedIndex] indexes
+  /// Fix round 1 (Task 4 review I3), corrected in fix round 2 (Task 4
+  /// review NEW-1): [SyncCursorState.pushedIndex] indexes
   /// `journal.readAll()`'s PARSED result, not raw file lines — [GameJournal]
   /// skips any line it cannot parse (a torn write from a crash mid-append)
   /// and reports how many via [GameJournal.skippedLines], reflecting only
@@ -241,17 +242,42 @@ class SyncEngine {
   /// silently mis-mark a real, never-pushed event as already covered.
   /// Since there is no way to tell whether the corruption fell before or
   /// after [SyncCursorState.pushedIndex] from [skippedLines] alone, the
-  /// only safe response is to stop trusting the positional marker for this
-  /// round: reset it to 0 so the push phase reconsiders the whole journal.
-  /// A resulting redundant push is harmless (`ON CONFLICT DO NOTHING`,
-  /// same as every other idempotent-retry path this class relies on);
-  /// silently dropping an event is not. [pushedCatchupIds] is left as-is —
-  /// those ids are still filtered out of `toPush` by id regardless of
-  /// [pushedIndex], so keeping them avoids redundant re-uploads for
-  /// exactly the events this reset doesn't need to reconsider.
-  SyncCursorState _dropMarkerIfJournalIsCorrupt(SyncCursorState state) {
-    if (journal.skippedLines == 0) return state;
-    return state.copyWith(pushedIndex: 0);
+  /// only safe response is to stop trusting the positional marker: reset
+  /// [SyncCursorState.pushedIndex] to 0 so the push phase reconsiders the
+  /// whole journal. A resulting redundant push is harmless (`ON CONFLICT
+  /// DO NOTHING`, same as every other idempotent-retry path this class
+  /// relies on); silently dropping an event is not.
+  ///
+  /// **Fix round 1's version of this compared `skippedLines` to a
+  /// hard-coded `0`, not to what was already accounted for** — so on a
+  /// journal with a PERSISTENT torn line (which [GameJournal] never
+  /// repairs; nothing here can heal it either), this reset fired on
+  /// *every single* `sync()` call forever: a full re-push on every launch
+  /// and every trip end, and a pull's cursor could never durably stick
+  /// either (compaction always ran against a freshly-zeroed index before
+  /// it could settle). The fix: [SyncCursorState.knownSkippedLines] records
+  /// the `skippedLines` count [pushedIndex] was last computed against, and
+  /// the reset only fires when the CURRENT count differs from that — i.e.
+  /// "corruption changed since the last checkpoint", not "corruption is
+  /// present". A changed count is persisted IMMEDIATELY (not left for a
+  /// later phase's own `stateStore.write`, which might not run at all this
+  /// round — e.g. nothing new to push) precisely so the next `sync()` call
+  /// reads back the same count it just observed and does NOT reset again.
+  /// [pushedCatchupIds] is left as-is on a reset — those ids are still
+  /// filtered out of `toPush` by id regardless of [pushedIndex], so keeping
+  /// them avoids redundant re-uploads for exactly the events the reset
+  /// doesn't need to reconsider.
+  Future<SyncCursorState> _reconcileCorruption(
+    SyncCursorState state,
+    int skippedLines,
+  ) async {
+    if (skippedLines == state.knownSkippedLines) return state;
+    final reconciled = state.copyWith(
+      pushedIndex: 0,
+      knownSkippedLines: skippedLines,
+    );
+    await stateStore.write(reconciled);
+    return reconciled;
   }
 
   /// Advances [state.pushedIndex] forward through [events] while each next

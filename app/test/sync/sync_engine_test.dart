@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -524,6 +525,50 @@ void main() {
         // the (now 3-item, since e2 dropped out and e4 was added) parsed
         // list and found "nothing new" — e4 silently never pushed, forever.
         expect(backend.serverEvents.map((e) => e.id), contains('e4'));
+      },
+    );
+
+    test(
+      'a PERSISTENT corrupt line (present across two syncs, never healed — '
+      'GameJournal never rewrites) triggers the reset only ONCE: the '
+      'second sync re-pushes nothing extra, and the marker sticks (fix '
+      'round 2, Task 4 review NEW-1 — fix round 1\'s version compared '
+      'skippedLines to a hard-coded 0, so it reset on EVERY sync forever)',
+      () async {
+        final journalDir = Directory('${tempDir.path}/persistent-corrupt');
+        final journalFile = File('${journalDir.path}/game_events.jsonl');
+        await journalDir.create(recursive: true);
+        final e1 = ev(GameEventTypes.coinsEarned, t0, {'amount': 1}, id: 'e1');
+        final e3 = ev(GameEventTypes.coinsEarned, t0, {'amount': 3}, id: 'e3');
+        // The corrupt line is present from the very first read — no prior
+        // clean sync needed to demonstrate "does the reset ever let go".
+        await journalFile.writeAsString(
+          '${jsonEncode(e1.toJson())}\n{not valid json\n${jsonEncode(e3.toJson())}\n',
+        );
+        final journal = GameJournal(journalDir);
+        expect((await journal.readAll()).length, 2); // e1, e3 (e2 skipped)
+        expect(journal.skippedLines, 1);
+
+        final backend = FakeSyncBackend();
+        final store = _MemoryStateStore();
+        final engine = SyncEngine(
+          journal: journal,
+          backend: backend,
+          stateStore: store,
+        );
+
+        final first = await engine.sync();
+        expect(first.pushedCount, 2); // e1, e3 — the one-time reset+push
+        expect(backend.serverEvents, hasLength(2));
+        expect((await store.read()).knownSkippedLines, 1); // recorded
+
+        final second = await engine.sync(); // same corrupt line, unchanged
+
+        expect(second.pushedCount, 0); // nothing extra — the marker stuck
+        expect(backend.serverEvents, hasLength(2)); // no duplicates either
+        final finalState = await store.read();
+        expect(finalState.pushedIndex, 2);
+        expect(finalState.knownSkippedLines, 1);
       },
     );
   });

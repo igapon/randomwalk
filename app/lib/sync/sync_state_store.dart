@@ -13,11 +13,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///   unparseable line (e.g. a torn write from a crash mid-append,
 ///   `GameJournal.skippedLines`), so this index shifts if a line that used
 ///   to parse stops parsing (or vice versa) between two `sync()` calls;
-///   `SyncEngine._dropMarkerIfJournalIsCorrupt` resets it to 0 whenever
-///   that call's `readAll()` reports any skipped lines, rather than trust
-///   a position that may no longer mean what it did when it was written
-///   (fix round 1, Task 4 review I3). Every sync push round only ever
-///   considers events at or past this index.
+///   `SyncEngine._reconcileCorruption` resets it to 0 whenever
+///   [knownSkippedLines] no longer matches that round's
+///   `GameJournal.skippedLines`, rather than trust a position that may no
+///   longer mean what it did when it was written (fix round 1, Task 4
+///   review I3). Every sync push round only ever considers events at or
+///   past this index.
 /// - [pushedCatchupIds] holds the ids of events *past* [pushedIndex] that
 ///   are already known server-side without this device ever pushing
 ///   them itself — specifically, events merged in from a pull (see
@@ -28,8 +29,22 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///   keeps this set small and bounded — bounded by how many
 ///   locally-authored, not-yet-pushed events this device can have
 ///   in flight at once, not by the total journal history.
+/// - [knownSkippedLines] (fix round 2, Task 4 review NEW-1) is the
+///   `GameJournal.skippedLines` count that [pushedIndex] was last computed
+///   against — i.e. "corruption already accounted for", not "corruption
+///   currently present". Fix round 1's version of the corruption check
+///   compared the CURRENT `skippedLines` to a hard-coded `0`, so on a
+///   journal with a PERSISTENT torn line it reset `pushedIndex` to 0 on
+///   *every single* `sync()` call forever — every launch and every trip
+///   end would fully re-push the journal, and a pull's progress could
+///   never stick either (the reset always ran before `pushedIndex` could
+///   settle). Persisting the count actually accounted for turns that into
+///   a ONE-TIME reset: the next round after the count last changed reads
+///   back the same [knownSkippedLines] it just wrote, sees no new
+///   corruption, and proceeds normally — `pushedIndex` advances and stays
+///   put exactly as it would on an undamaged journal.
 ///
-/// Both fields, plus [pullCursor] (the opaque cursor string from
+/// All three fields, plus [pullCursor] (the opaque cursor string from
 /// `SyncBackend.pullEventsSince`/`PullPage.nextCursor` — see that class's
 /// dartdoc for its format; this store never parses it), are persisted
 /// together so a process restart mid-sync resumes from the last durably
@@ -48,11 +63,13 @@ class SyncCursorState {
   final int pushedIndex;
   final Set<String> pushedCatchupIds;
   final String? pullCursor;
+  final int knownSkippedLines;
 
   const SyncCursorState({
     this.pushedIndex = 0,
     this.pushedCatchupIds = const {},
     this.pullCursor,
+    this.knownSkippedLines = 0,
   });
 
   SyncCursorState copyWith({
@@ -60,10 +77,12 @@ class SyncCursorState {
     Set<String>? pushedCatchupIds,
     String? pullCursor,
     bool clearPullCursor = false,
+    int? knownSkippedLines,
   }) => SyncCursorState(
     pushedIndex: pushedIndex ?? this.pushedIndex,
     pushedCatchupIds: pushedCatchupIds ?? this.pushedCatchupIds,
     pullCursor: clearPullCursor ? null : (pullCursor ?? this.pullCursor),
+    knownSkippedLines: knownSkippedLines ?? this.knownSkippedLines,
   );
 }
 
@@ -115,6 +134,7 @@ class PrefsSyncStateStore implements SyncStateStore {
   String get _pushedIndexKey => 'sync_pushed_index::$uid';
   String get _catchupIdsKey => 'sync_pushed_catchup_ids::$uid';
   String get _pullCursorKey => 'sync_pull_cursor::$uid';
+  String get _knownSkippedLinesKey => 'sync_known_skipped_lines::$uid';
 
   @override
   Future<SyncCursorState> read() async {
@@ -124,6 +144,7 @@ class PrefsSyncStateStore implements SyncStateStore {
       pushedCatchupIds: (prefs.getStringList(_catchupIdsKey) ?? const [])
           .toSet(),
       pullCursor: prefs.getString(_pullCursorKey),
+      knownSkippedLines: prefs.getInt(_knownSkippedLinesKey) ?? 0,
     );
   }
 
@@ -132,6 +153,7 @@ class PrefsSyncStateStore implements SyncStateStore {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_pushedIndexKey, state.pushedIndex);
     await prefs.setStringList(_catchupIdsKey, state.pushedCatchupIds.toList());
+    await prefs.setInt(_knownSkippedLinesKey, state.knownSkippedLines);
     final cursor = state.pullCursor;
     if (cursor == null) {
       await prefs.remove(_pullCursorKey);

@@ -52,6 +52,15 @@ void main() {
     expect((await store.read()).pullCursor, isNull);
   });
 
+  test('knownSkippedLines round-trips (fix round 2, Task 4 review NEW-1) and '
+      'defaults to 0 when nothing was ever written', () async {
+    final store = PrefsSyncStateStore('uid-a');
+    expect((await store.read()).knownSkippedLines, 0);
+
+    await store.write(const SyncCursorState(knownSkippedLines: 2));
+    expect((await store.read()).knownSkippedLines, 2);
+  });
+
   group('per-uid scoping (fix round 1, Task 4 review C2)', () {
     test(
       'two different uids never see each other\'s checkpoint, even though '
@@ -122,11 +131,13 @@ void main() {
         pushedIndex: 5,
         pushedCatchupIds: {'a'},
         pullCursor: 'c1',
+        knownSkippedLines: 1,
       );
       final copy = state.copyWith(pushedIndex: 9);
       expect(copy.pushedIndex, 9);
       expect(copy.pushedCatchupIds, {'a'});
       expect(copy.pullCursor, 'c1');
+      expect(copy.knownSkippedLines, 1);
     });
 
     test('clearPullCursor explicitly nulls the cursor even though a plain '
