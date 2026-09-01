@@ -100,11 +100,15 @@ class FakeSyncBackend implements SyncBackend {
   @override
   Future<void> signInWithOtp(String email) async {}
 
+  /// What [verifyOtp] returns — `null` (an invalid/unrecognized code, the
+  /// default) unless a test sets this to simulate a correct code.
+  AuthUser? verifyOtpResult;
+
   @override
   Future<AuthUser?> verifyOtp({
     required String email,
     required String code,
-  }) async => null;
+  }) async => verifyOtpResult;
 
   @override
   Future<void> signOut() async {}

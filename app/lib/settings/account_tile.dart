@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../sync/account_state.dart';
 import '../sync/providers.dart';
+import 'account_screen.dart';
 
 /// Settings entry point for the account/sync feature (M5). The only piece
 /// of M5 UI visible with no backend configured — a quiet tile whose
@@ -24,11 +25,9 @@ class AccountTile extends ConsumerWidget {
               context: context,
               builder: (context) => const _SyncUnconfiguredDialog(),
             )
-          : Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const AccountScreenPlaceholder(),
-              ),
-            ),
+          : Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const AccountScreen())),
     );
   }
 
@@ -67,22 +66,5 @@ class _SyncUnconfiguredDialog extends StatelessWidget {
         child: const Text('Fermer'),
       ),
     ],
-  );
-}
-
-/// Stand-in for the real account screen (email OTP sign-in, export,
-/// deletion) that Task 4 of the M5 plan builds in
-/// `app/lib/settings/account_screen.dart`. Reachable only once a backend is
-/// configured, which no build produced by this task can be (Task 3 hasn't
-/// added the `SupabaseBackend` branch to `syncBackendProvider` yet) — kept
-/// as a clearly-marked placeholder purely so [AccountTile]'s navigation
-/// wiring exists and is tested now rather than bolted on later.
-class AccountScreenPlaceholder extends StatelessWidget {
-  const AccountScreenPlaceholder({super.key});
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Compte')),
-    body: const Center(child: Text('Écran de compte à venir.')),
   );
 }
