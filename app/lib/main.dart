@@ -13,7 +13,10 @@ import 'package:randomwalk/game/game_state_provider.dart';
 import 'package:randomwalk/game/visit_consumer.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
+import 'package:randomwalk/map/boot_preload.dart';
 import 'package:randomwalk/map/map_screen.dart';
+import 'package:randomwalk/onboarding/onboarding_screen.dart';
+import 'package:randomwalk/onboarding/onboarding_store.dart';
 import 'package:randomwalk/session/recorder.dart';
 import 'package:randomwalk/session/session_screen.dart';
 import 'package:randomwalk/settings/identity.dart';
@@ -45,11 +48,16 @@ Future<void> main() async {
   // or one the OS killed — is on screen immediately, rather than flashing
   // an idle map first.
   await trip.restore();
+  // Task 2b item 2: read once, before the first frame — same "resolve
+  // before runApp" shape as `trip.restore()` above — so the very first
+  // frame already shows onboarding or the map, never a flash of one then
+  // the other.
+  final onboarded = await isOnboarded();
 
   runApp(
     ProviderScope(
       overrides: [tripControllerProvider.overrideWith((ref) => trip)],
-      child: const RandomWalkApp(),
+      child: RandomWalkApp(onboarded: onboarded),
     ),
   );
 }
@@ -171,7 +179,12 @@ Future<RoutingEngine?> _buildExplorationEngine(
 }
 
 class RandomWalkApp extends StatelessWidget {
-  const RandomWalkApp({super.key});
+  const RandomWalkApp({super.key, this.onboarded = true});
+
+  /// Whether the first-launch onboarding screen (task 2b item 2) has already
+  /// run. See [OnboardingGate].
+  final bool onboarded;
+
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'RandomWalk',
@@ -179,7 +192,7 @@ class RandomWalkApp extends StatelessWidget {
     theme: AppTheme.light,
     darkTheme: AppTheme.dark,
     themeMode: ThemeMode.system,
-    home: const HomeShell(),
+    home: OnboardingGate(onboarded: onboarded, child: const HomeShell()),
   );
 }
 
@@ -308,6 +321,7 @@ class _HomeShellState extends ConsumerState<HomeShell>
               trip.trackingMode == TrackingMode.foregroundOnly)
             const ForegroundOnlyBanner(),
           if (trip.isRecording && trip.gpsSilent) const GpsSilentBanner(),
+          const BootPreloadBanner(),
           // IndexedStack, not `screens[_tab]`: every screen stays mounted
           // across tab switches, so the map keeps its native surface (and
           // everything drawn on it) instead of being rebuilt from scratch
@@ -439,6 +453,49 @@ class GpsSilentBanner extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Discreet, non-blocking indicator for the boot-time coverage preload
+/// (task 2b brief item 3b) — visible only while [bootPreloadProgressProvider]
+/// is non-null, i.e. only during the (usually very short, since tile
+/// downloads are near-free once a version is already on disk) window that
+/// preload is actually fetching something. Never a modal, never in the way
+/// of anything else on screen.
+class BootPreloadBanner extends ConsumerWidget {
+  const BootPreloadBanner({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final progress = ref.watch(bootPreloadProgressProvider);
+    if (progress == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final label = progress.total > 0
+        ? 'Téléchargement des cartes… ${progress.done}/${progress.total}'
+        : 'Téléchargement des cartes…';
+    return Material(
+      color: theme.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: theme.colorScheme.onSecondaryContainer,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
+          ],
         ),
       ),
     );
