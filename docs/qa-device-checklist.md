@@ -82,6 +82,17 @@ avec wakelock (`allowWakeLock: true`) — voir aussi
     réglages système) — répéter le test de pause. **Résultat attendu** :
     la pause/reprise fonctionne toujours (via le repli pas/GPS), sans
     crash ni blocage du service.
+  - **Repli pas/GPS, écran éteint (fix round 1, item I4)** — sur un
+    appareil sans Activity Recognition (ou permission refusée), déclencher
+    une pause, **éteindre l'écran**, puis reprendre la marche. Contexte :
+    le service interroge lui-même le podomètre matériel toutes les 30 s
+    pendant la pause (`TripTaskHandler._pollFallbackSteps`) — le seul
+    signal de reprise qui fonctionne écran éteint sur cet appareil, la
+    poussée de pas de l'UI (`onReceiveData`) s'arrêtant avec l'écran.
+    **Résultat attendu** : la reprise arrive dans les ~30 s suivant le
+    redémarrage de la marche (pas immédiatement comme sur le chemin
+    natif/GPS) — un délai de reprise plus long que d'habitude ici est
+    **attendu**, pas un bug ; au-delà de ~40 s sans reprise, creuser.
   - **Aucun impact sur un trajet qui se termine pendant une pause** —
     déclencher une pause puis arrêter le trajet depuis l'app.
     **Résultat attendu** : le trajet se termine normalement (distance,
