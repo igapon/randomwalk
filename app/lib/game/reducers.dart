@@ -219,41 +219,52 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// Replays [events] through the pure reducer, folding them into a single
 /// [GameState] starting from the zero state.
 ///
-/// **M5 sync ordering (binding since Task 4):** [events] is first sorted by
-/// `(ts, id)` — timestamp ascending, then id ascending as a tiebreaker for
-/// two events sharing the exact same [GameEvent.ts]. This is no longer the
-/// journal's raw append order: M5's [SyncEngine] merges remote events onto
-/// the tail of the local journal (see `sync/sync_engine.dart`), so the same
-/// device can end up with an out-of-chronological-order append sequence
-/// (e.g. a landmark visit recorded offline, then a same-day-earlier event
-/// pulled from another device after reconnecting). Cooldowns
-/// (`_cooldownPassed`) and the streak (`_reduceStreakUpdated`) only produce
-/// device-independent, replay-order-independent results when every replay
-/// — on every device — processes events in the same, `ts`-derived order.
-/// `id` is unique per event (see [GameEvent]), so `(ts, id)` is a total
-/// order with no ties: any correct sort (Dart's `List.sort` included, which
-/// does not itself guarantee stability) yields the one well-defined result,
-/// so "stable" here describes the *comparator*, not a requirement on the
-/// sort algorithm's implementation.
+/// **M5 sync ordering (binding since Task 4, amended in Task 4's fix
+/// round 1 — see [_typePrecedence]):** [events] is first sorted by
+/// `(ts, type-precedence, id)` — timestamp ascending, then a small fixed
+/// per-type precedence, then id ascending as a final tiebreaker for two
+/// events that still tie on both. This is no longer the journal's raw
+/// append order: M5's [SyncEngine] merges remote events onto the tail of
+/// the local journal (see `sync/sync_engine.dart`), so the same device can
+/// end up with an out-of-chronological-order append sequence (e.g. a
+/// landmark visit recorded offline, then a same-day-earlier event pulled
+/// from another device after reconnecting). Cooldowns (`_cooldownPassed`)
+/// and the streak (`_reduceStreakUpdated`) only produce device-independent,
+/// replay-order-independent results when every replay — on every device —
+/// processes events in the same, deterministic order.
 ///
-/// **Ordering contract for emitters (Tasks 3/5):** within one trip, the
-/// `xp_earned` event(s) for that trip MUST be appended to the journal
-/// BEFORE that trip's `energy_changed` drain (the −4/km energy cost). The
-/// XP energy-multiplier is evaluated against `state.energy` *at the moment
-/// each `xp_earned` event is applied* — "the multiplier reflects the energy
-/// you walked with", i.e. the energy level going into the trip, not what's
-/// left after paying for it. Appending the drain first would under-multiply
-/// (or wrongly deflate) the XP earned for that same trip. Both events share
-/// the same trip's `ts`, so the `(ts, id)` sort above does not reorder them
-/// relative to each other — emitters must still mint `xp_earned`'s `id`
-/// before `energy_changed`'s only insofar as ids happen to tie-break equal
-/// `ts` values consistently; in practice every emitter in this codebase
-/// gives each event of a trip the exact same `ts` and appends them in the
-/// intended order, and [GameEvent.id]s are random uuids, so this ordering
-/// contract is really about append order for same-`ts` events from a single
-/// emitter, not about the cross-device sort. See the `xp_earned` ordering
-/// test in reducers_test.dart, which pins both orders' (different,
-/// intentional) results.
+/// **Why type-precedence, not just `(ts, id)`:** every trip-ending emitter
+/// (`ExplorationRecorder._run`, `GameVisitConsumer._process`) stamps every
+/// event of one trip/visit with the exact same `ts`, and one hard
+/// requirement — the `xp_earned`-before-`energy_changed` ordering
+/// contract below — depends on which of two same-`ts` events applies
+/// first. [GameEvent.id]s are random uuids, so tie-breaking on `id` alone
+/// would decide that order at random (fix round 1 finding: roughly half of
+/// all trips would have silently applied the drain before the XP,
+/// collapsing the ×1.5 multiplier to ×0.5). [_typePrecedence] removes the
+/// randomness for exactly the one pair that needs it, without having to
+/// touch every emitter's timestamps.
+///
+/// `(ts, type-precedence, id)` is still a total order (no unresolved ties):
+/// `id` is unique per event, so even two same-`ts`-same-precedence events
+/// are fully ordered by it. Any correct sort (Dart's `List.sort` included,
+/// which does not itself guarantee stability) therefore yields the one
+/// well-defined result — "stable" describes the comparator, not a
+/// requirement on the sort algorithm's implementation.
+///
+/// **Ordering contract for emitters (Tasks 3/5), now enforced by the sort
+/// itself:** within one trip, `xp_earned` MUST be applied before that same
+/// trip's `energy_changed` drain (the −4/km energy cost) — the XP
+/// energy-multiplier is evaluated against `state.energy` *at the moment
+/// each `xp_earned` event is applied*, i.e. "the multiplier reflects the
+/// energy you walked with", not what's left after paying for the trip.
+/// [_typePrecedence] gives `energy_changed` a strictly later tier than
+/// every other type, so this now holds regardless of `ts`-tie append order
+/// or `id` — emitters no longer need to coordinate ids to get this right,
+/// only to keep stamping one trip's events with one shared `ts` (already
+/// true of every emitter in this codebase). See
+/// reducers_test.dart's "ordering contract" group, which pins this for
+/// both append orders, plus a shuffled-replay and an M4-identity test.
 ///
 /// Every event id is deduplicated: an event whose `id` has already been
 /// seen earlier in the sorted sequence is skipped entirely (not even passed
@@ -271,7 +282,7 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// unlock the instant their underlying condition is met, not only when a
 /// `badge_unlocked` event happens to be replayed.
 GameState reduceAll(Iterable<GameEvent> events) {
-  final sorted = events.toList()..sort(_byTsThenId);
+  final sorted = events.toList()..sort(_byTsPrecedenceThenId);
   var state = const GameState();
   final seenIds = <String>{};
   for (final event in sorted) {
@@ -283,11 +294,34 @@ GameState reduceAll(Iterable<GameEvent> events) {
   return state;
 }
 
-int _byTsThenId(GameEvent a, GameEvent b) {
+int _byTsPrecedenceThenId(GameEvent a, GameEvent b) {
   final byTs = a.ts.compareTo(b.ts);
   if (byTs != 0) return byTs;
+  final byPrecedence = _typePrecedence(
+    a.type,
+  ).compareTo(_typePrecedence(b.type));
+  if (byPrecedence != 0) return byPrecedence;
   return a.id.compareTo(b.id);
 }
+
+/// [reduceAll]'s sort-tiebreak table for two events sharing the exact same
+/// [GameEvent.ts] — LOWER sorts first. Deliberately tiny: [
+/// GameEventTypes.energyChanged] is the only type singled out (tier 1,
+/// applied last among same-`ts` events); every other type — including
+/// [GameEventTypes.xpEarned] and [GameEventTypes.landmarkVisited], the
+/// "gain" events the ordering contract exists to protect — shares one
+/// neutral tier (0). That is exactly what the contract needs: at equal
+/// `ts`, every gain-type event for a trip applies against that trip's
+/// *pre-drain* energy, and the relative order among tier-0 events
+/// themselves never matters (`edge_covered_batch`/`cell_revealed`/
+/// `streak_updated`/`loop_completed`/`badge_unlocked` are all
+/// order-independent set/counter updates; multiple `xp_earned`s for one
+/// trip all read the same pre-drain energy no matter their relative
+/// order — see the reducers for each type). No other reducer depends on
+/// same-`ts` ordering, which is why this table stays this small rather
+/// than growing a tier per type.
+int _typePrecedence(String type) =>
+    type == GameEventTypes.energyChanged ? 1 : 0;
 
 /// Applies a single [event] to [state] — exactly what one step of
 /// [reduceAll]'s left fold does (same per-type reducer via [_reduceOne],
