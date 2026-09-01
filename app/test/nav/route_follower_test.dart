@@ -174,6 +174,14 @@ void main() {
       expect(u0.maneuverIndex, 1);
       expect(u0.arrived, isFalse);
 
+      // Genuinely out on the loop (near `c`, ~693 m from `d`) — this is what
+      // establishes the task-8 "left the destination's vicinity at least
+      // once" latch (`_leftArrivalRadius`) honestly, rather than the
+      // start-to-destination jump alone (only ~14 m, see `d`'s comment).
+      t = t.add(const Duration(seconds: 30));
+      final u0b = follower.update(c.$1, c.$2, t);
+      expect(u0b.arrived, isFalse);
+
       // Progress to the actual destination.
       t = t.add(const Duration(seconds: 60));
       final u1 = follower.update(d.$1, d.$2, t);
@@ -217,8 +225,16 @@ void main() {
         final crawl = offsetMeters(a, 3, 0);
         expect(follower.update(crawl.$1, crawl.$2, t).arrived, isFalse);
 
+        // Genuinely out on the loop, ~1.1 km from the departure — this is
+        // what honestly establishes the task-8 "left the destination's
+        // vicinity at least once" latch (`_leftArrivalRadius`), rather than
+        // the crawl-to-home jump alone (both within a few metres of `a`).
+        t = t.add(const Duration(minutes: 10));
+        final farCorner = offsetMeters(a, 800, 800);
+        expect(follower.update(farCorner.$1, farCorner.$2, t).arrived, isFalse);
+
         // All the way round, back to the departure: now it really is arrival.
-        t = t.add(const Duration(minutes: 30));
+        t = t.add(const Duration(minutes: 20));
         final home = offsetMeters(a, 2, 2);
         expect(follower.update(home.$1, home.$2, t).arrived, isTrue);
       });
@@ -254,6 +270,55 @@ void main() {
         t = t.add(const Duration(seconds: 20));
         final end = offsetMeters(a, 0, 12);
         expect(follower.update(end.$1, end.$2, t).arrived, isTrue);
+      });
+
+      test(
+          'switchback near the start does not arrive; the real, far-away end still does '
+          '(task-8 backlog item 1)', () {
+        // A loop with a short out-and-back right after departure: it goes
+        // 40 m out (p1) and back to within ~7 m of the start (p2) — well
+        // inside arrivalRadiusM (25 m) — *before* heading out on the real
+        // loop (p3, ~990 m away) and closing back on the start (== end).
+        //
+        // The switchback alone already walks 40 + 35.4 ≈ 75 m of path,
+        // which clears [_minProgressForArrivalKm]'s floor (≈41 m for this
+        // route) on its own — so the progress floor from final review
+        // item 5 is *not* enough here: without [_leftArrivalRadius], `p2`
+        // would satisfy every other arrival condition (last maneuver — none
+        // exist — within arrivalRadiusM of the end, and past the progress
+        // floor) despite the walker having physically gone nowhere. Only
+        // having genuinely left the destination's vicinity (reaching `p3`,
+        // 990 m away) may unlatch arrival at the real end.
+        final a = (46.5200, 6.6300);
+        final p1 = offsetMeters(a, 40, 0);
+        final p2 = offsetMeters(a, 5, 5);
+        final p3 = offsetMeters(a, 700, 700);
+        final shape = [a, p1, p2, p3, a];
+        final route = syntheticRoute(shape, const []);
+        final follower = RouteFollower(route);
+        var t = DateTime(2026, 1, 1);
+
+        // Back near the start after the switchback: NOT arrived, despite
+        // being within arrivalRadiusM and past the progress floor.
+        final uSwitchback = follower.update(p2.$1, p2.$2, t);
+        expect(uSwitchback.arrived, isFalse);
+
+        // Genuinely out on the loop, ~990 m from the start/end.
+        t = t.add(const Duration(minutes: 10));
+        final uFar = follower.update(p3.$1, p3.$2, t);
+        expect(uFar.arrived, isFalse);
+
+        // Back at the real end, now having genuinely left and returned. Uses
+        // a point a few metres short of `a` along the closing segment
+        // (p3 -> a), not the exact vertex `a` itself: `a` is also segment 0's
+        // *start* (a -> p1), so a fix landing exactly on it ties between
+        // "just departed" (alongKm ~= 0) and "just arrived" (alongKm ~=
+        // total) — an ambiguity real GPS noise never lands on exactly
+        // either, and orthogonal to what this test is about.
+        t = t.add(const Duration(minutes: 10));
+        final nearEnd = offsetMeters(a, 7, 7);
+        final uEnd = follower.update(nearEnd.$1, nearEnd.$2, t);
+        expect(uEnd.arrived, isTrue);
       });
     });
   });

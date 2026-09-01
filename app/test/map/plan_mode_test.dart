@@ -71,11 +71,11 @@ void main() {
       expect(durationToTargetKm(kDurationTargetMin, 2.0), greaterThan(0));
     });
 
-    group('clamped to the Boucle slider bounds (final review item 4)', () {
+    group('clamped to the Distance slider bounds (final review item 4)', () {
       test('a fast cyclist over 4 hours is capped at the maximum', () {
         // 4 h at 25 km/h is 100 km — a target the loop planner would spend
         // its whole router budget bisecting toward and never reach, and one
-        // no « Boucle » slider position can even express.
+        // no « Distance » slider position can even express.
         expect(durationToTargetKm(kDurationTargetMax, 25), kLoopTargetMaxKm);
         expect(durationToTargetKm(const Duration(hours: 2), 20),
             kLoopTargetMaxKm);
@@ -366,7 +366,7 @@ void main() {
   });
 
   group('shouldClearDestinationOnModeSwitch', () {
-    test('clears when leaving Itinéraire for Boucle with no route on screen',
+    test('clears when leaving Itinéraire for Distance with no route on screen',
         () {
       expect(
         shouldClearDestinationOnModeSwitch(
@@ -569,7 +569,7 @@ void main() {
   });
 
   group('shouldShowPlanDestinationChip (task-8 point 3)', () {
-    test('shown in Boucle/Distance mode with a pinned destination', () {
+    test('shown in Distance mode with a pinned destination', () {
       expect(
         shouldShowPlanDestinationChip(
             mode: PlanMode.loop, hasDestination: true),

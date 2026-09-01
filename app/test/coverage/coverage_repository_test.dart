@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
@@ -472,6 +473,116 @@ void main() {
       await repo.ensureCoverage(lat, lon);
       await repo.ensureCoverage(lat, lon);
       expect(poisRequests, 1);
+    });
+  });
+
+  group('HTTP timeouts (task-8 backlog item 2)', () {
+    // A response that never arrives — no exception, no status code, just a
+    // `Future` that never completes, the way a wedged connection (dropped
+    // mid-handshake behind a captive portal, a server that accepted the
+    // socket and then went silent) looks from the caller's side. Without a
+    // request-level timeout this would hang `ensureCoverage` forever;
+    // [CoverageRepository.totalTimeout] is injected small here (rather than
+    // the real 30 s [CoverageConfig.totalTimeout]) purely so the test itself
+    // doesn't have to wait out the real budget to prove the timeout fires.
+    Future<http.Response> neverCompletes(http.Request req) =>
+        Completer<http.Response>().future;
+
+    test(
+        'a manifest fetch that never completes falls back to the cached manifest, '
+        'like any other network failure', () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      // Warm a real cache first — same pattern as the offline-fallback test.
+      final onlineRepo = CoverageRepository(root: root, client: client());
+      final first = await onlineRepo.ensureCoverage(lat, lon);
+
+      final hangingClient = MockClient(neverCompletes);
+      final repo = CoverageRepository(
+        root: root,
+        client: hangingClient,
+        totalTimeout: const Duration(milliseconds: 50),
+      );
+      final second = await repo.ensureCoverage(lat, lon);
+
+      expect(second.datasetVersion, first.datasetVersion);
+      expect(second.tileDirPath, first.tileDirPath);
+      expect(second.downloaded, 0);
+      for (final p in knownPaths) {
+        expect(File('${second.tileDirPath}/$p').existsSync(), isTrue);
+      }
+    });
+
+    test('a manifest fetch that never completes rethrows when no cache exists',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(
+        root: root,
+        client: MockClient(neverCompletes),
+        totalTimeout: const Duration(milliseconds: 50),
+      );
+      await expectLater(
+          repo.ensureCoverage(lat, lon), throwsA(isA<TimeoutException>()));
+    });
+
+    test(
+        'a tile download that never completes is counted as failed, not a hang',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final hangingTileClient = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          return http.Response(jsonEncode(manifestFor(knownPaths)), 200);
+        }
+        return neverCompletes(req); // every tile hangs forever
+      });
+      final repo = CoverageRepository(
+        root: root,
+        client: hangingTileClient,
+        totalTimeout: const Duration(milliseconds: 50),
+      );
+      final res = await repo.ensureCoverage(lat, lon);
+
+      expect(res.downloaded, 0);
+      expect(res.failed, knownPaths.length);
+      for (final p in knownPaths) {
+        expect(File('${res.tileDirPath}/$p').existsSync(), isFalse);
+      }
+    });
+
+    test(
+        'a pois asset download that never completes is swallowed, tiles unaffected',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final poisBytes = utf8.encode('gzipped-pois-fixture');
+      final manifestWithPois = {
+        ...manifestFor(knownPaths),
+        'pois': {
+          'asset': 'pois.json.gz',
+          'bytes': poisBytes.length,
+          'sha256': sha256.convert(poisBytes).toString(),
+        },
+      };
+      final c = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          return http.Response(jsonEncode(manifestWithPois), 200);
+        }
+        if (req.url.path.endsWith('pois.json.gz')) {
+          return neverCompletes(req);
+        }
+        if (req.url.path.endsWith('.gph')) {
+          return http.Response.bytes(tileBytes, 200);
+        }
+        return http.Response('not found', 404);
+      });
+      final repo = CoverageRepository(
+        root: root,
+        client: c,
+        totalTimeout: const Duration(milliseconds: 50),
+      );
+      final res = await repo.ensureCoverage(lat, lon);
+
+      expect(res.failed, 0); // tile downloads are unaffected
+      expect(File('${res.tileDirPath}/pois.json.gz').existsSync(), isFalse);
+      expect(await repo.poisFile(), isNull);
     });
   });
 }

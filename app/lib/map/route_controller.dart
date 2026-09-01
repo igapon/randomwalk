@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:path_provider/path_provider.dart';
 import '../coverage/coverage_repository.dart';
 import '../loop/loop_planner.dart';
@@ -57,7 +58,12 @@ final routingEngineProvider =
 
 final coverageRepositoryProvider = FutureProvider<CoverageRepository>((ref) async {
   final dir = await getApplicationSupportDirectory();
-  final client = http.Client();
+  // A raw `dart:io` `HttpClient` behind `IOClient`, not the package's plain
+  // `http.Client()` — task-8 backlog item 2: this is the only layer that
+  // exposes a genuine connect-phase timeout (`connectionTimeout`), distinct
+  // from the request-level `.timeout()` [CoverageRepository] wraps each
+  // `get()` call in for the total budget. See `CoverageConfig.connectTimeout`.
+  final client = IOClient(HttpClient()..connectionTimeout = CoverageConfig.connectTimeout);
   ref.onDispose(client.close);
   return CoverageRepository(root: Directory('${dir.path}/tiles'), client: client);
 });
@@ -72,6 +78,22 @@ final geocodingServiceProvider = Provider<GeocodingService>((ref) {
 /// receive tile-download progress for that request, without widening
 /// [EnsureCoverage] (which would break [RoutePlanner]'s fixed, tested
 /// signature).
+///
+/// Accepted limitation (task-8 backlog item 4): this slot is a single
+/// provider-wide instance, not one per in-flight request. Two coverage
+/// downloads that happen to overlap — a loop plan's own multi-probe
+/// `ensureCoverage` racing an A→B plan the walker triggers moments later,
+/// say — share the one `onProgress` callback the last setter installed, so
+/// either caller's progress bar can briefly show the *other* request's
+/// numbers until its own next callback fires. Purely cosmetic (a progress
+/// bar reading, never route correctness — each request's own coverage/route
+/// result is unaffected) and, in practice, rare: [RoutePlanner.plan] and
+/// [LoopPlanOrchestrator.plan] both `await` their coverage step before doing
+/// anything else, so two calls need to be started within the same short
+/// coverage-download window to interleave at all. Fixing it properly would
+/// mean threading a per-request progress callback through
+/// [EnsureCoverage]/[RoutePlanner]/[LoopPlanOrchestrator] instead of this
+/// shared slot — not worth the signature churn for a progress-bar glitch.
 class ProgressSink {
   void Function(int done, int total)? onProgress;
 }

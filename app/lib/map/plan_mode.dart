@@ -39,7 +39,7 @@ enum PlanMode {
   explore,
 }
 
-// ---- Boucle: distance target ----------------------------------------------
+// ---- Distance (PlanMode.loop): distance target -----------------------------
 
 const double kLoopTargetMinKm = 1.0;
 const double kLoopTargetMaxKm = 30.0;
@@ -84,10 +84,10 @@ Duration clampDurationTarget(Duration duration) {
 /// tested as plain functions.
 ///
 /// Clamped to `[kLoopTargetMinKm, kLoopTargetMaxKm]` — the same bounds
-/// [clampLoopTargetKm] holds the Boucle slider to (final review item 4). The
-/// two modes plan through the identical [LoopRequest]/`LoopPlanner` pipeline,
-/// so a target Boucle cannot even express must not reach it from Durée
-/// either: 4 h at a 25 km/h cycling pace is 100 km, which the planner would
+/// [clampLoopTargetKm] holds the Distance slider to (final review item 4).
+/// The two modes plan through the identical [LoopRequest]/`LoopPlanner`
+/// pipeline, so a target Distance cannot even express must not reach it from
+/// Durée either: 4 h at a 25 km/h cycling pace is 100 km, which the planner would
 /// spend its entire router-call budget bisecting toward and never reach,
 /// handing back a candidate ~70 % short with no explanation. At the other
 /// end, a slow walker's 15 minutes converts to well under a kilometre.
@@ -238,14 +238,14 @@ const kDestinationTooFarMessage = 'Destination trop éloignée pour ce mode';
 
 /// Fix-round-1 finding: a destination pinned while in [PlanMode.itinerary]
 /// (long-press/search) that never turned into a route — a failed plan, or
-/// simply one still in flight — used to survive a switch into Boucle/Durée
+/// simply one still in flight — used to survive a switch into Distance/Durée
 /// invisibly, silently turning Durée's next « Proposer » into a
 /// fixed-duration A→B against a pin the walker never chose for that mode,
 /// with no control on screen to see or clear it.
 ///
 /// Final review item 7 makes the rule symmetric: **any** mode change with no
 /// route on screen drops an un-routed destination. The original rule only
-/// covered Itinéraire→(Boucle|Durée), which left the mirror image of the same
+/// covered Itinéraire→(Distance|Durée), which left the mirror image of the same
 /// bug — a pin set in Durée and carried into Itinéraire, where the Durée
 /// destination chip that could clear it is no longer on screen and no result
 /// banner exists either, so the next long-press or « Planifier » plans
@@ -464,7 +464,7 @@ const kPlanModePrefsKey = 'plan_mode';
 /// Persists the selected [PlanMode] across app restarts — mirrors
 /// `trip_controller.dart`'s `_defaultPersistProfile`/`_defaultLoadProfile`.
 /// Only the mode itself is persisted (per the brief); slider targets reset to
-/// their profile-based defaults each time Boucle/Durée is (re-)entered.
+/// their profile-based defaults each time Distance/Durée is (re-)entered.
 class PlanModeStore {
   Future<PlanMode> load() async {
     final prefs = await SharedPreferences.getInstance();

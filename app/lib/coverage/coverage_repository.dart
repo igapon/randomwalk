@@ -12,6 +12,33 @@ class CoverageConfig {
       'https://github.com/igapon/randomwalk-tiles/releases/download/$version/$asset';
   static const radiiKmByLevel = <int, double>{2: 45, 1: 120, 0: 400};
   static const maxCacheBytes = 300 * 1024 * 1024;
+
+  /// The connection-establishment half of the coverage HTTP budget
+  /// (task-8 backlog item 2) — a stalled TCP handshake/TLS negotiation to a
+  /// wedged CDN edge or captive portal must not hang [ensureCoverage]
+  /// indefinitely. Not enforceable through `http.Client.get()`'s
+  /// request-level `.timeout()` alone, since that call has no
+  /// connect-vs-transfer phase boundary of its own to hook — it is instead
+  /// applied where the concrete client is constructed (see
+  /// `route_controller.dart`'s `coverageRepositoryProvider`, which wires a
+  /// `dart:io` `HttpClient` with this as `connectionTimeout` behind an
+  /// `IOClient`), so it only binds the real network client, never the
+  /// injected fake one under test.
+  static const connectTimeout = Duration(seconds: 10);
+
+  /// The whole-request half of the coverage HTTP budget (task-8 backlog
+  /// item 2): manifest, tile and POI-asset fetches are each wrapped in
+  /// `.timeout(totalTimeout)` at their `client.get()` call site
+  /// ([CoverageRepository._fetchManifest], [CoverageRepository._downloadAsset]
+  /// — which also covers the POI asset, downloaded through it) — generous
+  /// enough for a multi-megabyte `.gph` tile over a slow mobile connection,
+  /// but bounded so a connection that hangs *after* connecting (a stalled
+  /// transfer, not just a stalled handshake) cannot either. A timeout here
+  /// surfaces as an ordinary `TimeoutException`, already handled by each call
+  /// site's existing failure path — cache fallback for the manifest, a
+  /// counted failed download for a tile/POI asset — exactly like any other
+  /// network failure.
+  static const totalTimeout = Duration(seconds: 30);
 }
 
 class CoverageResult {
@@ -46,7 +73,16 @@ class _ManifestFetch {
 class CoverageRepository {
   final Directory root;
   final http.Client client;
-  CoverageRepository({required this.root, required this.client});
+
+  /// [CoverageConfig.totalTimeout] by default — overridable so a test can
+  /// exercise the "request never completes" path (a fake client whose future
+  /// never resolves) without actually waiting out the real 30 s budget.
+  final Duration totalTimeout;
+
+  CoverageRepository(
+      {required this.root,
+      required this.client,
+      this.totalTimeout = CoverageConfig.totalTimeout});
 
   String get _manifestCachePath => '${root.path}/manifest.cache.json';
 
@@ -58,7 +94,9 @@ class CoverageRepository {
   /// dataset was ever downloaded. Only rethrows when no cache exists either.
   Future<_ManifestFetch> _fetchManifest() async {
     try {
-      final resp = await client.get(Uri.parse(CoverageConfig.manifestUrl));
+      final resp = await client
+          .get(Uri.parse(CoverageConfig.manifestUrl))
+          .timeout(totalTimeout);
       if (resp.statusCode != 200) {
         throw HttpException('manifest: HTTP ${resp.statusCode}');
       }
@@ -179,7 +217,7 @@ class CoverageRepository {
     final url = CoverageConfig.assetUrl(datasetVersion, asset.asset);
     final http.Response resp;
     try {
-      resp = await client.get(Uri.parse(url));
+      resp = await client.get(Uri.parse(url)).timeout(totalTimeout);
     } catch (_) {
       // Network failure mid-download (e.g. connectivity dropped): treat like
       // any other failed download rather than crashing ensureCoverage.
