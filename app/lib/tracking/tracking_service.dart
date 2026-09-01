@@ -25,6 +25,7 @@ import 'adaptive_gps.dart';
 import 'motion_channel.dart';
 import 'motion_policy.dart';
 import 'nav_seed.dart';
+import 'steps.dart';
 import 'trip_snapshot.dart';
 
 /// The seam between the trip's state machine and whatever is actually
@@ -580,8 +581,19 @@ class TripTaskHandler extends TaskHandler {
   /// Low-power mode (M5 Task 2d, owner brief): the pause/resume decision —
   /// see `motion_policy.dart`. Built once in [onStart], from whichever
   /// threshold applies (`navGuided` set from whether [_nav] exists — brief:
-  /// "en navigation guidée active, seuil doublé").
+  /// "en navigation guidée active, seuil doublé") and clocked by
+  /// [motionClockFactory].
   MotionPolicy? _motionPolicy;
+
+  /// The clock [_motionPolicy] is built with (fix round 1, I5: the
+  /// policy's own injected clock is the sole time authority for every
+  /// threshold it computes — see `MotionPolicy`'s class doc comment).
+  /// Defaults to `DateTime.now`; a static, swappable field for the same
+  /// `flutter_foreground_task`-instantiates-this-class reason as
+  /// [speakerFactory]/[motionChannelFactory] — tests inject a controllable
+  /// one to simulate minutes of stillness without a real wait.
+  @visibleForTesting
+  static DateTime Function() motionClockFactory = DateTime.now;
 
   /// Turns GPS fixes into still/moving signals for [_motionPolicy] — see
   /// [GpsStillnessTracker]'s doc comment for its two roles (the step/GPS
@@ -619,6 +631,22 @@ class TripTaskHandler extends TaskHandler {
   /// outlive the service.
   MotionSignalSource? _motionSource;
 
+  /// Serializes every low-power-mode stream reconciliation
+  /// (`MotionAction.pause`/`resume`, and a safety fix's own follow-up
+  /// resume) through one chain — fix round 1, C1. Several independent
+  /// events (a native transition, a step delta, a fix showing movement, the
+  /// periodic tick) can each decide "reconcile now" without waiting on each
+  /// other; without this, whichever happened to be dispatched *first* could
+  /// publish `_lowPowerPaused` based on a decision a *later* event had
+  /// already superseded. Chaining each request after whatever is already
+  /// queued — and having [_doReconcileStream] re-read `_motionPolicy!.isPaused`
+  /// fresh every time it actually runs, never trusting what it was when
+  /// enqueued — means whichever reconciliation runs *last* always publishes
+  /// the truth, however the awaits land. `SessionController`'s own
+  /// `_transitionChain` does the identical thing one layer down, for the
+  /// same reason.
+  Future<void> _motionReconcileChain = Future<void>.value();
+
   /// How many safety fixes have been taken this trip. Exposed for tests
   /// only — the real GPS fetch behind [SessionController.takeSafetyFix]
   /// cannot otherwise be observed from outside the isolate on a host test,
@@ -635,6 +663,34 @@ class TripTaskHandler extends TaskHandler {
   /// Android device). Reset it in `tearDown` after overriding.
   @visibleForTesting
   static MotionSignalSource Function() motionChannelFactory = MotionChannel.new;
+
+  /// Fix round 1, I4: while paused in fallback mode, [_pollFallbackSteps]
+  /// reads the hardware step counter directly from this isolate every
+  /// [kFallbackStepPollInterval] — the UI isolate's own step tally
+  /// (`onReceiveData`'s `steps` key) only ever updates once a second while a
+  /// screen is mounted and on, which is exactly what stops in the scenario
+  /// low-power mode exists for (screen off / app backgrounded). Reuses
+  /// `steps.dart`'s existing [StepSensor]/[ChannelStepSensor] — the same
+  /// abstraction the UI isolate's own `SessionStepCounter` is built on —
+  /// rather than inventing a second one; a static, swappable factory for the
+  /// same `flutter_foreground_task`-instantiates-this-class reason as
+  /// [speakerFactory]/[motionChannelFactory].
+  @visibleForTesting
+  static StepSensor Function() fallbackStepSensorFactory =
+      ChannelStepSensor.new;
+
+  late final StepSensor _fallbackStepSensor = fallbackStepSensorFactory();
+  bool _fallbackStepSensorStarted = false;
+  int? _fallbackStepBaseline;
+  DateTime? _lastFallbackStepPollAt;
+
+  /// How often [_pollFallbackSteps] reads the hardware step counter while
+  /// paused in fallback mode — pinned by fix round 1, I4. Residual: up to
+  /// this long (~40 m at a walking pace) of unrecorded movement per stop
+  /// before this specific signal catches it, on a device with neither the
+  /// Activity Recognition Transition API nor a foregrounded UI isolate —
+  /// documented in `docs/qa-device-checklist.md`.
+  static const kFallbackStepPollInterval = Duration(seconds: 30);
 
   FlutterLocalNotificationsPlugin? _notifications;
   bool _notificationsReady = false;
@@ -731,6 +787,15 @@ class TripTaskHandler extends TaskHandler {
   /// `FlutterForegroundTask.updateService`'s platform channel.
   @visibleForTesting
   String? get debugLastNotificationText => _lastNotificationText;
+
+  /// A direct passthrough to [_isGpsSilentAt]. Exposed for tests only (fix
+  /// round 1 — I2) so the gpsSilent verdict can be asserted straight off the
+  /// live computation, on a caller-controlled `DateTime`, without depending
+  /// on `ThrottledSnapshotWriter`'s own real-wall-clock write-coalescing —
+  /// which the *persisted* snapshot is subject to, and which has nothing to
+  /// do with the low-power-mode logic this asserts.
+  @visibleForTesting
+  bool debugIsGpsSilentAt(DateTime now) => _isGpsSilentAt(now);
 
   /// The visits detected so far this trip (M4 Task 5), without needing to
   /// wait for a publish/[ThrottledSnapshotWriter] flush to observe them —
@@ -836,7 +901,10 @@ class TripTaskHandler extends TaskHandler {
     // active, seuil doublé (6 min)". [_initMotionSignal] (below,
     // fire-and-forget like [_initSpeaker]) decides which signal source
     // feeds it.
-    _motionPolicy = MotionPolicy(navGuided: _nav != null);
+    _motionPolicy = MotionPolicy(
+      navGuided: _nav != null,
+      clock: motionClockFactory,
+    );
     _stillnessTracker = GpsStillnessTracker(
       _motionPolicy!,
       distance: metersBetween,
@@ -920,53 +988,125 @@ class TripTaskHandler extends TaskHandler {
   /// [MotionSignalSource.transitions].
   void _onMotionTransition(bool stillEntered) {
     if (_stopped) return;
-    final now = DateTime.now();
     final policy = _motionPolicy;
     if (policy == null) return;
-    final action = stillEntered
-        ? policy.stillEntered(now)
-        : policy.stillExited(now);
-    if (action != MotionAction.none) unawaited(_applyMotionAction(action, now));
+    final action = stillEntered ? policy.stillEntered() : policy.stillExited();
+    _handleMotionAction(action);
   }
 
-  /// Carries out what [_motionPolicy] decided — see [MotionAction]'s own
-  /// doc comment for what each case means.
-  Future<void> _applyMotionAction(MotionAction action, DateTime now) async {
-    if (_stopped) return;
+  /// Dispatches [action] to whichever handling it needs — [_reconcileStream]
+  /// for a pause/resume decision, [_takeSafetyFix] for a scheduled safety
+  /// fix. A thin router shared by every signal source
+  /// (`_onMotionTransition`/`onRepeatEvent`/`onReceiveData`/`_onFix`) so
+  /// each of them stays a one-line "here's what happened" instead of
+  /// repeating the same switch four times.
+  void _handleMotionAction(MotionAction action) {
     switch (action) {
       case MotionAction.none:
         return;
       case MotionAction.pause:
-        // Seeds the safety-fix anchor from the last position actually seen
-        // — in native mode [_stillnessTracker] is otherwise unfed while
-        // active, so without this the first safety fix would have no
-        // anchor to compare against (see [_lastFixLatLon]'s doc comment).
-        final anchor = _lastFixLatLon;
-        if (anchor != null) _stillnessTracker?.seed(anchor.$1, anchor.$2);
-        await _session?.pause();
-        _lowPowerPaused = true;
-        _publish(now, periodic: false);
       case MotionAction.resume:
-        await _session?.resume();
-        _lowPowerPaused = false;
-        _publish(now, periodic: false);
+        unawaited(_reconcileStream());
       case MotionAction.takeSafetyFix:
-        final sample = await _session?.takeSafetyFix();
-        debugSafetyFixCount++;
-        // Fallback mode already fed this exact fix to [_stillnessTracker]
-        // via [_onFix] (the same hook a continuous fix goes through) — only
-        // native mode needs it fed here, since [_onFix] skips the tracker
-        // entirely while native transitions are the signal of record.
-        if (sample != null && _nativeMotionAvailable) {
-          final followUp = _stillnessTracker?.onFix(
-            sample.lat,
-            sample.lon,
-            sample.time,
-          );
-          if (followUp != null && followUp != MotionAction.none) {
-            await _applyMotionAction(followUp, sample.time);
-          }
-        }
+        unawaited(_takeSafetyFix());
+    }
+  }
+
+  /// Fix round 1 — C1: serializes every pause/resume reconciliation through
+  /// [_motionReconcileChain] rather than acting on [action] directly — see
+  /// that field's doc comment for the interleaving this closes (a resume
+  /// signal arriving while an in-flight pause is still awaiting
+  /// `SessionController.pause()`'s own cancel, previously leaving the
+  /// stream closed with nothing left to reopen it).
+  Future<void> _reconcileStream() {
+    final next = _motionReconcileChain.then((_) => _doReconcileStream());
+    _motionReconcileChain = next.catchError((_) {});
+    return next;
+  }
+
+  /// Brings the session's GPS stream in line with [_motionPolicy]'s
+  /// *current* `isPaused` — read fresh here, not passed in, which is what
+  /// makes whichever reconciliation runs last always publish the truth (see
+  /// [_motionReconcileChain]).
+  Future<void> _doReconcileStream() async {
+    final policy = _motionPolicy;
+    if (policy == null || _stopped) return;
+    final shouldPause = policy.isPaused;
+    if (shouldPause) {
+      // Seeds the safety-fix anchor from the last position actually seen —
+      // in native mode [_stillnessTracker] is otherwise unfed while active,
+      // so without this the first safety fix would have no anchor to
+      // compare against (see [_lastFixLatLon]'s doc comment). The fallback
+      // step-poll baseline (I4) is reset the same way: each pause spell
+      // starts fresh rather than comparing against a stale count from a
+      // previous one.
+      final anchor = _lastFixLatLon;
+      if (anchor != null) _stillnessTracker?.seed(anchor.$1, anchor.$2);
+      _fallbackStepBaseline = null;
+      _lastFallbackStepPollAt = null;
+      await _session?.pause();
+    } else {
+      await _session?.resume();
+    }
+    // Re-read after the await (fix round 1 — C1): the desired state may
+    // have changed again while this was in flight — another reconciliation
+    // is already queued right behind this one on [_motionReconcileChain] in
+    // that case, and will correct this — but publishing whatever is true
+    // *right now* rather than whatever [shouldPause] said when this step
+    // started is what keeps the notification from momentarily lying.
+    final stillPaused = policy.isPaused;
+    _lowPowerPaused = stillPaused;
+    final now = DateTime.now();
+    if (!stillPaused) {
+      // Fix round 1 — I2: a resume must not publish a stale `gpsSilent`
+      // verdict off a `lastFixAt` that can be minutes old (the last safety
+      // fix, or older) — reset the silence clock exactly like
+      // onRepeatEvent's own session-restart watchdog does for the same
+      // reason, so the very tick that clears the pause reads as fresh.
+      _recordingSince = now;
+    }
+    _publish(now, periodic: false);
+  }
+
+  /// Fix round 1 — I3: the safety-fix movement guard, applied identically
+  /// whichever signal source is active. Reads the sample
+  /// [SessionController.takeSafetyFix] returns directly — not via
+  /// [_onFix]'s hook, which `SessionController` only calls when a fix
+  /// passes its own accuracy gate — and applies that SAME accuracy check
+  /// explicitly, here, before feeding [_stillnessTracker]. Previously
+  /// fallback mode silently dropped an inaccurate safety fix before it ever
+  /// reached the tracker (the "garde-fou contre un STILL-exit raté" did
+  /// nothing at all), while native mode fed it unfiltered (an 80 m-accuracy
+  /// fix trivially reads as "moved" against a 15 m threshold — a spurious
+  /// resume on GPS noise). An over-threshold-accuracy fix — or a fetch that
+  /// failed outright — now neither pauses nor resumes in either mode; the
+  /// safety-fix loop simply retries on its normal cadence.
+  Future<void> _takeSafetyFix() async {
+    if (_stopped) return;
+    final sample = await _session?.takeSafetyFix();
+    await debugHandleSafetyFixResult(sample);
+  }
+
+  /// The accuracy-gated movement-guard logic itself — factored out of
+  /// [_takeSafetyFix] so it is directly testable with a controlled
+  /// [GpsSample] rather than needing a real (or fake) GPS fetch behind
+  /// `SessionController.takeSafetyFix`, which has no injection seam at this
+  /// layer. Production code reaches this only through [_takeSafetyFix];
+  /// tests call it directly (`@visibleForTesting`, same rationale as
+  /// [debugOnFix]).
+  ///
+  /// [sample] null (the fetch failed outright) or too imprecise to trust
+  /// (fix round 1 — I3: `> kMaxFixAccuracyM`, applied identically whichever
+  /// signal source is active — see [_takeSafetyFix]'s own doc comment on
+  /// the class) neither pauses nor resumes; the safety-fix loop simply
+  /// retries on its normal cadence.
+  @visibleForTesting
+  Future<void> debugHandleSafetyFixResult(GpsSample? sample) async {
+    debugSafetyFixCount++;
+    if (sample == null || sample.accuracyM > kMaxFixAccuracyM) return;
+    final followUp = _stillnessTracker?.onFix(sample.lat, sample.lon);
+    if (followUp != null && followUp != MotionAction.none) {
+      unawaited(_reconcileStream());
     }
   }
 
@@ -987,15 +1127,57 @@ class TripTaskHandler extends TaskHandler {
       _recordingSince = timestamp;
     }
 
-    // Low-power mode: evaluated off this same repeat-event timestamp, not a
-    // real-time clock read here — see `MotionPolicy`'s doc comment on why
-    // it takes an explicit `DateTime` on every call.
-    final motionAction = _motionPolicy?.tick(timestamp);
+    final motionAction = _motionPolicy?.tick();
     if (motionAction != null && motionAction != MotionAction.none) {
-      unawaited(_applyMotionAction(motionAction, timestamp));
+      _handleMotionAction(motionAction);
+    }
+
+    // Fix round 1 — I4: fallback-mode step-counter polling while paused —
+    // see [_pollFallbackSteps]'s doc comment.
+    if (!_nativeMotionAvailable && (_motionPolicy?.isPaused ?? false)) {
+      unawaited(_pollFallbackSteps(timestamp));
     }
 
     _publish(timestamp, periodic: true);
+  }
+
+  /// Fix round 1 — I4: polls the hardware step counter directly from this
+  /// isolate every [kFallbackStepPollInterval] while paused in fallback
+  /// mode — the UI isolate's own step-delta push (`onReceiveData`'s `steps`
+  /// key) only ever updates once a second while a screen is mounted and on,
+  /// which is exactly what stops in the scenario low-power mode exists for
+  /// (screen off / app backgrounded). A positive delta against the baseline
+  /// taken when this pause began resumes immediately, same as any other
+  /// movement signal — this is the fallback path's own resume signal,
+  /// independent of whatever the UI isolate is or is not doing right now.
+  Future<void> _pollFallbackSteps(DateTime now) async {
+    if (_stopped) return;
+    if (!_fallbackStepSensorStarted) {
+      _fallbackStepSensorStarted = true;
+      unawaited(_fallbackStepSensor.start());
+    }
+    final last = _lastFallbackStepPollAt;
+    if (last != null && now.difference(last) < kFallbackStepPollInterval) {
+      return;
+    }
+    _lastFallbackStepPollAt = now;
+    final count = await _fallbackStepSensor.read();
+    if (count == null) return;
+    final baseline = _fallbackStepBaseline;
+    if (baseline == null) {
+      _fallbackStepBaseline = count;
+      return;
+    }
+    if (count <= baseline) {
+      // No movement, or a reboot/sensor reset reading backwards — re-anchor
+      // on a lower reading rather than treating it as evidence of anything.
+      if (count < baseline) _fallbackStepBaseline = count;
+      return;
+    }
+    _fallbackStepBaseline = count;
+    final policy = _motionPolicy;
+    if (policy == null) return;
+    _handleMotionAction(policy.stillExited());
   }
 
   /// Writes the current state everywhere it is read from: the persisted
@@ -1052,13 +1234,9 @@ class TripTaskHandler extends TaskHandler {
   Future<void> _onFix(GpsSample sample) async {
     _lastFixLatLon = (sample.lat, sample.lon);
     if (!_nativeMotionAvailable) {
-      final action = _stillnessTracker?.onFix(
-        sample.lat,
-        sample.lon,
-        sample.time,
-      );
+      final action = _stillnessTracker?.onFix(sample.lat, sample.lon);
       if (action != null && action != MotionAction.none) {
-        await _applyMotionAction(action, sample.time);
+        _handleMotionAction(action);
       }
     }
     await _sampleTrack(sample);
@@ -1396,13 +1574,7 @@ class TripTaskHandler extends TaskHandler {
       // handling needed here.
       if (newSteps > _steps) {
         final policy = _motionPolicy;
-        if (policy != null) {
-          final now = DateTime.now();
-          final action = policy.stillExited(now);
-          if (action != MotionAction.none) {
-            unawaited(_applyMotionAction(action, now));
-          }
-        }
+        if (policy != null) _handleMotionAction(policy.stillExited());
       }
       _steps = newSteps;
     }
@@ -1442,6 +1614,9 @@ class TripTaskHandler extends TaskHandler {
     _motionTransitionsSub = null;
     await _motionSource?.stop();
     _motionSource = null;
+    // Fix round 1 — I4: the fallback step-counter listener (if ever
+    // started) must not outlive the service either.
+    if (_fallbackStepSensorStarted) await _fallbackStepSensor.stop();
   }
 
   /// Clears a lingering guidance alert when the trip ends — a walker who

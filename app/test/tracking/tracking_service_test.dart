@@ -11,6 +11,7 @@ import 'package:randomwalk/session/recorder.dart' show GpsSample;
 import 'package:randomwalk/tracking/adaptive_gps.dart';
 import 'package:randomwalk/tracking/motion_channel.dart';
 import 'package:randomwalk/tracking/nav_seed.dart';
+import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/valhalla/models.dart';
@@ -1160,6 +1161,7 @@ void main() {
 
   group('TripTaskHandler — low-power mode (M5 Task 2d)', () {
     late Directory tempDir;
+    late DateTime now;
 
     setUpAll(() {
       TestWidgetsFlutterBinding.ensureInitialized();
@@ -1167,11 +1169,18 @@ void main() {
 
     setUp(() async {
       tempDir = await Directory.systemTemp.createTemp('rw_low_power_test');
+      now = DateTime.utc(2026, 8, 31, 9);
+      // Fix round 1, I5: MotionPolicy no longer accepts an explicit
+      // DateTime per call — it reads this controllable clock instead, the
+      // same pattern `AdaptiveGpsRateLimiter`'s own tests already use.
+      TripTaskHandler.motionClockFactory = () => now;
     });
 
     tearDown(() async {
       await tempDir.delete(recursive: true);
       TripTaskHandler.motionChannelFactory = MotionChannel.new;
+      TripTaskHandler.motionClockFactory = DateTime.now;
+      TripTaskHandler.fallbackStepSensorFactory = ChannelStepSensor.new;
     });
 
     Future<void> seedPrefs({
@@ -1223,17 +1232,17 @@ void main() {
         'switches, and a movement fix resumes immediately', () async {
       await seedPrefs(routeBound: false);
       final handler = TripTaskHandler();
-      final t0 = DateTime.utc(2026, 8, 31, 9);
-      await handler.onStart(t0, TaskStarter.developer);
+      await handler.onStart(now, TaskStarter.developer);
 
       // No native Activity Recognition on a host test (no method channel
       // mocked for randomwalk/motion) — this is exercising the fallback
       // path by construction, same as the emulator does in CI.
       await handler.debugOnFix(
-        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
       );
 
-      handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+      now = now.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(now);
       await pollUntil(() => handler.debugLowPowerPaused);
       expect(
         handler.debugLastNotificationText,
@@ -1242,13 +1251,14 @@ void main() {
 
       // ~100 m away — well past the fallback movement threshold: the
       // walker moved, so this reads as an immediate resume.
+      now = now.add(const Duration(seconds: 5));
       await handler.debugOnFix(
         GpsSample(
           lat: 46.5009,
           lon: 6.6,
           accuracyM: 5,
           speedMps: 1.2,
-          time: t0.add(const Duration(minutes: 3, seconds: 5)),
+          time: now,
         ),
       );
       await pollUntil(() => !handler.debugLowPowerPaused);
@@ -1262,24 +1272,25 @@ void main() {
         'never suspend', () async {
       await seedPrefs(routeBound: false);
       final handler = TripTaskHandler();
-      final t0 = DateTime.utc(2026, 8, 31, 9);
-      await handler.onStart(t0, TaskStarter.developer);
+      await handler.onStart(now, TaskStarter.developer);
 
       await handler.debugOnFix(
-        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
       );
       // Moves away again after 90 s — well under the 3 min threshold.
+      now = now.add(const Duration(seconds: 90));
       await handler.debugOnFix(
         GpsSample(
           lat: 46.5009,
           lon: 6.6,
           accuracyM: 5,
           speedMps: 1.2,
-          time: t0.add(const Duration(seconds: 90)),
+          time: now,
         ),
       );
 
-      handler.onRepeatEvent(t0.add(const Duration(minutes: 5)));
+      now = now.add(const Duration(minutes: 5));
+      handler.onRepeatEvent(now);
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(handler.debugLowPowerPaused, isFalse);
     });
@@ -1297,8 +1308,7 @@ void main() {
         ),
       );
       final handler = TripTaskHandler();
-      final t0 = DateTime.utc(2026, 8, 31, 9);
-      await handler.onStart(t0, TaskStarter.developer);
+      await handler.onStart(now, TaskStarter.developer);
 
       final start = route.shape.first;
       await handler.debugOnFix(
@@ -1307,11 +1317,12 @@ void main() {
           lon: start.$2,
           accuracyM: 5,
           speedMps: 0,
-          time: t0,
+          time: now,
         ),
       );
 
-      handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+      now = now.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(now);
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(
         handler.debugLowPowerPaused,
@@ -1319,7 +1330,8 @@ void main() {
         reason: 'the free-trip threshold must not apply while nav-guided',
       );
 
-      handler.onRepeatEvent(t0.add(const Duration(minutes: 6)));
+      now = now.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(now);
       await pollUntil(() => handler.debugLowPowerPaused);
     });
 
@@ -1327,19 +1339,20 @@ void main() {
         'a GPS malfunction', () async {
       await seedPrefs(routeBound: false);
       final handler = TripTaskHandler();
-      final t0 = DateTime.utc(2026, 8, 31, 9);
-      await handler.onStart(t0, TaskStarter.developer);
+      await handler.onStart(now, TaskStarter.developer);
 
       await handler.debugOnFix(
-        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
       );
-      handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+      now = now.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(now);
       await pollUntil(() => handler.debugLowPowerPaused);
 
       // Well past the ordinary 60 s GPS-silence threshold, with no fix at
       // all in the meantime — exactly what a genuine GPS failure would
       // also look like, which is the point of the assertion below.
-      handler.onRepeatEvent(t0.add(const Duration(minutes: 5)));
+      now = now.add(const Duration(minutes: 2));
+      handler.onRepeatEvent(now);
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
       final snapshotPath = '${tempDir.path}/snapshot.json';
@@ -1353,27 +1366,79 @@ void main() {
       expect(persisted?.gpsSilent, isFalse);
     });
 
+    test(
+      'fix round 1 — I2: resume does not publish a stale gpsSilent verdict',
+      () async {
+        await seedPrefs(routeBound: false);
+        final handler = TripTaskHandler();
+        await handler.onStart(now, TaskStarter.developer);
+
+        await handler.debugOnFix(
+          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
+        );
+        now = now.add(const Duration(minutes: 3));
+        handler.onRepeatEvent(now);
+        await pollUntil(() => handler.debugLowPowerPaused);
+
+        // Sit paused well past the ordinary 60 s silence threshold —
+        // `lastFixAt` (were it consulted) would read as several minutes
+        // stale by the time the walker moves again.
+        now = now.add(const Duration(minutes: 4));
+        handler.onRepeatEvent(now);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Movement resumes — the very publish that clears the pause must
+        // not carry a stale gpsSilent verdict.
+        now = now.add(const Duration(seconds: 1));
+        await handler.debugOnFix(
+          GpsSample(
+            lat: 46.5009,
+            lon: 6.6,
+            accuracyM: 5,
+            speedMps: 1.2,
+            time: now,
+          ),
+        );
+        await pollUntil(() => !handler.debugLowPowerPaused);
+
+        // Asserted against the live computation (`debugIsGpsSilentAt`), not
+        // the *persisted* snapshot: `ThrottledSnapshotWriter` coalesces
+        // writes on its own real-wall-clock 2 s window, which is unrelated
+        // to (and would make this assertion racy against) the low-power
+        // logic actually under test here. `_recordingSince` is reset with
+        // real `DateTime.now()` inside `_doReconcileStream`'s resume
+        // branch, so checking against real "now" here (rather than the
+        // test's simulated `now`) is the correct comparison.
+        expect(
+          handler.debugIsGpsSilentAt(DateTime.now()),
+          isFalse,
+          reason:
+              'the resume must not show a GPS-failure banner at the '
+              'exact moment the walker starts moving again',
+        );
+      },
+    );
+
     test('one safety fix is attempted every 3 min while paused', () async {
       await seedPrefs(routeBound: false);
       final handler = TripTaskHandler();
-      final t0 = DateTime.utc(2026, 8, 31, 9);
-      await handler.onStart(t0, TaskStarter.developer);
+      await handler.onStart(now, TaskStarter.developer);
 
       await handler.debugOnFix(
-        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
       );
-      final pauseAt = t0.add(const Duration(minutes: 3));
-      handler.onRepeatEvent(pauseAt);
+      now = now.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(now);
       await pollUntil(() => handler.debugLowPowerPaused);
       expect(handler.debugSafetyFixCount, 0);
 
-      handler.onRepeatEvent(
-        pauseAt.add(const Duration(minutes: 3) - const Duration(seconds: 1)),
-      );
+      now = now.add(const Duration(minutes: 3) - const Duration(seconds: 1));
+      handler.onRepeatEvent(now);
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(handler.debugSafetyFixCount, 0);
 
-      handler.onRepeatEvent(pauseAt.add(const Duration(minutes: 3)));
+      now = now.add(const Duration(seconds: 1));
+      handler.onRepeatEvent(now);
       await pollUntil(() => handler.debugSafetyFixCount == 1);
     });
 
@@ -1382,13 +1447,13 @@ void main() {
       () async {
         await seedPrefs(routeBound: false);
         final handler = TripTaskHandler();
-        final t0 = DateTime.utc(2026, 8, 31, 9);
-        await handler.onStart(t0, TaskStarter.developer);
+        await handler.onStart(now, TaskStarter.developer);
 
         await handler.debugOnFix(
-          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
         );
-        handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+        now = now.add(const Duration(minutes: 3));
+        handler.onRepeatEvent(now);
         await pollUntil(() => handler.debugLowPowerPaused);
 
         handler.onReceiveData({'steps': 42});
@@ -1403,25 +1468,253 @@ void main() {
 
       await seedPrefs(routeBound: false);
       final handler = TripTaskHandler();
-      await handler.onStart(
-        DateTime.utc(2026, 8, 31, 9),
-        TaskStarter.developer,
-      );
+      await handler.onStart(now, TaskStarter.developer);
 
       await pollUntil(() => fake.started);
       expect(fake.stopped, isFalse);
 
-      final justBefore = DateTime.now();
       fake.emit(true); // STILL entered
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      handler.onRepeatEvent(
-        justBefore.add(const Duration(minutes: 3, seconds: 1)),
-      );
+      now = now.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(now);
       await pollUntil(() => handler.debugLowPowerPaused);
 
       fake.emit(false); // STILL exited
       await pollUntil(() => !handler.debugLowPowerPaused);
+    });
+
+    group('fix round 1 — C1 (resume racing an in-flight pause)', () {
+      test(
+        'a resume signal following a pause decision very closely still '
+        'converges on a coherent, correctly-published resumed state',
+        () async {
+          await seedPrefs(routeBound: false);
+          final handler = TripTaskHandler();
+          await handler.onStart(now, TaskStarter.developer);
+
+          await handler.debugOnFix(
+            GpsSample(
+              lat: 46.5,
+              lon: 6.6,
+              accuracyM: 5,
+              speedMps: 0,
+              time: now,
+            ),
+          );
+          now = now.add(const Duration(minutes: 3));
+          // tick() decides to pause; before that reconciliation has
+          // settled, an independent, unserialized trigger (a step delta)
+          // decides to resume — the C1 interleaving, reproduced at the
+          // handler's own dispatch layer (`_motionReconcileChain`) rather
+          // than SessionController's own `_transitionChain`, which has its
+          // own dedicated, fully deterministic regression test in
+          // session_controller_test.dart.
+          handler.onRepeatEvent(now);
+          handler.onReceiveData({'steps': 1});
+
+          await pollUntil(() => !handler.debugLowPowerPaused);
+          expect(
+            handler.debugLastNotificationText,
+            isNot(kLowPowerPausedNotificationText),
+          );
+
+          // Coherent: the safety-fix schedule must have been cancelled by
+          // the resume, not left running from the superseded pause —
+          // advancing past what would have been the first safety-fix mark
+          // must not fire one.
+          now = now.add(const Duration(minutes: 4));
+          handler.onRepeatEvent(now);
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          expect(handler.debugSafetyFixCount, 0);
+        },
+      );
+    });
+
+    group('fix round 1 — I3 (safety-fix movement guard)', () {
+      Future<TripTaskHandler> pausedHandler() async {
+        await seedPrefs(routeBound: false);
+        final handler = TripTaskHandler();
+        await handler.onStart(now, TaskStarter.developer);
+        await handler.debugOnFix(
+          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
+        );
+        now = now.add(const Duration(minutes: 3));
+        handler.onRepeatEvent(now);
+        await pollUntil(() => handler.debugLowPowerPaused);
+        return handler;
+      }
+
+      test('an inaccurate safety fix neither pauses nor resumes', () async {
+        final handler = await pausedHandler();
+
+        // ~100 m from the anchor — well past the 15 m movement threshold —
+        // but far too imprecise (80 m accuracy) to trust either way.
+        await handler.debugHandleSafetyFixResult(
+          GpsSample(
+            lat: 46.5009,
+            lon: 6.6,
+            accuracyM: 80,
+            speedMps: 0,
+            time: now,
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(
+          handler.debugLowPowerPaused,
+          isTrue,
+          reason:
+              'an unusably imprecise fix must not resolve the doubt '
+              'either way — it retries on the normal cadence instead',
+        );
+        expect(handler.debugSafetyFixCount, 1);
+      });
+
+      test('an accurate safety fix showing movement resumes', () async {
+        final handler = await pausedHandler();
+
+        await handler.debugHandleSafetyFixResult(
+          GpsSample(
+            lat: 46.5009,
+            lon: 6.6,
+            accuracyM: 5,
+            speedMps: 1.2,
+            time: now,
+          ),
+        );
+        await pollUntil(() => !handler.debugLowPowerPaused);
+      });
+
+      test('an accurate safety fix within the anchor threshold leaves the '
+          'pause untouched', () async {
+        final handler = await pausedHandler();
+
+        await handler.debugHandleSafetyFixResult(
+          GpsSample(
+            lat: 46.500002,
+            lon: 6.6,
+            accuracyM: 5,
+            speedMps: 0,
+            time: now,
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(handler.debugLowPowerPaused, isTrue);
+      });
+
+      test('a failed safety fix (null) neither pauses nor resumes, and still '
+          'counts as an attempt', () async {
+        final handler = await pausedHandler();
+
+        await handler.debugHandleSafetyFixResult(null);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(handler.debugLowPowerPaused, isTrue);
+        expect(handler.debugSafetyFixCount, 1);
+      });
+    });
+
+    group('fix round 1 — I4 (fallback-mode step-counter polling)', () {
+      test('polls the step counter directly every 30 s while paused, resuming '
+          'within one poll — the screen-off scenario the UI-driven step push '
+          'cannot reach', () async {
+        final stepSensor = FakeStepSensor(value: 1000);
+        TripTaskHandler.fallbackStepSensorFactory = () => stepSensor;
+
+        await seedPrefs(routeBound: false);
+        final handler = TripTaskHandler();
+        await handler.onStart(now, TaskStarter.developer);
+
+        await handler.debugOnFix(
+          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
+        );
+        now = now.add(const Duration(minutes: 3));
+        handler.onRepeatEvent(now);
+        await pollUntil(() => handler.debugLowPowerPaused);
+
+        // The first tick while paused establishes the poll baseline.
+        now = now.add(const Duration(seconds: 1));
+        handler.onRepeatEvent(now);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(handler.debugLowPowerPaused, isTrue);
+
+        // "Screen off" scenario: the UI's own step push (onReceiveData)
+        // never arrives — that is exactly the gap I4 exists to close.
+        // Only the service's own poll, 30 s later, catches this.
+        stepSensor.value = 1050;
+        now = now.add(TripTaskHandler.kFallbackStepPollInterval);
+        handler.onRepeatEvent(now);
+        await pollUntil(() => !handler.debugLowPowerPaused);
+      });
+
+      test(
+        'does not resume before the 30 s poll interval has elapsed',
+        () async {
+          final stepSensor = FakeStepSensor(value: 1000);
+          TripTaskHandler.fallbackStepSensorFactory = () => stepSensor;
+
+          await seedPrefs(routeBound: false);
+          final handler = TripTaskHandler();
+          await handler.onStart(now, TaskStarter.developer);
+
+          await handler.debugOnFix(
+            GpsSample(
+              lat: 46.5,
+              lon: 6.6,
+              accuracyM: 5,
+              speedMps: 0,
+              time: now,
+            ),
+          );
+          now = now.add(const Duration(minutes: 3));
+          handler.onRepeatEvent(now);
+          await pollUntil(() => handler.debugLowPowerPaused);
+
+          now = now.add(const Duration(seconds: 1));
+          handler.onRepeatEvent(now); // establishes the baseline (1000)
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+
+          stepSensor.value = 1050;
+          now = now.add(
+            TripTaskHandler.kFallbackStepPollInterval -
+                const Duration(seconds: 1),
+          );
+          handler.onRepeatEvent(now);
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          expect(handler.debugLowPowerPaused, isTrue);
+        },
+      );
+
+      test('is never consulted in native mode', () async {
+        final fake = FakeMotionSignalSource();
+        TripTaskHandler.motionChannelFactory = () => fake;
+        var stepSensorStarted = false;
+        TripTaskHandler.fallbackStepSensorFactory = () {
+          stepSensorStarted = true;
+          return FakeStepSensor(value: 1000);
+        };
+
+        await seedPrefs(routeBound: false);
+        final handler = TripTaskHandler();
+        await handler.onStart(now, TaskStarter.developer);
+        await pollUntil(() => fake.started);
+
+        fake.emit(true);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        now = now.add(const Duration(minutes: 3));
+        handler.onRepeatEvent(now);
+        await pollUntil(() => handler.debugLowPowerPaused);
+
+        now = now.add(TripTaskHandler.kFallbackStepPollInterval * 2);
+        handler.onRepeatEvent(now);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(
+          stepSensorStarted,
+          isFalse,
+          reason:
+              'native mode has its own signal — polling the step '
+              'counter too would be pointless extra battery cost',
+        );
+      });
     });
   });
 }
