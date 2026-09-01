@@ -728,7 +728,21 @@ class TripTaskHandler extends TaskHandler {
     _navSeed = navSeed;
     if (navSeed != null && navSeed.route.shape.length >= 2) {
       _nav = NavigationRuntime(
-        follower: RouteFollower(navSeed.route),
+        follower: RouteFollower(
+          navSeed.route,
+          // Final review item 2: seed the fresh follower's arrival latch
+          // from the RESUMED snapshot (before `withoutNavigation` blanked
+          // it into `seed`, above) — not from a fresh `false`. A genuine
+          // restart (Android's `allowAutoRestart`) otherwise permanently
+          // re-blocks arrival for a trip that had already earned the latch
+          // (see `RouteFollower.leftArrivalRadius`'s and
+          // `TripSnapshot.navLeftArrivalRadius`'s doc comments), silently
+          // costing `loop_completed`/+50 XP/`premiere_boucle` on top of just
+          // never ending. A brand-new trip's seed
+          // (`TripSnapshot.starting`) defaults this `false`, so this cannot
+          // reintroduce the original km-0 false-arrival bug.
+          leftArrivalRadius: resumed.navLeftArrivalRadius,
+        ),
         replan: _replanFrom,
         // Final review item 1: a loop is followed but never recalculated —
         // its only routable "destination" is its own start, so a replan

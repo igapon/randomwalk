@@ -150,6 +150,34 @@ void main() {
       expect(TripSnapshot.fromJson(json).profile, RoutingProfile.walk);
     });
 
+    group('navLeftArrivalRadius (final review item 2)', () {
+      test('round-trips true through JSON via the nav block', () {
+        final navigating = _recording().copyWith(
+          nav: const NavFields(arrived: false, leftArrivalRadius: true),
+        );
+        final restored = TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(navigating.toJson())),
+        );
+        expect(restored.navLeftArrivalRadius, isTrue);
+      });
+
+      test('a free trip (no nav block) defaults to false', () {
+        final restored = TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(_recording().toJson())),
+        );
+        expect(restored.navLeftArrivalRadius, isFalse);
+      });
+
+      test('a document written before this field existed reads as false '
+          '(backward-compat)', () {
+        final navigating = _recording().copyWith(
+          nav: const NavFields(leftArrivalRadius: true),
+        );
+        final legacy = navigating.toJson()..remove('navLeftArrivalRadius');
+        expect(TripSnapshot.fromJson(legacy).navLeftArrivalRadius, isFalse);
+      });
+    });
+
     group('pendingVisits (M4 Task 5)', () {
       final visit = PendingVisit(
         poiId: 'osm/way/1',

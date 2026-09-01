@@ -359,6 +359,181 @@ void main() {
     });
   });
 
+  group('TripTaskHandler.onStart — arrival latch survives a restart '
+      '(final review item 2)', () {
+    late Directory tempDir;
+
+    setUpAll(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_arrival_restart');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+    });
+
+    /// Seeds a genuine restart: an on-disk snapshot already `recording`,
+    /// `routeBound`, with `updatedAt` past `startedAt` (so `resumePoint`
+    /// treats it as a restart, not a fresh seed — see `isFreshTripSeed`),
+    /// carrying [navLeftArrivalRadius] the way a previous incarnation would
+    /// have persisted it. `SharedPreferences`' own seed is a plain
+    /// `TripSnapshot.starting` (what the UI always writes before starting
+    /// the service) — `onStart` must read the resumed value from the ON
+    /// DISK snapshot, not from that prefs seed.
+    Future<String> seedRestart({required bool navLeftArrivalRadius}) async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final route = fakeRoute();
+      final onDisk = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.0,
+        steps: 1500,
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        updatedAt: DateTime.utc(2026, 8, 31, 9, 20),
+        profile: RoutingProfile.walk,
+        routeBound: true,
+      ).copyWith(nav: NavFields(leftArrivalRadius: navLeftArrivalRadius));
+      await File(snapshotPath).writeAsString(jsonEncode(onDisk.toJson()));
+
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: true,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
+        '$_prefsPrefix'
+            'randomwalk_nav_seed': jsonEncode(
+          NavSeed(
+            route: route,
+            destLat: route.shape.last.$1,
+            destLon: route.shape.last.$2,
+            profile: RoutingProfile.walk,
+            tileDirPath: null,
+          ).toJson(),
+        ),
+      });
+      return snapshotPath;
+    }
+
+    /// Polls the on-disk snapshot for [navArrived] to flip true — the
+    /// publish after a nav fix is fire-and-forget (`_publish` does not
+    /// await `_writer.submit`), same pattern the pendingVisits tests above
+    /// use.
+    Future<TripSnapshot?> pollUntilArrived(String snapshotPath) async {
+      TripSnapshot? persisted;
+      for (var i = 0; i < 20 && persisted?.navArrived != true; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+      }
+      return persisted;
+    }
+
+    test('a restarted service already near the destination, latch seeded '
+        'true from the resumed snapshot, arrives on the first fix', () async {
+      final snapshotPath = await seedRestart(navLeftArrivalRadius: true);
+      final route = fakeRoute();
+      final handler = TripTaskHandler();
+      await handler.onStart(
+        DateTime.utc(2026, 8, 31, 9, 20),
+        TaskStarter.developer,
+      );
+
+      final end = route.shape.last;
+      await handler.debugOnFix(
+        GpsSample(
+          lat: end.$1,
+          lon: end.$2,
+          accuracyM: 5,
+          speedMps: 0.5,
+          time: DateTime.utc(2026, 8, 31, 9, 20, 5),
+        ),
+      );
+
+      final persisted = await pollUntilArrived(snapshotPath);
+      expect(persisted?.navArrived, isTrue);
+    });
+
+    test('a fresh (non-restart) trip seed still cannot false-arrive at km 0 '
+        '— navLeftArrivalRadius defaults to false', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final route = fakeRoute();
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: true,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
+        '$_prefsPrefix'
+            'randomwalk_nav_seed': jsonEncode(
+          NavSeed(
+            route: route,
+            destLat: route.shape.last.$1,
+            destLon: route.shape.last.$2,
+            profile: RoutingProfile.walk,
+            tileDirPath: null,
+          ).toJson(),
+        ),
+      });
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
+
+      // First-ever fix, right at the start (== near the destination for
+      // a route whose start and end happen to be close together is not
+      // this fixture, but the point stands generically): must not arrive
+      // on a fresh, unseeded follower.
+      final start = route.shape.first;
+      await handler.debugOnFix(
+        GpsSample(
+          lat: start.$1,
+          lon: start.$2,
+          accuracyM: 5,
+          speedMps: 0.5,
+          time: DateTime.utc(2026, 8, 31, 9, 0, 1),
+        ),
+      );
+
+      TripSnapshot? persisted;
+      for (var i = 0; i < 10; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+        if (persisted != null) break;
+      }
+      expect(persisted?.navArrived, isNot(isTrue));
+    });
+  });
+
   group('TripTaskHandler.onStart — M4 track sampling', () {
     late Directory tempDir;
 

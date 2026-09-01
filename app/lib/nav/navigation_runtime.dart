@@ -192,6 +192,13 @@ class NavigationRuntime {
       // handing the estimator over keeps the ETA alive across a replan
       // instead of blanking it for the next three fixes.
       speed: _follower.speed,
+      // Same reasoning, for the arrival latch (final review item 2): the old
+      // follower's [RouteFollower.leftArrivalRadius] already reflects
+      // whatever this walker has genuinely done so far on this trip, so a
+      // replan must carry it forward rather than resetting it — otherwise a
+      // replan near the very end of a trip would silently reintroduce the
+      // task-8 bug it was replanning away from.
+      leftArrivalRadius: _follower.leftArrivalRadius,
     );
     _routeShapeEnc = encodePolyline6(route.shape);
   }
@@ -207,5 +214,6 @@ class NavigationRuntime {
     routeShapeEnc: _routeShapeEnc,
     degraded: _degraded,
     replanning: replanning,
+    leftArrivalRadius: u.leftArrivalRadius,
   );
 }

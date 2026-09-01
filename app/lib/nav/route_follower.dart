@@ -31,6 +31,15 @@ class NavUpdate {
   final bool arrived;
   final Duration? eta;
 
+  /// Whether the follower has, as of this update, latched having genuinely
+  /// left the destination's vicinity — [RouteFollower.leftArrivalRadius]'s
+  /// value at the moment this update was produced. Carried here (rather
+  /// than only readable off the [RouteFollower] instance) so a caller that
+  /// only sees updates — `NavigationRuntime`, hence the persisted
+  /// [TripSnapshot] — can persist it across a process restart without
+  /// reaching into the follower directly.
+  final bool leftArrivalRadius;
+
   const NavUpdate({
     required this.snappedLat,
     required this.snappedLon,
@@ -43,6 +52,7 @@ class NavUpdate {
     required this.offRoute,
     required this.arrived,
     this.eta,
+    this.leftArrivalRadius = false,
   });
 }
 
@@ -109,7 +119,15 @@ class RouteFollower {
   /// destination" and "definitely left", so a real departure is unambiguous
   /// before it counts. See [_leaveArrivalRadiusThresholdM] for the same
   /// degenerate-route cap [_minProgressForArrivalKm] uses.
-  bool _leftArrivalRadius = false;
+  bool _leftArrivalRadius;
+
+  /// Whether this follower already considers the walker to have genuinely
+  /// left the destination's vicinity — see [_leftArrivalRadius]'s own doc
+  /// comment. Exposed so a caller building a *replacement* follower (a
+  /// service restart seeding from a persisted [TripSnapshot], or
+  /// `NavigationRuntime._adopt` after a replan) can carry the latch forward
+  /// instead of every fresh instance starting from scratch.
+  bool get leftArrivalRadius => _leftArrivalRadius;
 
   DateTime? _lastSampleTime;
   double _lastSampleAlongKm = 0;
@@ -120,7 +138,21 @@ class RouteFollower {
     this.offRouteGrace = const Duration(seconds: 10),
     this.arrivalRadiusM = 25,
     SpeedEstimator? speed,
+
+    /// Seeds [_leftArrivalRadius] — final review item 2 (task-8's latch was
+    /// per-instance and never persisted, so a service restart near the end
+    /// of a trip could never latch "left" again and the trip could never
+    /// arrive). Defaults to `false`, exactly the old always-fresh behaviour,
+    /// so every existing call site (a brand-new trip, or one not threading
+    /// this through) is unaffected; a caller resuming an in-flight trip
+    /// passes the persisted value instead.
+    bool leftArrivalRadius = false,
   }) : speed = speed ?? SpeedEstimator(),
+       // The public parameter name (`leftArrivalRadius`) deliberately does
+       // not carry the private field's underscore, so this cannot be an
+       // initializing formal.
+       // ignore: prefer_initializing_formals
+       _leftArrivalRadius = leftArrivalRadius,
        _lastSnappedLat = route.shape.first.$1,
        _lastSnappedLon = route.shape.first.$2 {
     _geometry = RouteGeometry(route.shape);
@@ -280,6 +312,7 @@ class RouteFollower {
       offRoute: _offRoute,
       arrived: _arrived,
       eta: eta,
+      leftArrivalRadius: _leftArrivalRadius,
     );
   }
 }

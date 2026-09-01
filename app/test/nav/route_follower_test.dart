@@ -364,6 +364,83 @@ void main() {
     });
   });
 
+  group('leftArrivalRadius constructor seed (final review item 2 — '
+      'persisting the arrival latch across a restart)', () {
+    test('a fresh (unseeded) follower defaults leftArrivalRadius to false '
+        'and cannot arrive on the very first fix at a loop\'s shared '
+        'start/end, exactly like before this fix', () {
+      final a = (46.5200, 6.6300);
+      final shape = [
+        a,
+        offsetMeters(a, 800, 0),
+        offsetMeters(a, 800, 800),
+        offsetMeters(a, 0, 800),
+        a, // closes on the departure
+      ];
+      final route = syntheticRoute(shape, const []);
+      final follower = RouteFollower(route);
+
+      expect(follower.leftArrivalRadius, isFalse);
+      final u = follower.update(a.$1, a.$2, DateTime(2026, 1, 1));
+      expect(u.leftArrivalRadius, isFalse);
+      expect(
+        u.arrived,
+        isFalse,
+        reason: 'the km-0 bug this latch guards against must stay fixed',
+      );
+    });
+
+    test('a follower seeded with leftArrivalRadius: true can arrive on its '
+        'very first update — this is what lets a service restart near the '
+        'destination resume arrivability instead of being permanently '
+        'blocked', () {
+      final a = (46.5200, 6.6300);
+      final end = offsetMeters(a, 0, 400);
+      final route = syntheticRoute([a, end], [(0, 'Départ'), (1, 'Arrivée')]);
+
+      final unseeded = RouteFollower(route);
+      expect(
+        unseeded.update(end.$1, end.$2, DateTime(2026, 1, 1)).arrived,
+        isFalse,
+        reason:
+            'sanity: without the seed, a first fix at the destination '
+            'alone is not enough — the walker must genuinely be seen '
+            'to have progressed away and back',
+      );
+
+      final seeded = RouteFollower(route, leftArrivalRadius: true);
+      expect(seeded.leftArrivalRadius, isTrue);
+      final u = seeded.update(end.$1, end.$2, DateTime(2026, 1, 1));
+      expect(u.arrived, isTrue);
+    });
+
+    test('leftArrivalRadius on NavUpdate mirrors the follower\'s own latch as '
+        'it flips over the course of a trip', () {
+      final a = (46.5200, 6.6300);
+      final b = offsetMeters(a, 500, 0);
+      final c = offsetMeters(a, 500, 500);
+      final d = offsetMeters(a, 10, 10);
+      final route = syntheticRoute(
+        [a, b, c, d],
+        [(0, 'Départ'), (1, 'Tournez'), (3, 'Arrivée')],
+      );
+      final follower = RouteFollower(route);
+      var t = DateTime(2026, 1, 1);
+
+      final u0 = follower.update(a.$1, a.$2, t);
+      expect(u0.leftArrivalRadius, isFalse);
+
+      t = t.add(const Duration(seconds: 30));
+      final u1 = follower.update(c.$1, c.$2, t);
+      expect(
+        u1.leftArrivalRadius,
+        isTrue,
+        reason: 'now genuinely out on the loop, far from the end',
+      );
+      expect(follower.leftArrivalRadius, isTrue);
+    });
+  });
+
   group('published maneuverIndex is monotonic despite GPS wobble', () {
     test(
       'a backward wobble right after passing a maneuver does not revert the instruction',

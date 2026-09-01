@@ -194,6 +194,28 @@ class TripSnapshot {
   /// `navOffRoute || navReplanning` for exactly that reason.
   final bool navReplanning;
 
+  /// Whether the route-following [RouteFollower] behind this trip has
+  /// latched having genuinely left the destination's vicinity at least once
+  /// — see `RouteFollower.leftArrivalRadius`'s doc comment, and `NavFields`'
+  /// own field of the same name this is copied from every tick.
+  ///
+  /// **Final review item 2**: task-8's version of this latch lived only on
+  /// the `RouteFollower` instance, which a service restart near the *end* of
+  /// a trip throws away and rebuilds fresh (`allowAutoRestart` — see
+  /// `tracking_service.dart`'s `onStart`) — permanently blocking arrival
+  /// (hence `loop_completed`/+50 XP/`premiere_boucle`) for any trip
+  /// unlucky enough to have Android restart its service after the walker had
+  /// already left the destination's vicinity but before they arrived.
+  /// Persisting it here lets `onStart` seed the fresh follower's latch from
+  /// [TripSnapshot.navLeftArrivalRadius] as read off the *resumed* snapshot
+  /// (the one on disk before this incarnation blanks its own copy via
+  /// `withoutNavigation`) — a genuine restart carries the latch forward
+  /// exactly as if the process had never died, while a brand-new trip's seed
+  /// (`TripSnapshot.starting`) defaults it `false`, so a walker starting a
+  /// fresh trip right on top of an old destination still cannot false-arrive
+  /// at km 0.
+  final bool navLeftArrivalRadius;
+
   /// Polyline6 of the route currently being followed. Present so the map can
   /// redraw the line after a service-side replan, which the UI never sees
   /// happen and whose result exists nowhere else in this process.
@@ -246,6 +268,7 @@ class TripSnapshot {
     this.navReplanCount = 0,
     this.navRouteShapeEnc,
     this.navReplanning = false,
+    this.navLeftArrivalRadius = false,
     this.pendingVisits = const [],
   });
 
@@ -313,6 +336,7 @@ class TripSnapshot {
     navReplanCount: nav?.replanCount ?? navReplanCount,
     navRouteShapeEnc: nav == null ? navRouteShapeEnc : nav.routeShapeEnc,
     navReplanning: nav?.replanning ?? navReplanning,
+    navLeftArrivalRadius: nav?.leftArrivalRadius ?? navLeftArrivalRadius,
   );
 
   Map<String, dynamic> toJson() => {
@@ -337,6 +361,7 @@ class TripSnapshot {
     if (navReplanCount != 0) 'navReplanCount': navReplanCount,
     if (navRouteShapeEnc != null) 'navRouteShapeEnc': navRouteShapeEnc,
     if (navReplanning) 'navReplanning': navReplanning,
+    if (navLeftArrivalRadius) 'navLeftArrivalRadius': navLeftArrivalRadius,
     if (pendingVisits.isNotEmpty)
       'pendingVisits': pendingVisits.map((v) => v.toJson()).toList(),
   };
@@ -368,6 +393,10 @@ class TripSnapshot {
     // existed has no key for it at all, and must read as "not
     // replanning" rather than throw or coerce a null to true.
     navReplanning: j['navReplanning'] as bool? ?? false,
+    // Same backward-compat default (final review item 2): a snapshot
+    // written before this field existed reads as "not yet left" — exactly
+    // the pre-fix behaviour, never a spuriously-true latch.
+    navLeftArrivalRadius: j['navLeftArrivalRadius'] as bool? ?? false,
     pendingVisits:
         (j['pendingVisits'] as List?)
             ?.map(PendingVisit.tryParse)
