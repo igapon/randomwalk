@@ -39,6 +39,10 @@ dependencies:
   crypto: ^3.0.0
   uuid: ^4.4.0
   flutter_foreground_task: ^11.0.1
+  # Covered-edges store (M4 exploration): the default platform factory is
+  # used at runtime; tests point the ambient `databaseFactory` at
+  # `sqflite_common_ffi` instead (see `sqflite_common_ffi` below).
+  sqflite: ^2.3.0
   # Pinned below 13.x: permission_handler_android 14.0.0 requires
   # compileSdk 37, and AGP 9.0.1 (settings.gradle.kts) supports at most 36 —
   # `:app:checkDebugAarMetadata` fails the build outright. 12.0.3 pulls
@@ -60,6 +64,11 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
   xml: ^6.5.0
+  # `EdgesStore` (M4 exploration) tests run against this FFI (desktop)
+  # sqflite factory rather than the real Android/iOS plugin — see
+  # `sqfliteFfiInit()`/`databaseFactory = databaseFactoryFfi` in each test's
+  # `setUpAll`.
+  sqflite_common_ffi: ^2.3.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

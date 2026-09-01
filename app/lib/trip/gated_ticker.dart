@@ -15,7 +15,10 @@ class GatedTicker {
   final Duration interval;
   Timer? _timer;
 
-  GatedTicker({required this.onTick, this.interval = const Duration(seconds: 1)});
+  GatedTicker({
+    required this.onTick,
+    this.interval = const Duration(seconds: 1),
+  });
 
   /// Whether the periodic callback is currently running.
   bool get isActive => _timer != null;

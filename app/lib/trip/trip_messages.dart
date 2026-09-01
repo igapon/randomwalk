@@ -20,10 +20,9 @@ const kGpsSilentMessage =
 
 /// Why a trip refused to start, phrased for the user.
 String startFailureMessage(TripStartFailure? failure) => switch (failure) {
-      TripStartFailure.locationServiceOff => kLocationServiceOffMessage,
-      TripStartFailure.openedSettings => kOpenedSettingsMessage,
-      TripStartFailure.interruptedTripPending =>
-        kInterruptedTripPendingMessage,
-      TripStartFailure.alreadyRecording => kAlreadyRecordingMessage,
-      _ => kPositionUnavailableMessage,
-    };
+  TripStartFailure.locationServiceOff => kLocationServiceOffMessage,
+  TripStartFailure.openedSettings => kOpenedSettingsMessage,
+  TripStartFailure.interruptedTripPending => kInterruptedTripPendingMessage,
+  TripStartFailure.alreadyRecording => kAlreadyRecordingMessage,
+  _ => kPositionUnavailableMessage,
+};

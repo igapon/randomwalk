@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:path_provider/path_provider.dart';
 import '../coverage/coverage_repository.dart';
 import '../loop/loop_planner.dart';
@@ -10,14 +11,15 @@ import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
 import 'geocoding.dart';
 
-typedef EnsureCoverage
-    = Future<
-        ({
-          String datasetVersion,
-          String tileDirPath,
-          int failed,
-          bool versionMismatch
-        })>
+typedef EnsureCoverage =
+    Future<
+      ({
+        String datasetVersion,
+        String tileDirPath,
+        int failed,
+        bool versionMismatch,
+      })
+    >
     Function(double lat, double lon);
 
 /// Pure orchestration, unit-testable: coverage -> (re)init -> route.
@@ -52,14 +54,27 @@ class RoutePlanner {
   }
 }
 
-final routingEngineProvider =
-    Provider<RoutingEngine>((ref) => ChannelRoutingEngine());
+final routingEngineProvider = Provider<RoutingEngine>(
+  (ref) => ChannelRoutingEngine(),
+);
 
-final coverageRepositoryProvider = FutureProvider<CoverageRepository>((ref) async {
+final coverageRepositoryProvider = FutureProvider<CoverageRepository>((
+  ref,
+) async {
   final dir = await getApplicationSupportDirectory();
-  final client = http.Client();
+  // A raw `dart:io` `HttpClient` behind `IOClient`, not the package's plain
+  // `http.Client()` — task-8 backlog item 2: this is the only layer that
+  // exposes a genuine connect-phase timeout (`connectionTimeout`), distinct
+  // from the request-level `.timeout()` [CoverageRepository] wraps each
+  // `get()` call in for the total budget. See `CoverageConfig.connectTimeout`.
+  final client = IOClient(
+    HttpClient()..connectionTimeout = CoverageConfig.connectTimeout,
+  );
   ref.onDispose(client.close);
-  return CoverageRepository(root: Directory('${dir.path}/tiles'), client: client);
+  return CoverageRepository(
+    root: Directory('${dir.path}/tiles'),
+    client: client,
+  );
 });
 
 final geocodingServiceProvider = Provider<GeocodingService>((ref) {
@@ -72,6 +87,22 @@ final geocodingServiceProvider = Provider<GeocodingService>((ref) {
 /// receive tile-download progress for that request, without widening
 /// [EnsureCoverage] (which would break [RoutePlanner]'s fixed, tested
 /// signature).
+///
+/// Accepted limitation (task-8 backlog item 4): this slot is a single
+/// provider-wide instance, not one per in-flight request. Two coverage
+/// downloads that happen to overlap — a loop plan's own multi-probe
+/// `ensureCoverage` racing an A→B plan the walker triggers moments later,
+/// say — share the one `onProgress` callback the last setter installed, so
+/// either caller's progress bar can briefly show the *other* request's
+/// numbers until its own next callback fires. Purely cosmetic (a progress
+/// bar reading, never route correctness — each request's own coverage/route
+/// result is unaffected) and, in practice, rare: [RoutePlanner.plan] and
+/// [LoopPlanOrchestrator.plan] both `await` their coverage step before doing
+/// anything else, so two calls need to be started within the same short
+/// coverage-download window to interleave at all. Fixing it properly would
+/// mean threading a per-request progress callback through
+/// [EnsureCoverage]/[RoutePlanner]/[LoopPlanOrchestrator] instead of this
+/// shared slot — not worth the signature churn for a progress-bar glitch.
 class ProgressSink {
   void Function(int done, int total)? onProgress;
 }
@@ -82,17 +113,21 @@ final routePlannerProvider = FutureProvider<RoutePlanner>((ref) async {
   final coverage = await ref.watch(coverageRepositoryProvider.future);
   final sink = ref.watch(progressSinkProvider);
   return RoutePlanner(
-      engine: ref.watch(routingEngineProvider),
-      ensureCoverage: (lat, lon) async {
-        final res = await coverage.ensureCoverage(lat, lon,
-            onProgress: sink.onProgress);
-        return (
-          datasetVersion: res.datasetVersion,
-          tileDirPath: res.tileDirPath,
-          failed: res.failed,
-          versionMismatch: res.versionMismatch,
-        );
-      });
+    engine: ref.watch(routingEngineProvider),
+    ensureCoverage: (lat, lon) async {
+      final res = await coverage.ensureCoverage(
+        lat,
+        lon,
+        onProgress: sink.onProgress,
+      );
+      return (
+        datasetVersion: res.datasetVersion,
+        tileDirPath: res.tileDirPath,
+        failed: res.failed,
+        versionMismatch: res.versionMismatch,
+      );
+    },
+  );
 });
 
 /// Pure orchestration for loop/duration planning (task 6), the same
@@ -115,8 +150,10 @@ class LoopPlanOrchestrator {
 
   LoopPlanOrchestrator({required this.engine, required this.ensureCoverage});
 
-  Future<LoopPlanResult> plan(LoopRequest request,
-      {math.Random Function(int seed)? rng}) async {
+  Future<LoopPlanResult> plan(
+    LoopRequest request, {
+    math.Random Function(int seed)? rng,
+  }) async {
     final (lat, lon) = request.start;
     final cov = await ensureCoverage(lat, lon);
     lastCoverageFailed = cov.failed;
@@ -131,7 +168,11 @@ class LoopPlanOrchestrator {
       router: (locations) async {
         try {
           return await engine.routeMulti(
-              MultiPointRouteRequest(locations: locations, profile: request.profile));
+            MultiPointRouteRequest(
+              locations: locations,
+              profile: request.profile,
+            ),
+          );
           // A geometry the engine cannot route (too far off-network, outside
           // covered territory, etc.) is exactly what LoopRouter's contract
           // calls "not routable" — a null candidate for the bisection to
@@ -149,15 +190,19 @@ final loopPlannerProvider = FutureProvider<LoopPlanOrchestrator>((ref) async {
   final coverage = await ref.watch(coverageRepositoryProvider.future);
   final sink = ref.watch(progressSinkProvider);
   return LoopPlanOrchestrator(
-      engine: ref.watch(routingEngineProvider),
-      ensureCoverage: (lat, lon) async {
-        final res = await coverage.ensureCoverage(lat, lon,
-            onProgress: sink.onProgress);
-        return (
-          datasetVersion: res.datasetVersion,
-          tileDirPath: res.tileDirPath,
-          failed: res.failed,
-          versionMismatch: res.versionMismatch,
-        );
-      });
+    engine: ref.watch(routingEngineProvider),
+    ensureCoverage: (lat, lon) async {
+      final res = await coverage.ensureCoverage(
+        lat,
+        lon,
+        onProgress: sink.onProgress,
+      );
+      return (
+        datasetVersion: res.datasetVersion,
+        tileDirPath: res.tileDirPath,
+        failed: res.failed,
+        versionMismatch: res.versionMismatch,
+      );
+    },
+  );
 });

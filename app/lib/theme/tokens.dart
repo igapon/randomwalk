@@ -14,6 +14,13 @@ class AppColors {
   static const yellow = Color(0xFFF5B800);
   static const hydro = Color(0xFF3D7A8C);
 
+  /// Hex form of [ink] — the Aventure tab's fog-of-war fill color (60%
+  /// opacity, set via the layer's own `fillOpacity` rather than baked into
+  /// this string). Same value as [routeLineCasingHex] below; named
+  /// separately since the two call sites (route casing vs. fog) have
+  /// nothing to do with each other.
+  static const inkHex = '#1C2B25';
+
   // Dark palette.
   static const darkBg = Color(0xFF12201A);
   static const darkSurface = Color(0xFF1C2B25);
@@ -60,6 +67,21 @@ class AppColors {
   /// (task 6) drawn the same MapLibre `LineOptions` way as the route line
   /// above — the unselected candidates' color, at 40% opacity.
   static const hydroHex = '#3D7A8C';
+
+  /// « Terre » — the M4 Aventure tab's third landmark color, for `energy`
+  /// kind POIs (restaurants/cafés/fast-food) on the fog-of-war map: yellow
+  /// is already spent on `reveal` landmarks and hydro on `coins` ones, so
+  /// energy gets its own earth-toned accent (plan's Global Constraints:
+  /// "terre #B0552F à ajouter aux tokens"). One value for both brightnesses
+  /// — an earthy terracotta reads fine on both paper and dark backgrounds,
+  /// unlike the yellow/hydro pair which each need light/dark variants for
+  /// contrast (this tone doesn't).
+  static const terre = Color(0xFFB0552F);
+
+  /// Hex form of [terre], for the same MapLibre `addImage`-rendered diamond
+  /// glyphs the other two landmark kinds use (see
+  /// `adventure/poi_symbols.dart`).
+  static const terreHex = '#B0552F';
 }
 
 class AppRadii {

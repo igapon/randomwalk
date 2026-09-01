@@ -19,8 +19,7 @@ library;
 bool shouldShowRecenterButton({
   required bool isNavigating,
   required bool trackingReleased,
-}) =>
-    isNavigating && trackingReleased;
+}) => isNavigating && trackingReleased;
 
 /// Whether a map remount (`_redrawAfterRemount` — a theme flip mid-trip is
 /// the practical trigger, since that rebuilds `MapLibreMap` under a fresh
@@ -38,5 +37,4 @@ bool shouldReengageTrackingOnRemount({
   required bool isRecording,
   required bool isRouteBound,
   required bool trackingReleased,
-}) =>
-    isRecording && isRouteBound && !trackingReleased;
+}) => isRecording && isRouteBound && !trackingReleased;

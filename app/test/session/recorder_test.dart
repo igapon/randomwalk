@@ -1,10 +1,19 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/session/recorder.dart';
 
-GpsSample s(double lat, double lon,
-        {double acc = 5, double speed = 1.4, int t = 0}) =>
-    GpsSample(lat: lat, lon: lon, accuracyM: acc, speedMps: speed,
-        time: DateTime(2026, 1, 1).add(Duration(seconds: t)));
+GpsSample s(
+  double lat,
+  double lon, {
+  double acc = 5,
+  double speed = 1.4,
+  int t = 0,
+}) => GpsSample(
+  lat: lat,
+  lon: lon,
+  accuracyM: acc,
+  speedMps: speed,
+  time: DateTime(2026, 1, 1).add(Duration(seconds: t)),
+);
 
 void main() {
   test('accumulates haversine distance over a straight walk', () {

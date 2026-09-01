@@ -31,6 +31,15 @@ class NavUpdate {
   final bool arrived;
   final Duration? eta;
 
+  /// Whether the follower has, as of this update, latched having genuinely
+  /// left the destination's vicinity — [RouteFollower.leftArrivalRadius]'s
+  /// value at the moment this update was produced. Carried here (rather
+  /// than only readable off the [RouteFollower] instance) so a caller that
+  /// only sees updates — `NavigationRuntime`, hence the persisted
+  /// [TripSnapshot] — can persist it across a process restart without
+  /// reaching into the follower directly.
+  final bool leftArrivalRadius;
+
   const NavUpdate({
     required this.snappedLat,
     required this.snappedLon,
@@ -43,6 +52,7 @@ class NavUpdate {
     required this.offRoute,
     required this.arrived,
     this.eta,
+    this.leftArrivalRadius = false,
   });
 }
 
@@ -55,7 +65,10 @@ class NavUpdate {
 /// frozen rather than applied, off-route/arrival state is latched sensibly
 /// (arrival additionally requires real progress along the route — see
 /// [_minProgressForArrivalKm], without which a closed loop arrives at its own
-/// departure), and an ETA is derived from an EMA of recent speed once enough
+/// departure — and having genuinely left the destination's vicinity at least
+/// once, see [_leftArrivalRadius], without which a loop whose path merely
+/// passes close to its own start early on can arrive before the walker has
+/// gone anywhere), and an ETA is derived from an EMA of recent speed once enough
 /// samples exist. `alongKm` itself stays non-monotonic by design (it can wobble
 /// backward within that 2-segment tolerance); only the *published*
 /// `maneuverIndex` (and the instruction/distance derived from it) is floored
@@ -81,6 +94,41 @@ class RouteFollower {
   bool _offRoute = false;
   bool _arrived = false;
 
+  /// Set once and never cleared, the first time a fix's geographic distance
+  /// to the route's end exceeds `arrivalRadiusM * 2` (task-8 backlog item 1).
+  ///
+  /// [_minProgressForArrivalKm] alone still leaves a narrow window open: it
+  /// gates arrival on *path*-distance travelled (`_lastAlongKm`), not on
+  /// ever having geographically left the destination's vicinity. A loop
+  /// whose shape happens to pass close to its own start again early on — a
+  /// short out-and-back switchback right after departure, or simply a loop
+  /// route whose start and end are the same point — can rack up enough
+  /// along-route distance to clear the progress floor while the walker's
+  /// actual GPS fix never moved more than a few metres from that shared
+  /// start/end point. `isLastManeuver` and the progress floor both still
+  /// read as satisfied at that moment, so arrival would latch on a walker
+  /// who has, geographically, gone nowhere.
+  ///
+  /// Requiring a genuine departure closes that: arrival additionally needs
+  /// at least one earlier fix that was unambiguously away from the end,
+  /// not just past the progress floor. The threshold is `2 *
+  /// arrivalRadiusM` rather than `arrivalRadiusM` itself for hysteresis — if
+  /// "left" and "arrived" used the same radius, a fix sitting almost exactly
+  /// on that boundary could flicker between the two on ordinary GPS jitter;
+  /// doubling it puts a dead zone between "definitely still near the
+  /// destination" and "definitely left", so a real departure is unambiguous
+  /// before it counts. See [_leaveArrivalRadiusThresholdM] for the same
+  /// degenerate-route cap [_minProgressForArrivalKm] uses.
+  bool _leftArrivalRadius;
+
+  /// Whether this follower already considers the walker to have genuinely
+  /// left the destination's vicinity — see [_leftArrivalRadius]'s own doc
+  /// comment. Exposed so a caller building a *replacement* follower (a
+  /// service restart seeding from a persisted [TripSnapshot], or
+  /// `NavigationRuntime._adopt` after a replan) can carry the latch forward
+  /// instead of every fresh instance starting from scratch.
+  bool get leftArrivalRadius => _leftArrivalRadius;
+
   DateTime? _lastSampleTime;
   double _lastSampleAlongKm = 0;
 
@@ -90,13 +138,30 @@ class RouteFollower {
     this.offRouteGrace = const Duration(seconds: 10),
     this.arrivalRadiusM = 25,
     SpeedEstimator? speed,
-  })  : speed = speed ?? SpeedEstimator(),
-        _lastSnappedLat = route.shape.first.$1,
-        _lastSnappedLon = route.shape.first.$2 {
+
+    /// Seeds [_leftArrivalRadius] — final review item 2 (task-8's latch was
+    /// per-instance and never persisted, so a service restart near the end
+    /// of a trip could never latch "left" again and the trip could never
+    /// arrive). Defaults to `false`, exactly the old always-fresh behaviour,
+    /// so every existing call site (a brand-new trip, or one not threading
+    /// this through) is unaffected; a caller resuming an in-flight trip
+    /// passes the persisted value instead.
+    bool leftArrivalRadius = false,
+  }) : speed = speed ?? SpeedEstimator(),
+       // The public parameter name (`leftArrivalRadius`) deliberately does
+       // not carry the private field's underscore, so this cannot be an
+       // initializing formal.
+       // ignore: prefer_initializing_formals
+       _leftArrivalRadius = leftArrivalRadius,
+       _lastSnappedLat = route.shape.first.$1,
+       _lastSnappedLon = route.shape.first.$2 {
     _geometry = RouteGeometry(route.shape);
     _maneuverAlongKm = [
       for (final m in route.maneuvers)
-        _geometry.cumulativeKm[m.beginShapeIndex.clamp(0, route.shape.length - 1)],
+        _geometry.cumulativeKm[m.beginShapeIndex.clamp(
+          0,
+          route.shape.length - 1,
+        )],
     ];
     _lastManeuverIndex = _maneuverIndexFor(0);
     _publishedManeuverIndex = _lastManeuverIndex;
@@ -125,6 +190,22 @@ class RouteFollower {
     final total = _geometry.totalKm;
     final floor = math.max(arrivalRadiusM / 1000, total * 0.02);
     return math.min(floor, total / 2);
+  }
+
+  /// The geographic-distance threshold [_leftArrivalRadius] latches on
+  /// (task-8 backlog item 1): `2 * arrivalRadiusM`, capped at half the
+  /// route's total length in metres.
+  ///
+  /// Without the cap, a route shorter than `2 * arrivalRadiusM` end to end
+  /// (degenerate, but constructible — the same case
+  /// [_minProgressForArrivalKm] already caps) could never produce a fix far
+  /// enough from the end to set the flag at all, making it permanently
+  /// unarrivable. Capping at half the route mirrors that guard exactly: a
+  /// walker who has covered the first half of such a short route is as
+  /// "departed" as this route can ever make them.
+  double get _leaveArrivalRadiusThresholdM {
+    final totalM = _geometry.totalKm * 1000;
+    return math.min(arrivalRadiusM * 2, totalM / 2);
   }
 
   /// First maneuver whose position is strictly ahead of [alongKm]; if none
@@ -172,7 +253,10 @@ class RouteFollower {
     // The internal, recomputed maneuverIndex may decrease (e.g. GPS wobble
     // dropping alongKm back below a maneuver we already passed), but the
     // index/instruction we publish never un-announces a maneuver.
-    _publishedManeuverIndex = math.max(_publishedManeuverIndex, _lastManeuverIndex);
+    _publishedManeuverIndex = math.max(
+      _publishedManeuverIndex,
+      _lastManeuverIndex,
+    );
 
     // Off-route timing is based on every fix's cross-track reading —
     // including aberrant ones, which are themselves evidence of being off
@@ -185,7 +269,8 @@ class RouteFollower {
       _offRoute = false;
     }
 
-    final isLastManeuver = route.maneuvers.isEmpty ||
+    final isLastManeuver =
+        route.maneuvers.isEmpty ||
         _publishedManeuverIndex == route.maneuvers.length - 1;
     final remainingKm = _geometry.totalKm - _lastAlongKm;
     final distanceToManeuverM = isLastManeuver
@@ -194,10 +279,14 @@ class RouteFollower {
 
     final lastPoint = route.shape.last;
     final distanceToEndM = metersBetween(lat, lon, lastPoint.$1, lastPoint.$2);
+    if (distanceToEndM > _leaveArrivalRadiusThresholdM) {
+      _leftArrivalRadius = true;
+    }
     if (!_arrived &&
         isLastManeuver &&
         distanceToEndM < arrivalRadiusM &&
-        _lastAlongKm > _minProgressForArrivalKm) {
+        _lastAlongKm > _minProgressForArrivalKm &&
+        _leftArrivalRadius) {
       _arrived = true;
     }
 
@@ -223,6 +312,7 @@ class RouteFollower {
       offRoute: _offRoute,
       arrived: _arrived,
       eta: eta,
+      leftArrivalRadius: _leftArrivalRadius,
     );
   }
 }

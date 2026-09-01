@@ -13,7 +13,11 @@
 ///     radius whose circumference equals the target).
 ///   * A→B: waypoints sit on a half-sine bulge between start and end; the
 ///     free parameter is the bulge height ("detour"), seeded from the
-///     surplus the user asked for beyond the direct distance.
+///     surplus the user asked for beyond the direct distance. Candidate
+///     diversity for A→B is structurally limited to which side of the
+///     start-end line the bulge sits on plus how tall it is — a richer
+///     search (e.g. varying the bulge's shape or waypoint spacing) is not
+///     implemented here and is deferred.
 ///   * That parameter is then bisected against the distance the router
 ///     actually reports, with a hard budget of
 ///     [LoopPlanner.maxRouterCallsPerCandidate] router calls per candidate.
@@ -36,8 +40,8 @@ import 'package:randomwalk/valhalla/models.dart';
 /// Routes through an ordered list of (lat, lon) locations, or returns null
 /// when no route exists (the planner treats null as "this geometry is not
 /// routable", never as an error).
-typedef LoopRouter = Future<RouteResult?> Function(
-    List<(double, double)> locations);
+typedef LoopRouter =
+    Future<RouteResult?> Function(List<(double, double)> locations);
 
 enum PlanKind {
   /// Closed loop starting and ending at [LoopRequest.start].
@@ -62,6 +66,35 @@ class LoopRequest {
   /// same candidates for the same request (see [LoopPlanner]'s `rng`).
   final int seed;
 
+  /// Task 7 (« Explorer » mode): overrides the rng-drawn `startBearingDeg`
+  /// (`draw * 360` in [LoopPlanner._locationsFor]) for [PlanKind.loop]
+  /// candidates — entry `i` becomes candidate `i`'s starting bearing,
+  /// verbatim. `null` (every mode but Explorer) or an index past the end of
+  /// the list falls back to the usual rng draw for that candidate, so this
+  /// can supply fewer bearings than [LoopPlanner.candidateCount] without
+  /// leaving later candidates unset.
+  ///
+  /// Ignored for [PlanKind.toDestination] — an A→B bulge has no bearing to
+  /// seed, only a side (already alternated by candidate index).
+  ///
+  /// The planner never computes these itself: they are the caller's job
+  /// (`explore_planner.dart`'s `exploreBearings`, fed `GameState.
+  /// revealedCellKeys`), which is what keeps this file free of any
+  /// dependency on the game/grid.
+  final List<double>? preferredBearingsDeg;
+
+  /// Task 7: an optional per-route exploration score folded into
+  /// [LoopPlanner.scoreOf] (`score -= 0.3 * explorationBonus(route)`) —
+  /// higher is better, so a route through more unrevealed ground sorts
+  /// ahead of one that just retraces known streets at the same distance
+  /// accuracy/self-overlap. `null` (every mode but Explorer) leaves scoring
+  /// exactly as it was before this field existed.
+  ///
+  /// Computed by the caller as a closure over `GameState.revealedCellKeys`
+  /// — the planner never imports the grid or the game state itself, only
+  /// calls this function with the [RouteResult] it already has.
+  final double Function(RouteResult route)? explorationBonus;
+
   LoopRequest({
     required this.kind,
     required this.start,
@@ -69,6 +102,8 @@ class LoopRequest {
     required this.targetKm,
     required this.profile,
     required this.seed,
+    this.preferredBearingsDeg,
+    this.explorationBonus,
   }) {
     // ArgumentError rather than assert: both invariants must also hold in
     // release builds, where the whole search would otherwise divide by zero
@@ -190,7 +225,7 @@ class LoopPlanner {
   /// unseeded generator, which is what makes [LoopRequest.seed] reproduce a
   /// plan exactly.
   LoopPlanner({required this.router, math.Random Function(int seed)? rng})
-      : _rng = rng ?? math.Random.new;
+    : _rng = rng ?? math.Random.new;
 
   /// Candidate score, lower is better: distance accuracy dominates, with
   /// self-overlap as the tie-breaker. A→B leans harder on accuracy because
@@ -198,8 +233,8 @@ class LoopPlanner {
   /// origin/destination pair.
   static double scoreOf(PlanKind kind, double gapRatio, double repeatedRatio) =>
       kind == PlanKind.loop
-          ? 0.6 * gapRatio.abs() + 0.4 * repeatedRatio
-          : 0.7 * gapRatio.abs() + 0.3 * repeatedRatio;
+      ? 0.6 * gapRatio.abs() + 0.4 * repeatedRatio
+      : 0.7 * gapRatio.abs() + 0.3 * repeatedRatio;
 
   Future<LoopPlanResult> plan(LoopRequest request) async {
     final routes = <RouteResult>[];
@@ -217,7 +252,12 @@ class LoopPlanner {
       }
     }
 
-    final scored = _scoreAndSort(request.kind, request.targetKm, routes);
+    final scored = _scoreAndSort(
+      request.kind,
+      request.targetKm,
+      routes,
+      explorationBonus: request.explorationBonus,
+    );
     // Measured before deduplication, on purpose: dedup keeps the
     // better-*scored* survivor of a duplicate pair, which is not necessarily
     // the closest-*distance* one. "Closest we found" has to mean closest
@@ -227,7 +267,8 @@ class LoopPlanner {
         : scored.map((c) => c.gapRatio.abs()).reduce((a, b) => a < b ? a : b);
 
     final candidates = _dedup(scored);
-    final targetMet = candidates.isNotEmpty &&
+    final targetMet =
+        candidates.isNotEmpty &&
         candidates.first.gapRatio.abs() <= targetTolerance + _epsilon;
     return LoopPlanResult(
       candidates: candidates,
@@ -337,12 +378,16 @@ class LoopPlanner {
   ) {
     final (startLat, startLon) = request.start;
     if (request.kind == PlanKind.loop) {
+      final preferred = request.preferredBearingsDeg;
+      final startBearingDeg = (preferred != null && index < preferred.length)
+          ? preferred[index]
+          : draw * 360;
       final waypoints = circleWaypoints(
         lat: startLat,
         lon: startLon,
         radiusM: param,
         count: waypointCount,
-        startBearingDeg: draw * 360,
+        startBearingDeg: startBearingDeg,
       );
       return [request.start, ...waypoints, request.start];
     }
@@ -356,11 +401,19 @@ class LoopPlanner {
     return [request.start, ...waypoints, request.end!];
   }
 
+  /// Weight applied to [LoopRequest.explorationBonus] in the final score —
+  /// subtracted, since lower is better (see [scoreOf]). Task 7's binding
+  /// number: a route through more unrevealed ground should be able to
+  /// outrank a marginally more accurate/less-repeating one, but never
+  /// swamp the distance-accuracy term the way a larger weight would.
+  static const double explorationBonusWeight = 0.3;
+
   List<LoopCandidate> _scoreAndSort(
     PlanKind kind,
     double targetKm,
-    List<RouteResult> routes,
-  ) {
+    List<RouteResult> routes, {
+    double Function(RouteResult route)? explorationBonus,
+  }) {
     final cellM = (targetKm * 1000 / 40)
         .clamp(minRepeatedCellM, maxRepeatedCellM)
         .toDouble();
@@ -368,12 +421,18 @@ class LoopPlanner {
     for (final route in routes) {
       final gapRatio = (route.distanceKm - targetKm) / targetKm;
       final repeatedRatio = repeatedSegmentRatio(route.shape, cellM: cellM);
-      scored.add(LoopCandidate(
-        route: route,
-        gapRatio: gapRatio,
-        repeatedRatio: repeatedRatio,
-        score: scoreOf(kind, gapRatio, repeatedRatio),
-      ));
+      final baseScore = scoreOf(kind, gapRatio, repeatedRatio);
+      final score = explorationBonus == null
+          ? baseScore
+          : baseScore - explorationBonusWeight * explorationBonus(route);
+      scored.add(
+        LoopCandidate(
+          route: route,
+          gapRatio: gapRatio,
+          repeatedRatio: repeatedRatio,
+          score: score,
+        ),
+      );
     }
     // Index tie-break: List.sort is not stable, and equal-scoring
     // candidates must still come back in a reproducible order.
@@ -394,10 +453,9 @@ class LoopPlanner {
     final kept = <LoopCandidate>[];
     for (final candidate in sorted) {
       final duplicate = kept.any((k) {
-        final distanceDelta =
-            (candidate.route.distanceKm - k.route.distanceKm).abs();
-        final longer =
-            math.max(candidate.route.distanceKm, k.route.distanceKm);
+        final distanceDelta = (candidate.route.distanceKm - k.route.distanceKm)
+            .abs();
+        final longer = math.max(candidate.route.distanceKm, k.route.distanceKm);
         // A zero-length route is degenerate; there is no meaningful relative
         // comparison to make, so never merge on one.
         if (longer <= 0) return false;

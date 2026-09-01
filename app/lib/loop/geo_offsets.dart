@@ -25,16 +25,22 @@ double _radToDeg(double rad) => rad * 180 / math.pi;
 /// normalized to [-180, 180] — so the function behaves sanely even if
 /// called with unexpected inputs (e.g. near-antimeridian starting points).
 (double lat, double lon) destinationPoint(
-    double lat, double lon, double bearingDeg, double distanceM) {
+  double lat,
+  double lon,
+  double bearingDeg,
+  double distanceM,
+) {
   final phi1 = _degToRad(lat);
   final lambda1 = _degToRad(lon);
   final theta = _degToRad(bearingDeg);
   final delta = distanceM / _earthRadiusM; // angular distance
 
-  final sinPhi2 = math.sin(phi1) * math.cos(delta) +
+  final sinPhi2 =
+      math.sin(phi1) * math.cos(delta) +
       math.cos(phi1) * math.sin(delta) * math.cos(theta);
   final phi2 = math.asin(sinPhi2.clamp(-1.0, 1.0));
-  final lambda2 = lambda1 +
+  final lambda2 =
+      lambda1 +
       math.atan2(
         math.sin(theta) * math.sin(delta) * math.cos(phi1),
         math.cos(delta) - math.sin(phi1) * math.sin(phi2),
@@ -54,7 +60,8 @@ double _initialBearing(double lat1, double lon1, double lat2, double lon2) {
   final phi2 = _degToRad(lat2);
   final dLambda = _degToRad(lon2 - lon1);
   final y = math.sin(dLambda) * math.cos(phi2);
-  final x = math.cos(phi1) * math.sin(phi2) -
+  final x =
+      math.cos(phi1) * math.sin(phi2) -
       math.sin(phi1) * math.cos(phi2) * math.cos(dLambda);
   final theta = math.atan2(y, x);
   return (_radToDeg(theta) + 360) % 360;
@@ -65,7 +72,8 @@ double _initialBearing(double lat1, double lon1, double lat2, double lon2) {
 double _metersBetween(double lat1, double lon1, double lat2, double lon2) {
   final dLat = _degToRad(lat2 - lat1);
   final dLon = _degToRad(lon2 - lon1);
-  final a = math.pow(math.sin(dLat / 2), 2) +
+  final a =
+      math.pow(math.sin(dLat / 2), 2) +
       math.cos(_degToRad(lat1)) *
           math.cos(_degToRad(lat2)) *
           math.pow(math.sin(dLon / 2), 2);

@@ -54,13 +54,18 @@ class SessionController {
     this.onSessionEnded,
     this.onSessionError,
     this.onFix,
-  })  : _locationSettings = locationSettings ??
-            const LocationSettings(
-                accuracy: LocationAccuracy.best, distanceFilter: 3),
-        _getPositionStream = getPositionStream ??
-            ((LocationSettings settings) => Geolocator.getPositionStream(locationSettings: settings)),
-        _getClock = getClock ?? DateTime.now,
-        _checkPermissions = checkPermissions ?? _defaultCheckPermissions;
+  }) : _locationSettings =
+           locationSettings ??
+           const LocationSettings(
+             accuracy: LocationAccuracy.best,
+             distanceFilter: 3,
+           ),
+       _getPositionStream =
+           getPositionStream ??
+           ((LocationSettings settings) =>
+               Geolocator.getPositionStream(locationSettings: settings)),
+       _getClock = getClock ?? DateTime.now,
+       _checkPermissions = checkPermissions ?? _defaultCheckPermissions;
 
   bool get isRecording => _isRecording;
 

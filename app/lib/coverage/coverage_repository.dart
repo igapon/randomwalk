@@ -12,6 +12,33 @@ class CoverageConfig {
       'https://github.com/igapon/randomwalk-tiles/releases/download/$version/$asset';
   static const radiiKmByLevel = <int, double>{2: 45, 1: 120, 0: 400};
   static const maxCacheBytes = 300 * 1024 * 1024;
+
+  /// The connection-establishment half of the coverage HTTP budget
+  /// (task-8 backlog item 2) — a stalled TCP handshake/TLS negotiation to a
+  /// wedged CDN edge or captive portal must not hang [ensureCoverage]
+  /// indefinitely. Not enforceable through `http.Client.get()`'s
+  /// request-level `.timeout()` alone, since that call has no
+  /// connect-vs-transfer phase boundary of its own to hook — it is instead
+  /// applied where the concrete client is constructed (see
+  /// `route_controller.dart`'s `coverageRepositoryProvider`, which wires a
+  /// `dart:io` `HttpClient` with this as `connectionTimeout` behind an
+  /// `IOClient`), so it only binds the real network client, never the
+  /// injected fake one under test.
+  static const connectTimeout = Duration(seconds: 10);
+
+  /// The whole-request half of the coverage HTTP budget (task-8 backlog
+  /// item 2): manifest, tile and POI-asset fetches are each wrapped in
+  /// `.timeout(totalTimeout)` at their `client.get()` call site
+  /// ([CoverageRepository._fetchManifest], [CoverageRepository._downloadAsset]
+  /// — which also covers the POI asset, downloaded through it) — generous
+  /// enough for a multi-megabyte `.gph` tile over a slow mobile connection,
+  /// but bounded so a connection that hangs *after* connecting (a stalled
+  /// transfer, not just a stalled handshake) cannot either. A timeout here
+  /// surfaces as an ordinary `TimeoutException`, already handled by each call
+  /// site's existing failure path — cache fallback for the manifest, a
+  /// counted failed download for a tile/POI asset — exactly like any other
+  /// network failure.
+  static const totalTimeout = Duration(seconds: 30);
 }
 
 class CoverageResult {
@@ -20,18 +47,20 @@ class CoverageResult {
   final int downloaded;
   final int failed;
   final int total;
+
   /// True when the manifest actually used this run is a stale cached copy
   /// kept because the freshly-fetched one had a `valhalla_version` this app
   /// build cannot use (see [DatasetVersionMismatch]). The caller should
   /// warn the user that new coverage needs an app update.
   final bool versionMismatch;
-  const CoverageResult(
-      {required this.datasetVersion,
-      required this.tileDirPath,
-      required this.downloaded,
-      required this.failed,
-      required this.total,
-      this.versionMismatch = false});
+  const CoverageResult({
+    required this.datasetVersion,
+    required this.tileDirPath,
+    required this.downloaded,
+    required this.failed,
+    required this.total,
+    this.versionMismatch = false,
+  });
 }
 
 /// A manifest fetch outcome: the manifest to use, plus whether it is a
@@ -46,7 +75,17 @@ class _ManifestFetch {
 class CoverageRepository {
   final Directory root;
   final http.Client client;
-  CoverageRepository({required this.root, required this.client});
+
+  /// [CoverageConfig.totalTimeout] by default — overridable so a test can
+  /// exercise the "request never completes" path (a fake client whose future
+  /// never resolves) without actually waiting out the real 30 s budget.
+  final Duration totalTimeout;
+
+  CoverageRepository({
+    required this.root,
+    required this.client,
+    this.totalTimeout = CoverageConfig.totalTimeout,
+  });
 
   String get _manifestCachePath => '${root.path}/manifest.cache.json';
 
@@ -58,12 +97,15 @@ class CoverageRepository {
   /// dataset was ever downloaded. Only rethrows when no cache exists either.
   Future<_ManifestFetch> _fetchManifest() async {
     try {
-      final resp = await client.get(Uri.parse(CoverageConfig.manifestUrl));
+      final resp = await client
+          .get(Uri.parse(CoverageConfig.manifestUrl))
+          .timeout(totalTimeout);
       if (resp.statusCode != 200) {
         throw HttpException('manifest: HTTP ${resp.statusCode}');
       }
-      final manifest =
-          TileManifest.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      final manifest = TileManifest.fromJson(
+        jsonDecode(resp.body) as Map<String, dynamic>,
+      );
       if (manifest.valhallaVersion != kExpectedValhallaVersion) {
         // Never adopt (or cache) a manifest built for an engine version this
         // app build does not ship — routing against it could crash or
@@ -95,7 +137,8 @@ class CoverageRepository {
     if (!f.existsSync()) return null;
     try {
       return TileManifest.fromJson(
-          jsonDecode(await f.readAsString()) as Map<String, dynamic>);
+        jsonDecode(await f.readAsString()) as Map<String, dynamic>,
+      );
     } catch (_) {
       // Corrupt/partial cache: treat as absent rather than crashing.
       return null;
@@ -117,26 +160,34 @@ class CoverageRepository {
   }
 
   List<String> neededPaths(double lat, double lon) => [
-        for (final e in CoverageConfig.radiiKmByLevel.entries)
-          for (final t in tilesCoveringCircle(e.key, lat, lon, e.value)) t.path
-      ];
+    for (final e in CoverageConfig.radiiKmByLevel.entries)
+      for (final t in tilesCoveringCircle(e.key, lat, lon, e.value)) t.path,
+  ];
 
-  Future<CoverageResult> ensureCoverage(double lat, double lon,
-      {void Function(int done, int total)? onProgress}) async {
+  Future<CoverageResult> ensureCoverage(
+    double lat,
+    double lon, {
+    void Function(int done, int total)? onProgress,
+  }) async {
     final fetch = await _fetchManifest();
     final manifest = fetch.manifest;
     final tileDir = Directory('${root.path}/${manifest.datasetVersion}');
     await tileDir.create(recursive: true);
     _sweepPartFiles(tileDir);
-    final wanted = neededPaths(lat, lon)
-        .where(manifest.tiles.containsKey)
-        .toList();
+    final wanted = neededPaths(
+      lat,
+      lon,
+    ).where(manifest.tiles.containsKey).toList();
     var downloaded = 0, failed = 0, done = 0;
     for (final path in wanted) {
       final file = File('${tileDir.path}/$path');
       var have = file.existsSync();
       if (!have) {
-        final ok = await _download(manifest, path, file);
+        final ok = await _downloadAsset(
+          manifest.tiles[path]!,
+          manifest.datasetVersion,
+          file,
+        );
         ok ? downloaded++ : failed++;
         have = ok;
       }
@@ -144,6 +195,15 @@ class CoverageRepository {
       // Only record LRU usage for tiles that actually exist on disk after
       // this pass — a failed download must not create a phantom entry.
       if (have) await _touch(tileDir, path);
+    }
+    // Best-effort download of the optional game-POI asset. Never affects
+    // `downloaded`/`failed`/`total` (those describe the tile set this call
+    // was actually asked for) and never throws: the game degrades to
+    // `PoiStore.empty` when this file is absent or corrupt, but routing and
+    // every other tool feature must keep working regardless (see the plan's
+    // "game never blocks the tool" constraint).
+    if (manifest.pois != null) {
+      await _ensurePoisAsset(manifest, tileDir);
     }
     await _purgeLru(tileDir);
     // Purge-by-count runs unconditionally, even when this run had failed
@@ -156,20 +216,24 @@ class CoverageRepository {
     // at least one tile on disk.
     await _purgeByCount(manifest.datasetVersion);
     return CoverageResult(
-        datasetVersion: manifest.datasetVersion,
-        tileDirPath: tileDir.path,
-        downloaded: downloaded,
-        failed: failed,
-        total: wanted.length,
-        versionMismatch: fetch.versionMismatch);
+      datasetVersion: manifest.datasetVersion,
+      tileDirPath: tileDir.path,
+      downloaded: downloaded,
+      failed: failed,
+      total: wanted.length,
+      versionMismatch: fetch.versionMismatch,
+    );
   }
 
-  Future<bool> _download(TileManifest m, String path, File dest) async {
-    final asset = m.tiles[path]!;
-    final url = CoverageConfig.assetUrl(m.datasetVersion, asset.asset);
+  Future<bool> _downloadAsset(
+    TileAsset asset,
+    String datasetVersion,
+    File dest,
+  ) async {
+    final url = CoverageConfig.assetUrl(datasetVersion, asset.asset);
     final http.Response resp;
     try {
-      resp = await client.get(Uri.parse(url));
+      resp = await client.get(Uri.parse(url)).timeout(totalTimeout);
     } catch (_) {
       // Network failure mid-download (e.g. connectivity dropped): treat like
       // any other failed download rather than crashing ensureCoverage.
@@ -184,6 +248,41 @@ class CoverageRepository {
     await tmp.writeAsBytes(resp.bodyBytes, flush: true);
     await tmp.rename(dest.path);
     return true;
+  }
+
+  /// Downloads `<tileDir>/pois.json.gz` when the manifest advertises a
+  /// `pois` asset and it isn't already on disk. Same sha-verified atomic
+  /// write pattern as a tile ([_downloadAsset]), but errors of any kind
+  /// (network, sha mismatch, disk) are swallowed rather than surfaced —
+  /// this asset is a pure add-on the game degrades gracefully without.
+  Future<void> _ensurePoisAsset(
+    TileManifest manifest,
+    Directory tileDir,
+  ) async {
+    final asset = manifest.pois;
+    if (asset == null) return;
+    final dest = File('${tileDir.path}/pois.json.gz');
+    if (dest.existsSync()) return;
+    try {
+      await _downloadAsset(asset, manifest.datasetVersion, dest);
+    } catch (_) {
+      // Never let a POI-asset failure bubble out of ensureCoverage.
+    }
+  }
+
+  /// The `pois.json.gz` file for the dataset version currently referenced
+  /// by the cached manifest, or `null` when there is no cached manifest, the
+  /// manifest carries no `pois` entry, or the file hasn't been downloaded
+  /// (yet, or ever — e.g. an old cached manifest from before the POI
+  /// pipeline existed). Mirrors [cachedTileDirPath]: reads only what's
+  /// already on disk, touches neither the network nor validates content —
+  /// callers that need a *fresh* copy should have gone through
+  /// [ensureCoverage] first.
+  Future<File?> poisFile() async {
+    final manifest = await _readManifestCache();
+    if (manifest == null || manifest.pois == null) return null;
+    final file = File('${root.path}/${manifest.datasetVersion}/pois.json.gz');
+    return await file.exists() ? file : null;
   }
 
   /// LRU index: JSON map tile path -> last-used epoch ms, stored next to tiles.
@@ -214,6 +313,7 @@ class CoverageRepository {
           .replaceAll('\\', '/');
       return (lru[rel] as int?) ?? 0;
     }
+
     files.sort((a, b) => lastUsed(a).compareTo(lastUsed(b)));
     for (final f in files) {
       if (totalBytes <= CoverageConfig.maxCacheBytes) break;

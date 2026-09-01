@@ -59,7 +59,8 @@ class FakePermissionService implements TripPermissionService {
   }
 
   @override
-  Future<PermissionState> backgroundLocationStatus() async => backgroundLocation;
+  Future<PermissionState> backgroundLocationStatus() async =>
+      backgroundLocation;
 
   @override
   Future<PermissionState> requestBackgroundLocation() async {
@@ -99,13 +100,13 @@ void main() {
   late bool rationaleAccepted;
 
   TripPermissionCoordinator coordinator() => TripPermissionCoordinator(
-        service,
-        memory: memory,
-        showBackgroundRationale: () async {
-          rationaleShown++;
-          return rationaleAccepted;
-        },
-      );
+    service,
+    memory: memory,
+    showBackgroundRationale: () async {
+      rationaleShown++;
+      return rationaleAccepted;
+    },
+  );
 
   setUp(() {
     service = FakePermissionService();
@@ -127,25 +128,28 @@ void main() {
       expect(decision.stepsAvailable, isTrue);
     });
 
-    test('asks in the brief order: notifications, location, then steps', () async {
-      service
-        ..notifications = PermissionState.denied
-        ..fineLocation = PermissionState.denied
-        ..fineLocationOnRequest = PermissionState.granted
-        ..backgroundLocation = PermissionState.granted
-        ..activityRecognition = PermissionState.denied;
+    test(
+      'asks in the brief order: notifications, location, then steps',
+      () async {
+        service
+          ..notifications = PermissionState.denied
+          ..fineLocation = PermissionState.denied
+          ..fineLocationOnRequest = PermissionState.granted
+          ..backgroundLocation = PermissionState.granted
+          ..activityRecognition = PermissionState.denied;
 
-      await coordinator().ensureForTrip();
+        await coordinator().ensureForTrip();
 
-      expect(
-        service.calls,
-        containsAllInOrder(<String>[
-          'requestNotifications',
-          'requestFineLocation',
-          'requestActivityRecognition',
-        ]),
-      );
-    });
+        expect(
+          service.calls,
+          containsAllInOrder(<String>[
+            'requestNotifications',
+            'requestFineLocation',
+            'requestActivityRecognition',
+          ]),
+        );
+      },
+    );
 
     test('already-granted permissions are not re-requested', () async {
       service.backgroundLocation = PermissionState.granted;
@@ -230,13 +234,16 @@ void main() {
       expect(decision.outcome, TripPermissionOutcome.openedSettings);
     });
 
-    test('a plain denial degrades to foreground-only without settings', () async {
-      service.backgroundLocationOnRequest = PermissionState.denied;
-      final decision = await coordinator().ensureForTrip();
-      expect(service.settingsOpened, 0);
-      expect(decision.outcome, TripPermissionOutcome.ready);
-      expect(decision.mode, TrackingMode.foregroundOnly);
-    });
+    test(
+      'a plain denial degrades to foreground-only without settings',
+      () async {
+        service.backgroundLocationOnRequest = PermissionState.denied;
+        final decision = await coordinator().ensureForTrip();
+        expect(service.settingsOpened, 0);
+        expect(decision.outcome, TripPermissionOutcome.ready);
+        expect(decision.mode, TrackingMode.foregroundOnly);
+      },
+    );
 
     test('background location is never requested before foreground', () async {
       service
@@ -244,8 +251,10 @@ void main() {
         ..fineLocationOnRequest = PermissionState.granted
         ..backgroundLocationOnRequest = PermissionState.granted;
       await coordinator().ensureForTrip();
-      expect(service.calls.indexOf('requestFineLocation'),
-          lessThan(service.calls.indexOf('requestBackgroundLocation')));
+      expect(
+        service.calls.indexOf('requestFineLocation'),
+        lessThan(service.calls.indexOf('requestBackgroundLocation')),
+      );
     });
   });
 
@@ -286,8 +295,10 @@ void main() {
 
     test('granting later is picked up without asking again', () async {
       service.backgroundLocationOnRequest = PermissionState.denied;
-      expect((await coordinator().ensureForTrip()).mode,
-          TrackingMode.foregroundOnly);
+      expect(
+        (await coordinator().ensureForTrip()).mode,
+        TrackingMode.foregroundOnly,
+      );
 
       // The user went to Android settings on their own and allowed it.
       service.backgroundLocation = PermissionState.granted;

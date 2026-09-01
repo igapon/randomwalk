@@ -30,15 +30,15 @@ void main() {
     ttsCalls.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(NativeTtsSpeaker.channel, (call) async {
-      ttsCalls.add(call.method);
-      if (call.method == 'init') return true;
-      return null;
-    });
+          ttsCalls.add(call.method);
+          if (call.method == 'init') return true;
+          return null;
+        });
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(DeviceChannel.channel, (call) async {
-      if (call.method == 'manufacturer') return null;
-      return null;
-    });
+          if (call.method == 'manufacturer') return null;
+          return null;
+        });
   });
 
   tearDown(() {
@@ -49,18 +49,19 @@ void main() {
   });
 
   TripController buildTrip() => TripController(
-        tracker: FakeTripTracker(),
-        routeStore: MemoryRouteStore(),
-        totalStore: FakeTotalDistanceStore(),
-        finalisedTrips: MemoryFinalisedTripMemory(),
-        ensurePermissions: () async => const TripPermissions(
-            outcome: TripPermissionOutcome.ready,
-            mode: TrackingMode.background),
-        createStepCounter: (seed) =>
-            SessionStepCounter(FakeStepSensor(), seed: seed),
-        persistProfile: (_) async {},
-        loadProfile: () async => null,
-      );
+    tracker: FakeTripTracker(),
+    routeStore: MemoryRouteStore(),
+    totalStore: FakeTotalDistanceStore(),
+    finalisedTrips: MemoryFinalisedTripMemory(),
+    ensurePermissions: () async => const TripPermissions(
+      outcome: TripPermissionOutcome.ready,
+      mode: TrackingMode.background,
+    ),
+    createStepCounter: (seed) =>
+        SessionStepCounter(FakeStepSensor(), seed: seed),
+    persistProfile: (_) async {},
+    loadProfile: () async => null,
+  );
 
   Future<void> pumpSettings(WidgetTester tester) async {
     await tester.pumpWidget(
@@ -71,26 +72,33 @@ void main() {
     );
   }
 
-  testWidgets(
-      'the TTS probe shuts its engine down once init has answered',
-      (tester) async {
+  testWidgets('the TTS probe shuts its engine down once init has answered', (
+    tester,
+  ) async {
     await pumpSettings(tester);
     await tester.pumpAndSettle();
 
-    expect(ttsCalls, ['init', 'shutdown'],
-        reason: 'init answers the availability question; shutdown must '
-            'follow right after, releasing the native engine rather than '
-            'leaking it for the rest of the screen\'s lifetime');
+    expect(
+      ttsCalls,
+      ['init', 'shutdown'],
+      reason:
+          'init answers the availability question; shutdown must '
+          'follow right after, releasing the native engine rather than '
+          'leaking it for the rest of the screen\'s lifetime',
+    );
   });
 
   testWidgets(
-      '"Guidage vocal" still reflects the probed availability after shutdown',
-      (tester) async {
-    await pumpSettings(tester);
-    await tester.pumpAndSettle();
+    '"Guidage vocal" still reflects the probed availability after shutdown',
+    (tester) async {
+      await pumpSettings(tester);
+      await tester.pumpAndSettle();
 
-    expect(find.text('Guidage vocal'), findsOneWidget);
-    expect(find.text('Instructions de navigation lues à voix haute'),
-        findsOneWidget);
-  });
+      expect(find.text('Guidage vocal'), findsOneWidget);
+      expect(
+        find.text('Instructions de navigation lues à voix haute'),
+        findsOneWidget,
+      );
+    },
+  );
 }

@@ -35,23 +35,38 @@ const _kLoopPlanDodTarget = Duration(seconds: 15);
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('pedestrian route across Lausanne using production tiles',
-      (tester) async {
+  testWidgets('pedestrian route across Lausanne using production tiles', (
+    tester,
+  ) async {
     final supportDir = await getApplicationSupportDirectory();
     final repo = CoverageRepository(
-        root: Directory('${supportDir.path}/coverage_tiles'),
-        client: http.Client());
+      root: Directory('${supportDir.path}/coverage_tiles'),
+      client: http.Client(),
+    );
 
     final coverage = await repo.ensureCoverage(_lat, _lon);
-    expect(coverage.failed, 0, reason: 'no tile download should fail sha check');
-    expect(coverage.total, greaterThan(0), reason: 'ch-fr must cover this point');
+    expect(
+      coverage.failed,
+      0,
+      reason: 'no tile download should fail sha check',
+    );
+    expect(
+      coverage.total,
+      greaterThan(0),
+      reason: 'ch-fr must cover this point',
+    );
 
     final engine = ChannelRoutingEngine();
     await engine.init(coverage.tileDirPath);
-    final result = await engine.route(const RouteRequest(
-        fromLat: 46.5197, fromLon: 6.6323,
-        toLat: 46.5089, toLon: 6.6283,
-        profile: RoutingProfile.walk));
+    final result = await engine.route(
+      const RouteRequest(
+        fromLat: 46.5197,
+        fromLon: 6.6323,
+        toLat: 46.5089,
+        toLon: 6.6283,
+        profile: RoutingProfile.walk,
+      ),
+    );
     expect(result.distanceKm, greaterThan(0.5));
     expect(result.distanceKm, lessThan(6));
     expect(result.shape.length, greaterThan(10));
@@ -64,19 +79,29 @@ void main() {
   // bisection but says nothing about whether Valhalla can actually route a
   // circle of `circleWaypoints` on the Lausanne street network within the
   // planner's own call budget. That is the question this answers.
-  testWidgets('plans a 5 km walking loop through the real engine',
-      (tester) async {
+  testWidgets('plans a 5 km walking loop through the real engine', (
+    tester,
+  ) async {
     final supportDir = await getApplicationSupportDirectory();
     final repo = CoverageRepository(
-        root: Directory('${supportDir.path}/coverage_tiles'),
-        client: http.Client());
+      root: Directory('${supportDir.path}/coverage_tiles'),
+      client: http.Client(),
+    );
 
     // Same coverage assertions as the A→B test: a loop that comes back empty
     // because tiles failed their sha check is not a planner finding, and this
     // must not be mistaken for one.
     final coverage = await repo.ensureCoverage(_lat, _lon);
-    expect(coverage.failed, 0, reason: 'no tile download should fail sha check');
-    expect(coverage.total, greaterThan(0), reason: 'ch-fr must cover this point');
+    expect(
+      coverage.failed,
+      0,
+      reason: 'no tile download should fail sha check',
+    );
+    expect(
+      coverage.total,
+      greaterThan(0),
+      reason: 'ch-fr must cover this point',
+    );
 
     final engine = ChannelRoutingEngine();
     await engine.init(coverage.tileDirPath);
@@ -84,14 +109,20 @@ void main() {
     // Exactly the wiring `LoopPlanOrchestrator` uses in production: a
     // RoutingException is "this geometry is not routable" (a null for the
     // bisection to shrink away from), never an error that aborts the plan.
-    final planner = LoopPlanner(router: (locations) async {
-      try {
-        return await engine.routeMulti(MultiPointRouteRequest(
-            locations: locations, profile: RoutingProfile.walk));
-      } on RoutingException {
-        return null;
-      }
-    });
+    final planner = LoopPlanner(
+      router: (locations) async {
+        try {
+          return await engine.routeMulti(
+            MultiPointRouteRequest(
+              locations: locations,
+              profile: RoutingProfile.walk,
+            ),
+          );
+        } on RoutingException {
+          return null;
+        }
+      },
+    );
 
     // Fixed seed: the whole search is reproducible for a given seed (see
     // LoopRequest.seed), so a failure here is re-runnable rather than a
@@ -108,8 +139,11 @@ void main() {
     final result = await planner.plan(request);
     stopwatch.stop();
 
-    expect(result.candidates, isNotEmpty,
-        reason: 'a 5 km walking loop in central Lausanne must be plannable');
+    expect(
+      result.candidates,
+      isNotEmpty,
+      reason: 'a 5 km walking loop in central Lausanne must be plannable',
+    );
 
     final bestGap = result.bestGapRatio;
     expect(bestGap, isNotNull);
@@ -119,9 +153,13 @@ void main() {
     // bar against a real street network, where the closest routable circle is
     // whatever the roads allow. Tightening it to 0.10 would be asserting
     // something about Lausanne's street grid, not about this code.
-    expect(bestGap!, lessThanOrEqualTo(0.15),
-        reason: 'best candidate should be within 15 % of the 5 km target; '
-            'got ${(bestGap * 100).toStringAsFixed(1)} %');
+    expect(
+      bestGap!,
+      lessThanOrEqualTo(0.15),
+      reason:
+          'best candidate should be within 15 % of the 5 km target; '
+          'got ${(bestGap * 100).toStringAsFixed(1)} %',
+    );
 
     for (final candidate in result.candidates) {
       expect(candidate.route.shape.length, greaterThan(10));
@@ -133,14 +171,20 @@ void main() {
     // output here, not a CI gate (see [_kLoopPlanCeiling]).
     final elapsed = stopwatch.elapsed;
     // ignore: avoid_print
-    print('[M3 DoD] 5 km loop plan: ${elapsed.inMilliseconds} ms '
-        '(DoD target < ${_kLoopPlanDodTarget.inSeconds}s, '
-        'CI ceiling ${_kLoopPlanCeiling.inSeconds}s) — '
-        '${result.candidates.length} candidate(s), '
-        'best gap ${(bestGap * 100).toStringAsFixed(1)} %, '
-        'targetMet ${result.targetMet}');
-    expect(elapsed, lessThan(_kLoopPlanCeiling),
-        reason: 'the loop search should converge inside its router-call '
-            'budget, not grind — took ${elapsed.inMilliseconds} ms');
+    print(
+      '[M3 DoD] 5 km loop plan: ${elapsed.inMilliseconds} ms '
+      '(DoD target < ${_kLoopPlanDodTarget.inSeconds}s, '
+      'CI ceiling ${_kLoopPlanCeiling.inSeconds}s) — '
+      '${result.candidates.length} candidate(s), '
+      'best gap ${(bestGap * 100).toStringAsFixed(1)} %, '
+      'targetMet ${result.targetMet}',
+    );
+    expect(
+      elapsed,
+      lessThan(_kLoopPlanCeiling),
+      reason:
+          'the loop search should converge inside its router-call '
+          'budget, not grind — took ${elapsed.inMilliseconds} ms',
+    );
   });
 }

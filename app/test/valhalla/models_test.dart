@@ -5,10 +5,9 @@ import 'package:randomwalk/valhalla/models.dart';
 void main() {
   test('decodePolyline6 round-trips a known point pair', () {
     // encodage polyline précision 6 de [(46.52, 6.63), (46.521, 6.631)]
-    final pts = decodePolyline6(encodePolyline6([
-      (46.52, 6.63),
-      (46.521, 6.631),
-    ]));
+    final pts = decodePolyline6(
+      encodePolyline6([(46.52, 6.63), (46.521, 6.631)]),
+    );
     expect(pts.length, 2);
     expect(pts[0].$1, closeTo(46.52, 1e-6));
     expect(pts[1].$2, closeTo(6.631, 1e-6));
@@ -36,26 +35,30 @@ void main() {
     expect(pts[2].$2, closeTo(-126.453, 1e-6));
   });
 
-  test('decodePolyline6 handles negative deltas (independent golden vector)',
-      () {
-    // Same standalone Node.js encoder as above (not encodePolyline6),
-    // for a point pair that forces a negative delta on both lat and lon —
-    // the case a same-sign round trip would never exercise.
-    const encoded = '_c`|@_c`|@~fayB~tpzA';
-    final pts = decodePolyline6(encoded);
-    expect(pts.length, 2);
-    expect(pts[0].$1, closeTo(1.0, 1e-6));
-    expect(pts[0].$2, closeTo(1.0, 1e-6));
-    expect(pts[1].$1, closeTo(-1.0, 1e-6));
-    expect(pts[1].$2, closeTo(-0.5, 1e-6));
-  });
+  test(
+    'decodePolyline6 handles negative deltas (independent golden vector)',
+    () {
+      // Same standalone Node.js encoder as above (not encodePolyline6),
+      // for a point pair that forces a negative delta on both lat and lon —
+      // the case a same-sign round trip would never exercise.
+      const encoded = '_c`|@_c`|@~fayB~tpzA';
+      final pts = decodePolyline6(encoded);
+      expect(pts.length, 2);
+      expect(pts[0].$1, closeTo(1.0, 1e-6));
+      expect(pts[0].$2, closeTo(1.0, 1e-6));
+      expect(pts[1].$1, closeTo(-1.0, 1e-6));
+      expect(pts[1].$2, closeTo(-0.5, 1e-6));
+    },
+  );
 
   test('RouteResult parses a valhalla trip json', () {
-    final j = jsonDecode('''
+    final j =
+        jsonDecode('''
     {"trip":{"summary":{"length":1.234,"time":900},
       "legs":[{"shape":"${encodePolyline6([(46.52, 6.63), (46.53, 6.64)])}",
         "maneuvers":[{"instruction":"Marchez vers le nord.","length":1.234,"begin_shape_index":0}]}]}}
-    ''') as Map<String, dynamic>;
+    ''')
+            as Map<String, dynamic>;
     final r = RouteResult.fromValhallaJson(j);
     expect(r.distanceKm, closeTo(1.234, 1e-9));
     expect(r.duration, const Duration(seconds: 900));
@@ -73,18 +76,21 @@ void main() {
       duration: const Duration(seconds: 900),
       maneuvers: const [
         Maneuver(
-            instruction: 'Marchez vers le nord.',
-            lengthKm: 0.8,
-            beginShapeIndex: 0),
+          instruction: 'Marchez vers le nord.',
+          lengthKm: 0.8,
+          beginShapeIndex: 0,
+        ),
         Maneuver(
-            instruction: 'Vous êtes arrivé.',
-            lengthKm: 0.434,
-            beginShapeIndex: 2),
+          instruction: 'Vous êtes arrivé.',
+          lengthKm: 0.434,
+          beginShapeIndex: 2,
+        ),
       ],
     );
 
-    final restored =
-        RouteResult.fromJson(jsonDecode(jsonEncode(original.toJson())));
+    final restored = RouteResult.fromJson(
+      jsonDecode(jsonEncode(original.toJson())),
+    );
 
     expect(restored.distanceKm, closeTo(1.234, 1e-9));
     expect(restored.duration, const Duration(seconds: 900));
@@ -101,11 +107,12 @@ void main() {
 
   group('RouteRequest.toValhallaJson', () {
     const request = RouteRequest(
-        fromLat: 46.52,
-        fromLon: 6.63,
-        toLat: 46.53,
-        toLon: 6.64,
-        profile: RoutingProfile.walk);
+      fromLat: 46.52,
+      fromLon: 6.63,
+      toLat: 46.53,
+      toLon: 6.64,
+      profile: RoutingProfile.walk,
+    );
 
     test('walk profile costs pedestrian', () {
       final j = jsonDecode(request.toValhallaJson()) as Map<String, dynamic>;
@@ -114,11 +121,12 @@ void main() {
 
     test('bike profile costs bicycle', () {
       final bikeRequest = const RouteRequest(
-          fromLat: 46.52,
-          fromLon: 6.63,
-          toLat: 46.53,
-          toLon: 6.64,
-          profile: RoutingProfile.bike);
+        fromLat: 46.52,
+        fromLon: 6.63,
+        toLat: 46.53,
+        toLon: 6.64,
+        profile: RoutingProfile.bike,
+      );
       final j =
           jsonDecode(bikeRequest.toValhallaJson()) as Map<String, dynamic>;
       expect(j['costing'], 'bicycle');
@@ -219,7 +227,8 @@ void main() {
         (46.535, 6.645),
       ]);
 
-      final j = jsonDecode('''
+      final j =
+          jsonDecode('''
       {"trip":{"summary":{"length":2.5,"time":900},
         "legs":[
           {"shape":"$legShape",
@@ -229,7 +238,8 @@ void main() {
               {"instruction":"Vous êtes arrivé.","length":0.7,"begin_shape_index":4}
             ]}
         ]}}
-      ''') as Map<String, dynamic>;
+      ''')
+              as Map<String, dynamic>;
 
       final r = RouteResult.fromValhallaJson(j);
 
@@ -266,7 +276,8 @@ void main() {
       final leg2Shape = encodePolyline6([(46.521, 6.631), (46.53, 6.64)]);
       final leg3Shape = encodePolyline6([(46.53, 6.64), (46.535, 6.645)]);
 
-      final j = jsonDecode('''
+      final j =
+          jsonDecode('''
       {"trip":{"summary":{"length":3.0,"time":2700},
         "legs":[
           {"shape":"$leg1Shape",
@@ -276,7 +287,8 @@ void main() {
           {"shape":"$leg3Shape",
             "maneuvers":[{"instruction":"Vous arrivez.","length":1.0,"begin_shape_index":0}]}
         ]}}
-      ''') as Map<String, dynamic>;
+      ''')
+              as Map<String, dynamic>;
 
       final r = RouteResult.fromValhallaJson(j);
 

@@ -12,8 +12,8 @@ import 'package:randomwalk/nav/polyline_math.dart';
   double cellM,
 ) {
   final latCell = (lat * 111320 / cellM).round();
-  final lonCell =
-      (lon * 111320 * math.cos(refLat * math.pi / 180) / cellM).round();
+  final lonCell = (lon * 111320 * math.cos(refLat * math.pi / 180) / cellM)
+      .round();
   return (latCell: latCell, lonCell: lonCell);
 }
 
@@ -41,10 +41,7 @@ import 'package:randomwalk/nav/polyline_math.dart';
 /// - Returns 0.0 for empty shapes, single-point shapes, or shapes with no repeated segments.
 /// - Returns 1.0 when all non-zero length is repeated (totalLength == repeatedLength > 0).
 /// - Returns 0.0 if total length is zero.
-double repeatedSegmentRatio(
-  List<(double, double)> shape, {
-  double cellM = 25,
-}) {
+double repeatedSegmentRatio(List<(double, double)> shape, {double cellM = 25}) {
   // Guard: empty or single-point shapes have no segments.
   if (shape.isEmpty) return 0.0;
   if (shape.length == 1) return 0.0;

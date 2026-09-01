@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
@@ -14,18 +15,18 @@ void main() {
   final tileSha = sha256.convert(tileBytes).toString();
 
   Map<String, dynamic> manifestFor(Iterable<String> paths) => {
-        'dataset_version': 'V1',
-        'valhalla_version': '3.6.2',
-        'region': 'test',
-        'tiles': {
-          for (final p in paths)
-            p: {
-              'asset': p.replaceAll('/', '_'),
-              'bytes': tileBytes.length,
-              'sha256': tileSha,
-            }
+    'dataset_version': 'V1',
+    'valhalla_version': '3.6.2',
+    'region': 'test',
+    'tiles': {
+      for (final p in paths)
+        p: {
+          'asset': p.replaceAll('/', '_'),
+          'bytes': tileBytes.length,
+          'sha256': tileSha,
         },
-      };
+    },
+  };
 
   // Manifest containing ONLY the L2/L1/L0 tiles for the test point:
   final knownPaths = [
@@ -35,27 +36,28 @@ void main() {
   ];
 
   MockClient client({bool corrupt = false}) => MockClient((req) async {
-        if (req.url.path.endsWith('manifest.json')) {
-          return http.Response(jsonEncode(manifestFor(knownPaths)), 200);
-        }
-        if (req.url.path.endsWith('.gph')) {
-          return http.Response.bytes(
-              corrupt ? [0, 0, 0] : tileBytes, 200);
-        }
-        return http.Response('not found', 404);
-      });
-
-  test('downloads needed tiles present in manifest, verifies sha, reports paths',
-      () async {
-    final root = await Directory.systemTemp.createTemp('cov');
-    final repo = CoverageRepository(root: root, client: client());
-    final res = await repo.ensureCoverage(lat, lon);
-    expect(res.datasetVersion, 'V1');
-    expect(res.downloaded, knownPaths.length);
-    for (final p in knownPaths) {
-      expect(File('${res.tileDirPath}/$p').existsSync(), isTrue);
+    if (req.url.path.endsWith('manifest.json')) {
+      return http.Response(jsonEncode(manifestFor(knownPaths)), 200);
     }
+    if (req.url.path.endsWith('.gph')) {
+      return http.Response.bytes(corrupt ? [0, 0, 0] : tileBytes, 200);
+    }
+    return http.Response('not found', 404);
   });
+
+  test(
+    'downloads needed tiles present in manifest, verifies sha, reports paths',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(root: root, client: client());
+      final res = await repo.ensureCoverage(lat, lon);
+      expect(res.datasetVersion, 'V1');
+      expect(res.downloaded, knownPaths.length);
+      for (final p in knownPaths) {
+        expect(File('${res.tileDirPath}/$p').existsSync(), isTrue);
+      }
+    },
+  );
 
   test('second call downloads nothing (idempotent)', () async {
     final root = await Directory.systemTemp.createTemp('cov');
@@ -93,34 +95,41 @@ void main() {
     expect(r1.tileDirPath, isNot(r2.tileDirPath));
   });
 
-  test('falls back to the cached manifest and already-downloaded tiles when offline',
-      () async {
-    final root = await Directory.systemTemp.createTemp('cov');
-    final onlineRepo = CoverageRepository(root: root, client: client());
-    final first = await onlineRepo.ensureCoverage(lat, lon);
-    expect(first.failed, 0);
-    expect(first.downloaded, knownPaths.length);
+  test(
+    'falls back to the cached manifest and already-downloaded tiles when offline',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final onlineRepo = CoverageRepository(root: root, client: client());
+      final first = await onlineRepo.ensureCoverage(lat, lon);
+      expect(first.failed, 0);
+      expect(first.downloaded, knownPaths.length);
 
-    final offlineClient =
-        MockClient((req) async => throw const SocketException('no network'));
-    final offlineRepo = CoverageRepository(root: root, client: offlineClient);
-    final second = await offlineRepo.ensureCoverage(lat, lon);
+      final offlineClient = MockClient(
+        (req) async => throw const SocketException('no network'),
+      );
+      final offlineRepo = CoverageRepository(root: root, client: offlineClient);
+      final second = await offlineRepo.ensureCoverage(lat, lon);
 
-    expect(second.datasetVersion, first.datasetVersion);
-    expect(second.tileDirPath, first.tileDirPath);
-    expect(second.downloaded, 0);
-    expect(second.failed, 0);
-    for (final p in knownPaths) {
-      expect(File('${second.tileDirPath}/$p').existsSync(), isTrue);
-    }
-  });
+      expect(second.datasetVersion, first.datasetVersion);
+      expect(second.tileDirPath, first.tileDirPath);
+      expect(second.downloaded, 0);
+      expect(second.failed, 0);
+      for (final p in knownPaths) {
+        expect(File('${second.tileDirPath}/$p').existsSync(), isTrue);
+      }
+    },
+  );
 
   test('throws when offline and no manifest was ever cached', () async {
     final root = await Directory.systemTemp.createTemp('cov');
-    final offlineClient =
-        MockClient((req) async => throw const SocketException('no network'));
+    final offlineClient = MockClient(
+      (req) async => throw const SocketException('no network'),
+    );
     final repo = CoverageRepository(root: root, client: offlineClient);
-    expect(() => repo.ensureCoverage(lat, lon), throwsA(isA<SocketException>()));
+    expect(
+      () => repo.ensureCoverage(lat, lon),
+      throwsA(isA<SocketException>()),
+    );
   });
 
   test('a failed download does not create a phantom LRU entry', () async {
@@ -151,117 +160,124 @@ void main() {
   });
 
   test(
-      'ensureCoverage keeps only the 2 most recently touched sibling version directories',
-      () async {
-    final root = await Directory.systemTemp.createTemp('cov');
-    // Three stale directories from previously-downloaded dataset versions,
-    // oldest to newest by mtime.
-    final oldest = Directory('${root.path}/OLDEST');
-    final middle = Directory('${root.path}/MIDDLE');
-    for (final (dir, ageMinutes) in [(oldest, 30), (middle, 20)]) {
-      final f = File('${dir.path}/stale.gph');
-      await f.create(recursive: true);
-      await f.writeAsBytes([1, 2, 3]);
-      await f.setLastModified(
-          DateTime.now().subtract(Duration(minutes: ageMinutes)));
-    }
-
-    final repo = CoverageRepository(root: root, client: client());
-    final res = await repo.ensureCoverage(lat, lon);
-
-    // Active dir (just downloaded into) + MIDDLE (2nd most recent) survive;
-    // OLDEST — beyond the top 2 — is reclaimed.
-    expect(oldest.existsSync(), isFalse);
-    expect(middle.existsSync(), isTrue);
-    expect(Directory(res.tileDirPath).existsSync(), isTrue);
-    // The manifest cache file lives directly under root and must survive.
-    expect(File('${root.path}/manifest.cache.json').existsSync(), isTrue);
-  });
-
-  test('purge-by-count sweeps a sibling directory with no tile file at all',
-      () async {
-    final root = await Directory.systemTemp.createTemp('cov');
-    final empty = Directory('${root.path}/EMPTY-LEFTOVER');
-    await empty.create(recursive: true);
-
-    final repo = CoverageRepository(root: root, client: client());
-    await repo.ensureCoverage(lat, lon);
-
-    expect(empty.existsSync(), isFalse);
-  });
-
-  test(
-      'purge-by-count never deletes the active version dir, even when this run had failures',
-      () async {
-    final root = await Directory.systemTemp.createTemp('cov');
-    // One previously-downloaded, fully-usable old version — purge-by-count
-    // keeps the active dir plus this single other one (only 2 siblings
-    // exist total, which is within the 2-dir keep count), so it survives
-    // here regardless of relative recency. (A second old sibling is
-    // deliberately not added: with 2 *other* siblings competing for the 1
-    // remaining slot, which one survives depends on sub-millisecond mtime
-    // ordering that is not reliably comparable across filesystems/OSes —
-    // see the dedicated, explicit-mtime purge-by-count tests above for
-    // that behaviour instead.)
-    final old1 = Directory('${root.path}/OLD-1');
-    await File('${old1.path}/${knownPaths.first}').create(recursive: true);
-    await File('${old1.path}/${knownPaths.first}').writeAsBytes(tileBytes);
-
-    final c = MockClient((req) async {
-      if (req.url.path.endsWith('manifest.json')) {
-        final m = manifestFor(knownPaths)..['dataset_version'] = 'NEW-VERSION';
-        return http.Response(jsonEncode(m), 200);
+    'ensureCoverage keeps only the 2 most recently touched sibling version directories',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      // Three stale directories from previously-downloaded dataset versions,
+      // oldest to newest by mtime.
+      final oldest = Directory('${root.path}/OLDEST');
+      final middle = Directory('${root.path}/MIDDLE');
+      for (final (dir, ageMinutes) in [(oldest, 30), (middle, 20)]) {
+        final f = File('${dir.path}/stale.gph');
+        await f.create(recursive: true);
+        await f.writeAsBytes([1, 2, 3]);
+        await f.setLastModified(
+          DateTime.now().subtract(Duration(minutes: ageMinutes)),
+        );
       }
-      // Every tile download fails (e.g. connectivity dropped mid-download).
-      return http.Response('not found', 404);
-    });
-    final repo = CoverageRepository(root: root, client: c);
 
-    final incomplete = await repo.ensureCoverage(lat, lon);
-    expect(incomplete.datasetVersion, 'NEW-VERSION');
-    expect(incomplete.failed, greaterThan(0));
-    // The active (partial, empty) new-version directory must survive so a
-    // later run can finish topping it up rather than starting over.
-    expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
-    expect(old1.existsSync(), isTrue);
-  });
+      final repo = CoverageRepository(root: root, client: client());
+      final res = await repo.ensureCoverage(lat, lon);
+
+      // Active dir (just downloaded into) + MIDDLE (2nd most recent) survive;
+      // OLDEST — beyond the top 2 — is reclaimed.
+      expect(oldest.existsSync(), isFalse);
+      expect(middle.existsSync(), isTrue);
+      expect(Directory(res.tileDirPath).existsSync(), isTrue);
+      // The manifest cache file lives directly under root and must survive.
+      expect(File('${root.path}/manifest.cache.json').existsSync(), isTrue);
+    },
+  );
 
   test(
-      'purge-by-count reclaims the oldest sibling beyond 2 even when this run had failures',
-      () async {
-    final root = await Directory.systemTemp.createTemp('cov');
-    final oldest = Directory('${root.path}/OLDEST');
-    final middle = Directory('${root.path}/MIDDLE');
-    for (final (dir, ageMinutes) in [(oldest, 30), (middle, 20)]) {
-      final f = File('${dir.path}/${knownPaths.first}');
-      await f.create(recursive: true);
-      await f.writeAsBytes(tileBytes);
-      await f.setLastModified(
-          DateTime.now().subtract(Duration(minutes: ageMinutes)));
-    }
+    'purge-by-count sweeps a sibling directory with no tile file at all',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final empty = Directory('${root.path}/EMPTY-LEFTOVER');
+      await empty.create(recursive: true);
 
-    final c = MockClient((req) async {
-      if (req.url.path.endsWith('manifest.json')) {
-        final m = manifestFor(knownPaths)..['dataset_version'] = 'NEW-VERSION';
-        return http.Response(jsonEncode(m), 200);
+      final repo = CoverageRepository(root: root, client: client());
+      await repo.ensureCoverage(lat, lon);
+
+      expect(empty.existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'purge-by-count never deletes the active version dir, even when this run had failures',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      // One previously-downloaded, fully-usable old version — purge-by-count
+      // keeps the active dir plus this single other one (only 2 siblings
+      // exist total, which is within the 2-dir keep count), so it survives
+      // here regardless of relative recency. (A second old sibling is
+      // deliberately not added: with 2 *other* siblings competing for the 1
+      // remaining slot, which one survives depends on sub-millisecond mtime
+      // ordering that is not reliably comparable across filesystems/OSes —
+      // see the dedicated, explicit-mtime purge-by-count tests above for
+      // that behaviour instead.)
+      final old1 = Directory('${root.path}/OLD-1');
+      await File('${old1.path}/${knownPaths.first}').create(recursive: true);
+      await File('${old1.path}/${knownPaths.first}').writeAsBytes(tileBytes);
+
+      final c = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          final m = manifestFor(knownPaths)
+            ..['dataset_version'] = 'NEW-VERSION';
+          return http.Response(jsonEncode(m), 200);
+        }
+        // Every tile download fails (e.g. connectivity dropped mid-download).
+        return http.Response('not found', 404);
+      });
+      final repo = CoverageRepository(root: root, client: c);
+
+      final incomplete = await repo.ensureCoverage(lat, lon);
+      expect(incomplete.datasetVersion, 'NEW-VERSION');
+      expect(incomplete.failed, greaterThan(0));
+      // The active (partial, empty) new-version directory must survive so a
+      // later run can finish topping it up rather than starting over.
+      expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
+      expect(old1.existsSync(), isTrue);
+    },
+  );
+
+  test(
+    'purge-by-count reclaims the oldest sibling beyond 2 even when this run had failures',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final oldest = Directory('${root.path}/OLDEST');
+      final middle = Directory('${root.path}/MIDDLE');
+      for (final (dir, ageMinutes) in [(oldest, 30), (middle, 20)]) {
+        final f = File('${dir.path}/${knownPaths.first}');
+        await f.create(recursive: true);
+        await f.writeAsBytes(tileBytes);
+        await f.setLastModified(
+          DateTime.now().subtract(Duration(minutes: ageMinutes)),
+        );
       }
-      return http.Response('not found', 404); // every tile fails
-    });
-    final repo = CoverageRepository(root: root, client: c);
 
-    final incomplete = await repo.ensureCoverage(lat, lon);
-    expect(incomplete.failed, greaterThan(0));
-    // Unconditional purge-by-count: even with failures this run, the
-    // active dir + MIDDLE (2 most recent) survive; OLDEST is reclaimed.
-    expect(oldest.existsSync(), isFalse);
-    expect(middle.existsSync(), isTrue);
-    expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
-  });
+      final c = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          final m = manifestFor(knownPaths)
+            ..['dataset_version'] = 'NEW-VERSION';
+          return http.Response(jsonEncode(m), 200);
+        }
+        return http.Response('not found', 404); // every tile fails
+      });
+      final repo = CoverageRepository(root: root, client: c);
 
-  test(
-      'purge-by-count keeps the more complete sibling over the more recent '
-      'one — completeness before recency (item 10, churn scenario)',
-      () async {
+      final incomplete = await repo.ensureCoverage(lat, lon);
+      expect(incomplete.failed, greaterThan(0));
+      // Unconditional purge-by-count: even with failures this run, the
+      // active dir + MIDDLE (2 most recent) survive; OLDEST is reclaimed.
+      expect(oldest.existsSync(), isFalse);
+      expect(middle.existsSync(), isTrue);
+      expect(Directory(incomplete.tileDirPath).existsSync(), isTrue);
+    },
+  );
+
+  test('purge-by-count keeps the more complete sibling over the more recent '
+      'one — completeness before recency (item 10, churn scenario)', () async {
     final root = await Directory.systemTemp.createTemp('cov');
     // MORE-COMPLETE is the older of the two siblings by mtime, but has every
     // tile this dataset point needs (all 3 of knownPaths). LESS-COMPLETE is
@@ -277,14 +293,16 @@ void main() {
       await f.create(recursive: true);
       await f.writeAsBytes(tileBytes);
       await f.setLastModified(
-          DateTime.now().subtract(const Duration(minutes: 30)));
+        DateTime.now().subtract(const Duration(minutes: 30)),
+      );
     }
     final lessComplete = Directory('${root.path}/LESS-COMPLETE');
     final onlyTile = File('${lessComplete.path}/${knownPaths.first}');
     await onlyTile.create(recursive: true);
     await onlyTile.writeAsBytes(tileBytes);
     await onlyTile.setLastModified(
-        DateTime.now().subtract(const Duration(minutes: 5)));
+      DateTime.now().subtract(const Duration(minutes: 5)),
+    );
 
     final c = MockClient((req) async {
       if (req.url.path.endsWith('manifest.json')) {
@@ -297,10 +315,16 @@ void main() {
 
     await repo.ensureCoverage(lat, lon);
 
-    expect(moreComplete.existsSync(), isTrue,
-        reason: 'more complete despite being older');
-    expect(lessComplete.existsSync(), isFalse,
-        reason: 'newer but thinner — reclaimed in favour of completeness');
+    expect(
+      moreComplete.existsSync(),
+      isTrue,
+      reason: 'more complete despite being older',
+    );
+    expect(
+      lessComplete.existsSync(),
+      isFalse,
+      reason: 'newer but thinner — reclaimed in favour of completeness',
+    );
   });
 
   group('valhalla_version guard', () {
@@ -317,60 +341,293 @@ void main() {
         return http.Response('not found', 404);
       });
       final repo = CoverageRepository(root: root, client: c);
-      await expectLater(repo.ensureCoverage(lat, lon),
-          throwsA(isA<DatasetVersionMismatch>()));
+      await expectLater(
+        repo.ensureCoverage(lat, lon),
+        throwsA(isA<DatasetVersionMismatch>()),
+      );
     });
 
     test(
-        'falls back to the cached manifest (still usable) when the fresh one mismatches',
-        () async {
-      final root = await Directory.systemTemp.createTemp('cov');
-      // Warm a good, matching-version cache first.
-      final goodRepo = CoverageRepository(root: root, client: client());
-      final good = await goodRepo.ensureCoverage(lat, lon);
-      expect(good.versionMismatch, isFalse);
+      'falls back to the cached manifest (still usable) when the fresh one mismatches',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        // Warm a good, matching-version cache first.
+        final goodRepo = CoverageRepository(root: root, client: client());
+        final good = await goodRepo.ensureCoverage(lat, lon);
+        expect(good.versionMismatch, isFalse);
 
-      // Now the server starts serving a manifest for an engine version this
-      // app build does not ship.
-      final badClient = MockClient((req) async {
-        if (req.url.path.endsWith('manifest.json')) {
-          return http.Response(jsonEncode(badVersionManifest()), 200);
+        // Now the server starts serving a manifest for an engine version this
+        // app build does not ship.
+        final badClient = MockClient((req) async {
+          if (req.url.path.endsWith('manifest.json')) {
+            return http.Response(jsonEncode(badVersionManifest()), 200);
+          }
+          return http.Response('not found', 404);
+        });
+        final repo = CoverageRepository(root: root, client: badClient);
+        final res = await repo.ensureCoverage(lat, lon);
+
+        expect(res.versionMismatch, isTrue);
+        // Still routes against the last good (cached) dataset version.
+        expect(res.datasetVersion, good.datasetVersion);
+        expect(res.tileDirPath, good.tileDirPath);
+        for (final p in knownPaths) {
+          expect(File('${res.tileDirPath}/$p').existsSync(), isTrue);
         }
-        return http.Response('not found', 404);
-      });
-      final repo = CoverageRepository(root: root, client: badClient);
-      final res = await repo.ensureCoverage(lat, lon);
+      },
+    );
 
-      expect(res.versionMismatch, isTrue);
-      // Still routes against the last good (cached) dataset version.
-      expect(res.datasetVersion, good.datasetVersion);
-      expect(res.tileDirPath, good.tileDirPath);
-      for (final p in knownPaths) {
-        expect(File('${res.tileDirPath}/$p').existsSync(), isTrue);
+    test(
+      'does not overwrite the manifest cache with a version-mismatched fetch',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final goodRepo = CoverageRepository(root: root, client: client());
+        await goodRepo.ensureCoverage(lat, lon);
+        final cacheBefore = await File(
+          '${root.path}/manifest.cache.json',
+        ).readAsString();
+
+        final badClient = MockClient((req) async {
+          if (req.url.path.endsWith('manifest.json')) {
+            return http.Response(jsonEncode(badVersionManifest()), 200);
+          }
+          return http.Response('not found', 404);
+        });
+        final repo = CoverageRepository(root: root, client: badClient);
+        await repo.ensureCoverage(lat, lon);
+
+        final cacheAfter = await File(
+          '${root.path}/manifest.cache.json',
+        ).readAsString();
+        expect(cacheAfter, cacheBefore);
+      },
+    );
+  });
+
+  group('game POI asset', () {
+    final poisBytes = utf8.encode('gzipped-pois-fixture');
+    final poisSha = sha256.convert(poisBytes).toString();
+
+    Map<String, dynamic> manifestWithPois() {
+      final m = manifestFor(knownPaths);
+      m['pois'] = {
+        'asset': 'pois.json.gz',
+        'bytes': poisBytes.length,
+        'sha256': poisSha,
+      };
+      return m;
+    }
+
+    MockClient clientWithPois({bool corruptPois = false}) => MockClient((
+      req,
+    ) async {
+      if (req.url.path.endsWith('manifest.json')) {
+        return http.Response(jsonEncode(manifestWithPois()), 200);
       }
+      if (req.url.path.endsWith('pois.json.gz')) {
+        return http.Response.bytes(corruptPois ? [0, 0, 0] : poisBytes, 200);
+      }
+      if (req.url.path.endsWith('.gph')) {
+        return http.Response.bytes(tileBytes, 200);
+      }
+      return http.Response('not found', 404);
     });
 
     test(
-        'does not overwrite the manifest cache with a version-mismatched fetch',
-        () async {
+      'downloads pois.json.gz when the manifest advertises it, sha-verified',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final repo = CoverageRepository(root: root, client: clientWithPois());
+        final res = await repo.ensureCoverage(lat, lon);
+        final f = File('${res.tileDirPath}/pois.json.gz');
+        expect(f.existsSync(), isTrue);
+        expect(await f.readAsBytes(), poisBytes);
+      },
+    );
+
+    test('poisFile() is null before ensureCoverage has ever run', () async {
       final root = await Directory.systemTemp.createTemp('cov');
-      final goodRepo = CoverageRepository(root: root, client: client());
-      await goodRepo.ensureCoverage(lat, lon);
-      final cacheBefore =
-          await File('${root.path}/manifest.cache.json').readAsString();
-
-      final badClient = MockClient((req) async {
-        if (req.url.path.endsWith('manifest.json')) {
-          return http.Response(jsonEncode(badVersionManifest()), 200);
-        }
-        return http.Response('not found', 404);
-      });
-      final repo = CoverageRepository(root: root, client: badClient);
-      await repo.ensureCoverage(lat, lon);
-
-      final cacheAfter =
-          await File('${root.path}/manifest.cache.json').readAsString();
-      expect(cacheAfter, cacheBefore);
+      final repo = CoverageRepository(root: root, client: clientWithPois());
+      expect(await repo.poisFile(), isNull);
     });
+
+    test(
+      'poisFile() returns the downloaded file after ensureCoverage',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final repo = CoverageRepository(root: root, client: clientWithPois());
+        await repo.ensureCoverage(lat, lon);
+        final f = await repo.poisFile();
+        expect(f, isNotNull);
+        expect(await f!.readAsBytes(), poisBytes);
+      },
+    );
+
+    test('rejects a corrupted pois asset (sha mismatch), leaves no file, '
+        'and does not fail ensureCoverage itself', () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(
+        root: root,
+        client: clientWithPois(corruptPois: true),
+      );
+      final res = await repo.ensureCoverage(lat, lon);
+      expect(res.failed, 0); // tile downloads are unaffected by the POI asset
+      expect(File('${res.tileDirPath}/pois.json.gz').existsSync(), isFalse);
+      expect(await repo.poisFile(), isNull);
+    });
+
+    test(
+      'old manifest without a "pois" entry: no download attempted, poisFile() null',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final repo = CoverageRepository(root: root, client: client());
+        final res = await repo.ensureCoverage(lat, lon);
+        expect(File('${res.tileDirPath}/pois.json.gz').existsSync(), isFalse);
+        expect(await repo.poisFile(), isNull);
+      },
+    );
+
+    test(
+      'a second ensureCoverage call does not re-download an already-present pois asset',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        var poisRequests = 0;
+        final c = MockClient((req) async {
+          if (req.url.path.endsWith('manifest.json')) {
+            return http.Response(jsonEncode(manifestWithPois()), 200);
+          }
+          if (req.url.path.endsWith('pois.json.gz')) {
+            poisRequests++;
+            return http.Response.bytes(poisBytes, 200);
+          }
+          if (req.url.path.endsWith('.gph')) {
+            return http.Response.bytes(tileBytes, 200);
+          }
+          return http.Response('not found', 404);
+        });
+        final repo = CoverageRepository(root: root, client: c);
+        await repo.ensureCoverage(lat, lon);
+        await repo.ensureCoverage(lat, lon);
+        expect(poisRequests, 1);
+      },
+    );
+  });
+
+  group('HTTP timeouts (task-8 backlog item 2)', () {
+    // A response that never arrives — no exception, no status code, just a
+    // `Future` that never completes, the way a wedged connection (dropped
+    // mid-handshake behind a captive portal, a server that accepted the
+    // socket and then went silent) looks from the caller's side. Without a
+    // request-level timeout this would hang `ensureCoverage` forever;
+    // [CoverageRepository.totalTimeout] is injected small here (rather than
+    // the real 30 s [CoverageConfig.totalTimeout]) purely so the test itself
+    // doesn't have to wait out the real budget to prove the timeout fires.
+    Future<http.Response> neverCompletes(http.Request req) =>
+        Completer<http.Response>().future;
+
+    test(
+      'a manifest fetch that never completes falls back to the cached manifest, '
+      'like any other network failure',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        // Warm a real cache first — same pattern as the offline-fallback test.
+        final onlineRepo = CoverageRepository(root: root, client: client());
+        final first = await onlineRepo.ensureCoverage(lat, lon);
+
+        final hangingClient = MockClient(neverCompletes);
+        final repo = CoverageRepository(
+          root: root,
+          client: hangingClient,
+          totalTimeout: const Duration(milliseconds: 50),
+        );
+        final second = await repo.ensureCoverage(lat, lon);
+
+        expect(second.datasetVersion, first.datasetVersion);
+        expect(second.tileDirPath, first.tileDirPath);
+        expect(second.downloaded, 0);
+        for (final p in knownPaths) {
+          expect(File('${second.tileDirPath}/$p').existsSync(), isTrue);
+        }
+      },
+    );
+
+    test(
+      'a manifest fetch that never completes rethrows when no cache exists',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final repo = CoverageRepository(
+          root: root,
+          client: MockClient(neverCompletes),
+          totalTimeout: const Duration(milliseconds: 50),
+        );
+        await expectLater(
+          repo.ensureCoverage(lat, lon),
+          throwsA(isA<TimeoutException>()),
+        );
+      },
+    );
+
+    test(
+      'a tile download that never completes is counted as failed, not a hang',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final hangingTileClient = MockClient((req) async {
+          if (req.url.path.endsWith('manifest.json')) {
+            return http.Response(jsonEncode(manifestFor(knownPaths)), 200);
+          }
+          return neverCompletes(req); // every tile hangs forever
+        });
+        final repo = CoverageRepository(
+          root: root,
+          client: hangingTileClient,
+          totalTimeout: const Duration(milliseconds: 50),
+        );
+        final res = await repo.ensureCoverage(lat, lon);
+
+        expect(res.downloaded, 0);
+        expect(res.failed, knownPaths.length);
+        for (final p in knownPaths) {
+          expect(File('${res.tileDirPath}/$p').existsSync(), isFalse);
+        }
+      },
+    );
+
+    test(
+      'a pois asset download that never completes is swallowed, tiles unaffected',
+      () async {
+        final root = await Directory.systemTemp.createTemp('cov');
+        final poisBytes = utf8.encode('gzipped-pois-fixture');
+        final manifestWithPois = {
+          ...manifestFor(knownPaths),
+          'pois': {
+            'asset': 'pois.json.gz',
+            'bytes': poisBytes.length,
+            'sha256': sha256.convert(poisBytes).toString(),
+          },
+        };
+        final c = MockClient((req) async {
+          if (req.url.path.endsWith('manifest.json')) {
+            return http.Response(jsonEncode(manifestWithPois), 200);
+          }
+          if (req.url.path.endsWith('pois.json.gz')) {
+            return neverCompletes(req);
+          }
+          if (req.url.path.endsWith('.gph')) {
+            return http.Response.bytes(tileBytes, 200);
+          }
+          return http.Response('not found', 404);
+        });
+        final repo = CoverageRepository(
+          root: root,
+          client: c,
+          totalTimeout: const Duration(milliseconds: 50),
+        );
+        final res = await repo.ensureCoverage(lat, lon);
+
+        expect(res.failed, 0); // tile downloads are unaffected
+        expect(File('${res.tileDirPath}/pois.json.gz').existsSync(), isFalse);
+        expect(await repo.poisFile(), isNull);
+      },
+    );
   });
 }

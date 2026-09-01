@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:randomwalk/adventure/adventure_screen.dart';
 import 'package:randomwalk/main.dart';
 import 'package:randomwalk/map/map_screen.dart';
 import 'package:randomwalk/theme/theme.dart';
@@ -21,21 +22,24 @@ void main() {
   late FakeTotalDistanceStore totals;
 
   TripController buildTrip() => TripController(
-        tracker: tracker,
-        routeStore: MemoryRouteStore(),
-        totalStore: totals,
-        finalisedTrips: MemoryFinalisedTripMemory(),
-        ensurePermissions: () async => const TripPermissions(
-            outcome: TripPermissionOutcome.ready,
-            mode: TrackingMode.background),
-        createStepCounter: (seed) =>
-            SessionStepCounter(FakeStepSensor(), seed: seed),
-        persistProfile: (_) async {},
-        loadProfile: () async => null,
-      );
+    tracker: tracker,
+    routeStore: MemoryRouteStore(),
+    totalStore: totals,
+    finalisedTrips: MemoryFinalisedTripMemory(),
+    ensurePermissions: () async => const TripPermissions(
+      outcome: TripPermissionOutcome.ready,
+      mode: TrackingMode.background,
+    ),
+    createStepCounter: (seed) =>
+        SessionStepCounter(FakeStepSensor(), seed: seed),
+    persistProfile: (_) async {},
+    loadProfile: () async => null,
+  );
 
-  Future<TripController> pumpShell(WidgetTester tester,
-      {List<Widget>? screens}) async {
+  Future<TripController> pumpShell(
+    WidgetTester tester, {
+    List<Widget>? screens,
+  }) async {
     final trip = buildTrip();
     await trip.restore();
     await tester.pumpWidget(
@@ -57,26 +61,33 @@ void main() {
   });
 
   test('HomeShell.defaultScreens wiring is correct', () {
-    expect(HomeShell.defaultScreens, hasLength(3));
+    expect(HomeShell.defaultScreens, hasLength(4));
     expect(HomeShell.defaultScreens[0], isA<MapScreen>());
+    expect(HomeShell.defaultScreens[3], isA<AdventureScreen>());
   });
 
-  testWidgets('RandomWalkApp shows the three-tab shell', (tester) async {
-    await pumpShell(tester, screens: <Widget>[
-      const Center(child: Text('Tab0Marker')),
-      const Center(child: Text('Tab1Marker')),
-      const Center(child: Text('Tab2Marker')),
-    ]);
+  testWidgets('RandomWalkApp shows the four-tab shell', (tester) async {
+    await pumpShell(
+      tester,
+      screens: <Widget>[
+        const Center(child: Text('Tab0Marker')),
+        const Center(child: Text('Tab1Marker')),
+        const Center(child: Text('Tab2Marker')),
+        const Center(child: Text('Tab3Marker')),
+      ],
+    );
 
     // IndexedStack keeps every screen in the tree; only the selected one is
     // painted, so visibility — not existence — is what identifies the tab.
     expect(find.text('Tab0Marker', skipOffstage: true), findsOneWidget);
     expect(find.text('Tab1Marker', skipOffstage: true), findsNothing);
     expect(find.text('Tab2Marker', skipOffstage: true), findsNothing);
+    expect(find.text('Tab3Marker', skipOffstage: true), findsNothing);
 
     expect(find.text('Carte'), findsOneWidget);
     expect(find.text('Session'), findsOneWidget);
     expect(find.text('Classement'), findsOneWidget);
+    expect(find.text('Aventure'), findsOneWidget);
 
     await tester.tap(find.text('Session'));
     await tester.pumpAndSettle();
@@ -87,17 +98,25 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Tab2Marker', skipOffstage: true), findsOneWidget);
 
+    await tester.tap(find.text('Aventure'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tab3Marker', skipOffstage: true), findsOneWidget);
+
     await tester.tap(find.text('Carte'));
     await tester.pumpAndSettle();
     expect(find.text('Tab0Marker', skipOffstage: true), findsOneWidget);
   });
 
   testWidgets('screens are kept alive across tab switches', (tester) async {
-    await pumpShell(tester, screens: const <Widget>[
-      _CountingScreen(label: 'Carte'),
-      Center(child: Text('Session')),
-      Center(child: Text('Classement')),
-    ]);
+    await pumpShell(
+      tester,
+      screens: const <Widget>[
+        _CountingScreen(label: 'Carte'),
+        Center(child: Text('Session')),
+        Center(child: Text('Classement')),
+        Center(child: Text('Aventure')),
+      ],
+    );
     expect(_CountingScreen.initCount, 1);
 
     await tester.tap(find.text('Session'));
@@ -113,25 +132,24 @@ void main() {
 
   testWidgets('a silent GPS raises a banner while recording', (tester) async {
     TripSnapshot recording({bool gpsSilent = false}) => TripSnapshot(
-          status: TripStatus.recording,
-          distanceKm: 1.2,
-          steps: 1500,
-          startedAt: DateTime.utc(2026, 8, 30, 9, 30),
-          updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
-          profile: RoutingProfile.walk,
-          routeBound: false,
-          gpsSilent: gpsSilent,
-        );
+      status: TripStatus.recording,
+      distanceKm: 1.2,
+      steps: 1500,
+      startedAt: DateTime.utc(2026, 8, 30, 9, 30),
+      updatedAt: DateTime.utc(2026, 8, 30, 9, 58),
+      profile: RoutingProfile.walk,
+      routeBound: false,
+      gpsSilent: gpsSilent,
+    );
 
     tracker
       ..persisted = recording()
       ..running = true;
 
-    final trip = await pumpShell(tester, screens: const [
-      SizedBox.shrink(),
-      SizedBox.shrink(),
-      SizedBox.shrink()
-    ]);
+    final trip = await pumpShell(
+      tester,
+      screens: const [SizedBox.shrink(), SizedBox.shrink(), SizedBox.shrink()],
+    );
     expect(find.textContaining('GPS silencieux'), findsNothing);
 
     tracker.emit(recording(gpsSilent: true));
@@ -149,8 +167,9 @@ void main() {
     expect(find.textContaining('GPS silencieux'), findsNothing);
   });
 
-  testWidgets('a service already silent at cold start warns immediately',
-      (tester) async {
+  testWidgets('a service already silent at cold start warns immediately', (
+    tester,
+  ) async {
     tracker
       ..persisted = TripSnapshot(
         status: TripStatus.recording,
@@ -164,11 +183,10 @@ void main() {
       )
       ..running = true;
 
-    await pumpShell(tester, screens: const [
-      SizedBox.shrink(),
-      SizedBox.shrink(),
-      SizedBox.shrink()
-    ]);
+    await pumpShell(
+      tester,
+      screens: const [SizedBox.shrink(), SizedBox.shrink(), SizedBox.shrink()],
+    );
 
     // No transition to observe — the service went quiet while this process
     // did not exist.
@@ -190,13 +208,17 @@ void main() {
         ..running = false;
     });
 
-    testWidgets('offers Reprendre / Terminer after a process kill',
-        (tester) async {
-      await pumpShell(tester, screens: const [
-        SizedBox.shrink(),
-        SizedBox.shrink(),
-        SizedBox.shrink()
-      ]);
+    testWidgets('offers Reprendre / Terminer after a process kill', (
+      tester,
+    ) async {
+      await pumpShell(
+        tester,
+        screens: const [
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+        ],
+      );
 
       expect(find.text('Trajet interrompu'), findsOneWidget);
       expect(find.text('2,40 km enregistrés'), findsOneWidget);
@@ -204,13 +226,17 @@ void main() {
       expect(find.text('Terminer'), findsOneWidget);
     });
 
-    testWidgets('Reprendre restarts the service with the saved distance',
-        (tester) async {
-      await pumpShell(tester, screens: const [
-        SizedBox.shrink(),
-        SizedBox.shrink(),
-        SizedBox.shrink()
-      ]);
+    testWidgets('Reprendre restarts the service with the saved distance', (
+      tester,
+    ) async {
+      await pumpShell(
+        tester,
+        screens: const [
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+        ],
+      );
 
       await tester.tap(find.text('Reprendre'));
       await tester.pumpAndSettle();
@@ -220,13 +246,17 @@ void main() {
       expect(find.text('Trajet interrompu'), findsNothing);
     });
 
-    testWidgets('Terminer banks the distance and dismisses the banner',
-        (tester) async {
-      await pumpShell(tester, screens: const [
-        SizedBox.shrink(),
-        SizedBox.shrink(),
-        SizedBox.shrink()
-      ]);
+    testWidgets('Terminer banks the distance and dismisses the banner', (
+      tester,
+    ) async {
+      await pumpShell(
+        tester,
+        screens: const [
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+        ],
+      );
 
       await tester.tap(find.text('Terminer'));
       await tester.pumpAndSettle();
@@ -237,11 +267,14 @@ void main() {
 
     testWidgets('no banner when nothing was interrupted', (tester) async {
       tracker.persisted = null;
-      await pumpShell(tester, screens: const [
-        SizedBox.shrink(),
-        SizedBox.shrink(),
-        SizedBox.shrink()
-      ]);
+      await pumpShell(
+        tester,
+        screens: const [
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+          SizedBox.shrink(),
+        ],
+      );
       expect(find.text('Trajet interrompu'), findsNothing);
     });
   });

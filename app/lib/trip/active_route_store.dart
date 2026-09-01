@@ -45,8 +45,7 @@ class ActiveRoute {
 
   /// Nothing has been planned. Persisting this is the same as persisting
   /// nothing, and [ActiveRouteStore.load] never returns one.
-  bool get isEmpty =>
-      route == null && destination == null && departure == null;
+  bool get isEmpty => route == null && destination == null && departure == null;
 
   ActiveRoute copyWith({
     RouteResult? route,
@@ -57,30 +56,27 @@ class ActiveRoute {
     bool clearDeparture = false,
     RoutingProfile? profile,
     bool? isLoop,
-  }) =>
-      ActiveRoute(
-        route: clearRoute ? null : (route ?? this.route),
-        destination:
-            clearDestination ? null : (destination ?? this.destination),
-        departure: clearDeparture ? null : (departure ?? this.departure),
-        profile: profile ?? this.profile,
-        // Loop-ness describes the *route*, so clearing the route clears it
-        // too: leaving a stale `true` behind would make the next A→B route
-        // computed into this plan (see `map_screen.dart`'s `_planRoute`)
-        // silently unreplannable.
-        isLoop: clearRoute ? false : (isLoop ?? this.isLoop),
-      );
+  }) => ActiveRoute(
+    route: clearRoute ? null : (route ?? this.route),
+    destination: clearDestination ? null : (destination ?? this.destination),
+    departure: clearDeparture ? null : (departure ?? this.departure),
+    profile: profile ?? this.profile,
+    // Loop-ness describes the *route*, so clearing the route clears it
+    // too: leaving a stale `true` behind would make the next A→B route
+    // computed into this plan (see `map_screen.dart`'s `_planRoute`)
+    // silently unreplannable.
+    isLoop: clearRoute ? false : (isLoop ?? this.isLoop),
+  );
 
   Map<String, dynamic> toJson() => {
-        if (route != null) 'route': route!.toJson(),
-        if (destination != null)
-          'destination': [destination!.$1, destination!.$2],
-        if (departure != null) 'departure': [departure!.$1, departure!.$2],
-        'profile': profile.name,
-        // Omitted when false — same optional-field discipline as
-        // `TripSnapshot.toJson`, and what keeps pre-M3 documents loadable.
-        if (isLoop) 'isLoop': true,
-      };
+    if (route != null) 'route': route!.toJson(),
+    if (destination != null) 'destination': [destination!.$1, destination!.$2],
+    if (departure != null) 'departure': [departure!.$1, departure!.$2],
+    'profile': profile.name,
+    // Omitted when false — same optional-field discipline as
+    // `TripSnapshot.toJson`, and what keeps pre-M3 documents loadable.
+    if (isLoop) 'isLoop': true,
+  };
 
   factory ActiveRoute.fromJson(Map<String, dynamic> j) {
     (double, double)? pair(Object? raw) {
@@ -137,8 +133,9 @@ class FileActiveRouteStore implements ActiveRouteStore {
       if (!await file.exists()) return null;
       final raw = await file.readAsString();
       if (raw.trim().isEmpty) return null;
-      final route =
-          ActiveRoute.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final route = ActiveRoute.fromJson(
+        jsonDecode(raw) as Map<String, dynamic>,
+      );
       return route.isEmpty ? null : route;
       // A document we cannot read is indistinguishable, from the user's
       // point of view, from having planned nothing — and it must never take
@@ -156,17 +153,17 @@ class FileActiveRouteStore implements ActiveRouteStore {
   Future<void> save(ActiveRoute route) {
     if (route.isEmpty) return clear();
     return _serialize(() async {
-        await file.parent.create(recursive: true);
-        final tmp = File('${file.path}.tmp');
-        await tmp.writeAsString(jsonEncode(route.toJson()), flush: true);
-        await tmp.rename(file.path);
-      });
+      await file.parent.create(recursive: true);
+      final tmp = File('${file.path}.tmp');
+      await tmp.writeAsString(jsonEncode(route.toJson()), flush: true);
+      await tmp.rename(file.path);
+    });
   }
 
   @override
   Future<void> clear() => _serialize(() async {
-        if (await file.exists()) await file.delete();
-      });
+    if (await file.exists()) await file.delete();
+  });
 
   Future<void> _serialize(Future<void> Function() op) {
     final next = _pending.then((_) => op());

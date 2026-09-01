@@ -55,7 +55,10 @@ class FakeSpeedHistoryStore implements SpeedHistoryStore {
 
   @override
   Future<void> recordSession(
-      RoutingProfile profile, double sessionKm, Duration elapsed) async {
+    RoutingProfile profile,
+    double sessionKm,
+    Duration elapsed,
+  ) async {
     calls.add((profile, sessionKm, elapsed));
   }
 
@@ -99,6 +102,10 @@ class FakeTripTracker implements TripTracker {
   /// The navigation handover each start was given, positionally matching
   /// [startedWith] — null for a free trip.
   final startedNav = <NavSeed?>[];
+
+  /// The `poisFilePath` each start was given (M4 Task 5), positionally
+  /// matching [startedWith].
+  final startedPoisFilePath = <String?>[];
   final publishedSteps = <int>[];
   int stops = 0;
   int clears = 0;
@@ -140,10 +147,15 @@ class FakeTripTracker implements TripTracker {
   }
 
   @override
-  Future<bool> start(TripSnapshot seed, {NavSeed? nav}) async {
+  Future<bool> start(
+    TripSnapshot seed, {
+    NavSeed? nav,
+    String? poisFilePath,
+  }) async {
     if (!startSucceeds) return false;
     startedWith.add(seed);
     startedNav.add(nav);
+    startedPoisFilePath.add(poisFilePath);
     persisted = seed;
     running = true;
     attached = true;
@@ -165,10 +177,13 @@ class FakeTripTracker implements TripTracker {
   final alertSettingsUpdates = <({bool ttsEnabled, bool hapticsEnabled})>[];
 
   @override
-  Future<void> updateAlertSettings(
-          {required bool ttsEnabled, required bool hapticsEnabled}) async =>
-      alertSettingsUpdates
-          .add((ttsEnabled: ttsEnabled, hapticsEnabled: hapticsEnabled));
+  Future<void> updateAlertSettings({
+    required bool ttsEnabled,
+    required bool hapticsEnabled,
+  }) async => alertSettingsUpdates.add((
+    ttsEnabled: ttsEnabled,
+    hapticsEnabled: hapticsEnabled,
+  ));
 
   @override
   Future<void> dispose() async {
@@ -194,12 +209,14 @@ class FakeStepSensor implements StepSensor {
 }
 
 RouteResult fakeRoute() => const RouteResult(
-    shape: [(46.5, 6.6), (46.51, 6.61)],
-    distanceKm: 1.2,
-    duration: Duration(minutes: 15),
-    maneuvers: []);
+  shape: [(46.5, 6.6), (46.51, 6.61)],
+  distanceKm: 1.2,
+  duration: Duration(minutes: 15),
+  maneuvers: [],
+);
 
 ActiveRoute fakeActiveRoute() => ActiveRoute(
-    route: fakeRoute(),
-    destination: const (46.51, 6.61),
-    profile: RoutingProfile.walk);
+  route: fakeRoute(),
+  destination: const (46.51, 6.61),
+  profile: RoutingProfile.walk,
+);

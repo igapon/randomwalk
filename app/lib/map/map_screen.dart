@@ -15,6 +15,9 @@ import 'plan_mode.dart';
 import 'replan_line.dart';
 import 'route_controller.dart';
 import '../coverage/manifest.dart' show DatasetVersionMismatch;
+import '../exploration/explore_planner.dart';
+import '../game/game_state_provider.dart';
+import '../game/grid.dart' show corridorCells;
 import '../loop/loop_planner.dart';
 import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
@@ -171,11 +174,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// hardware step counter, which is only readable from this isolate (see
   /// [TripController.tick]). Running it unconditionally while idle would
   /// rebuild this screen once a second for nothing.
-  late final _statsTicker = GatedTicker(onTick: () {
-    if (!mounted) return;
-    ref.read(tripControllerProvider).tick();
-    setState(() {});
-  });
+  late final _statsTicker = GatedTicker(
+    onTick: () {
+      if (!mounted) return;
+      ref.read(tripControllerProvider).tick();
+      setState(() {});
+    },
+  );
 
   @override
   void initState() {
@@ -244,7 +249,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   void _onCameraFollowChanged(bool follow) {
     controller?.updateMyLocationTrackingMode(
-        follow ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none);
+      follow ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none,
+    );
     // A fresh camera-follow session — trip start or stop — starts unreleased:
     // carrying a stale release across trips would show the recentrer button
     // (or hide it) based on the previous trip's last gesture.
@@ -324,9 +330,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     await _maybeSyncReplannedRoute();
     final trip = ref.read(tripControllerProvider);
     if (shouldReengageTrackingOnRemount(
-        isRecording: trip.isRecording,
-        isRouteBound: trip.isRouteBound,
-        trackingReleased: _trackingReleased)) {
+      isRecording: trip.isRecording,
+      isRouteBound: trip.isRouteBound,
+      trackingReleased: _trackingReleased,
+    )) {
       controller?.updateMyLocationTrackingMode(MyLocationTrackingMode.tracking);
     }
   }
@@ -376,33 +383,45 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _drawOverlays(ActiveRoute plan) async {
     final departure = plan.departure;
     if (departure != null) {
-      _departureMarker = await controller?.addSymbol(SymbolOptions(
+      _departureMarker = await controller?.addSymbol(
+        SymbolOptions(
           geometry: LatLng(departure.$1, departure.$2),
           iconImage: _kIconMarkerA,
           iconSize: 1.0,
-          iconAnchor: 'center'));
+          iconAnchor: 'center',
+        ),
+      );
     }
     final destination = plan.destination;
     if (destination != null) {
-      _destinationMarker = await controller?.addSymbol(SymbolOptions(
+      _destinationMarker = await controller?.addSymbol(
+        SymbolOptions(
           geometry: LatLng(destination.$1, destination.$2),
           iconImage: _kIconMarkerB,
           iconSize: 1.0,
-          iconAnchor: 'center'));
+          iconAnchor: 'center',
+        ),
+      );
     }
     final route = plan.route;
     if (route != null) {
       final geometry = [for (final (lat, lon) in route.shape) LatLng(lat, lon)];
       // Casing first (drawn below), then the yellow line on top.
-      _routeLineCasing = await controller?.addLine(LineOptions(
+      _routeLineCasing = await controller?.addLine(
+        LineOptions(
           geometry: geometry,
           lineColor: AppColors.routeLineCasingHex,
           lineWidth: 7,
-          lineOpacity: 1.0));
-      _routeLine = await controller?.addLine(LineOptions(
+          lineOpacity: 1.0,
+        ),
+      );
+      _routeLine = await controller?.addLine(
+        LineOptions(
           geometry: geometry,
           lineColor: AppColors.routeLineHex,
-          lineWidth: 4.5));
+          lineWidth: 4.5,
+        ),
+      );
     }
   }
 
@@ -453,13 +472,21 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final oldCasing = _routeLineCasing;
     final oldLine = _routeLine;
     final geometry = [for (final (lat, lon) in shape) LatLng(lat, lon)];
-    _routeLineCasing = await controller?.addLine(LineOptions(
+    _routeLineCasing = await controller?.addLine(
+      LineOptions(
         geometry: geometry,
         lineColor: AppColors.routeLineCasingHex,
         lineWidth: 7,
-        lineOpacity: 1.0));
-    _routeLine = await controller?.addLine(LineOptions(
-        geometry: geometry, lineColor: AppColors.routeLineHex, lineWidth: 4.5));
+        lineOpacity: 1.0,
+      ),
+    );
+    _routeLine = await controller?.addLine(
+      LineOptions(
+        geometry: geometry,
+        lineColor: AppColors.routeLineHex,
+        lineWidth: 4.5,
+      ),
+    );
     if (oldCasing != null) await controller?.removeLine(oldCasing);
     if (oldLine != null) await controller?.removeLine(oldLine);
     if (!mounted) return;
@@ -474,9 +501,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _registerWaymarkIcons() async {
     if (_iconsRegistered || controller == null) return;
     final contour = await waymarkDiamondPng(
-        sizePx: _kWaymarkIconSizePx, color: AppColors.ink, filled: false, strokeWidth: 4);
+      sizePx: _kWaymarkIconSizePx,
+      color: AppColors.ink,
+      filled: false,
+      strokeWidth: 4,
+    );
     final filled = await waymarkDiamondPng(
-        sizePx: _kWaymarkIconSizePx, color: AppColors.ink);
+      sizePx: _kWaymarkIconSizePx,
+      color: AppColors.ink,
+    );
     await controller?.addImage(_kIconMarkerA, contour);
     await controller?.addImage(_kIconMarkerB, filled);
     _iconsRegistered = true;
@@ -525,8 +558,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final pos = await _currentPositionOrNull();
     if (pos == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text(kLocationDeniedMessage)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text(kLocationDeniedMessage)));
       }
       return;
     }
@@ -550,15 +584,20 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (_armSetDeparture) {
       setState(() => _armSetDeparture = false);
       await trip.saveActiveRoute(
-          _plan(trip).copyWith(departure: (coords.latitude, coords.longitude)));
+        _plan(trip).copyWith(departure: (coords.latitude, coords.longitude)),
+      );
       if (_planMode == PlanMode.itinerary &&
           trip.activeRoute?.destination != null) {
         await _planRoute();
       }
       return;
     }
-    await trip.saveActiveRoute(_plan(trip).copyWith(
-        destination: (coords.latitude, coords.longitude), clearRoute: true));
+    await trip.saveActiveRoute(
+      _plan(trip).copyWith(
+        destination: (coords.latitude, coords.longitude),
+        clearRoute: true,
+      ),
+    );
     if (_planMode == PlanMode.itinerary) {
       await _planRoute();
     } else {
@@ -574,8 +613,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   void _armDepartureChange() {
     setState(() => _armSetDeparture = true);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Appui long sur la carte pour choisir le nouveau départ.')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Appui long sur la carte pour choisir le nouveau départ.',
+        ),
+      ),
+    );
   }
 
   Future<void> _planRoute() async {
@@ -590,7 +634,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (!mounted) return;
     if (departure == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(kPositionUnavailableMessage)));
+        const SnackBar(content: Text(kPositionUnavailableMessage)),
+      );
       return;
     }
     // Item 8: a fresh planning series earns a fresh chance to warn about
@@ -607,12 +652,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
     };
     try {
       final planner = await ref.read(routePlannerProvider.future);
-      final result = await planner.plan(RouteRequest(
+      final result = await planner.plan(
+        RouteRequest(
           fromLat: departure.latitude,
           fromLon: departure.longitude,
           toLat: destination.$1,
           toLon: destination.$2,
-          profile: plan.profile));
+          profile: plan.profile,
+        ),
+      );
       // Re-read the plan: the user may have moved a pin while the engine
       // was working, and the freshly computed route belongs to whatever
       // the plan says *now*, not to the snapshot taken above.
@@ -620,7 +668,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
       // planner, and the plan being written into may still carry the flag
       // from a loop candidate promoted earlier in the session.
       await trip.saveActiveRoute(
-          _plan(trip).copyWith(route: result, isLoop: false));
+        _plan(trip).copyWith(route: result, isLoop: false),
+      );
       if (planner.lastVersionMismatch) _showUpdateRequired();
       if (planner.lastCoverageFailed > 0 && !_coverageWarningShown) {
         _coverageWarningShown = true;
@@ -657,8 +706,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   void _showRouteUnavailable() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Itinéraire impossible ici — zone non couverte ?')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Itinéraire impossible ici — zone non couverte ?'),
+      ),
+    );
   }
 
   /// The tile server published a dataset for a Valhalla engine version this
@@ -669,8 +721,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// before *any* new coverage can be fetched.
   void _showUpdateRequired() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-        'Mise à jour de l\'app requise pour les nouvelles cartes')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Mise à jour de l\'app requise pour les nouvelles cartes',
+        ),
+      ),
+    );
   }
 
   /// `CoverageResult.failed > 0` for this plan — some of the tiles this
@@ -678,8 +735,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// be missing. Task-8 brief point 2.
   void _showCoverageIncomplete() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-        'Couverture incomplète — certaines zones peuvent manquer')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Couverture incomplète — certaines zones peuvent manquer',
+        ),
+      ),
+    );
   }
 
   void _onSearchChanged(String query) {
@@ -696,7 +758,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
       });
       return;
     }
-    _searchDebounce = Timer(const Duration(milliseconds: 400), () => _runSearch(query));
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 400),
+      () => _runSearch(query),
+    );
   }
 
   Future<void> _runSearch(String query) async {
@@ -713,8 +778,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final service = ref.read(geocodingServiceProvider);
     final near = ref.read(tripControllerProvider).activeRoute?.departure;
     try {
-      final results =
-          await service.search(query, nearLat: near?.$1, nearLon: near?.$2);
+      final results = await service.search(
+        query,
+        nearLat: near?.$1,
+        nearLon: near?.$2,
+      );
       if (!mounted || !_searchGeneration.isCurrent(gen)) return;
       setState(() {
         _searchResults = results;
@@ -741,10 +809,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
       _searchError = null;
     });
     FocusScope.of(context).unfocus();
-    await trip.saveActiveRoute(_plan(trip)
-        .copyWith(destination: (result.lat, result.lon), clearRoute: true));
+    await trip.saveActiveRoute(
+      _plan(
+        trip,
+      ).copyWith(destination: (result.lat, result.lon), clearRoute: true),
+    );
     await controller?.animateCamera(
-        CameraUpdate.newLatLng(LatLng(result.lat, result.lon)));
+      CameraUpdate.newLatLng(LatLng(result.lat, result.lon)),
+    );
     // Mode-aware in the same way [_onMapLongClick] is: itinerary plans
     // immediately; Distance and Durée both just record the pin for the next
     // « Proposer » to honour as a fixed-target A→B request (task-8 point 3).
@@ -783,7 +855,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
       _enableMyLocation();
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
+        SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))),
+      );
     }
   }
 
@@ -793,7 +866,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final profile = await showModalBottomSheet<RoutingProfile>(
       context: context,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.card))),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadii.card),
+        ),
+      ),
       builder: (_) => const _ProfileSheet(),
     );
     if (profile == null || !mounted) return;
@@ -802,7 +878,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
       _enableMyLocation();
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
+        SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))),
+      );
     }
   }
 
@@ -850,7 +927,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // (final review item 7 made this symmetric). See
     // [shouldClearDestinationOnModeSwitch].
     final dropDestination = shouldClearDestinationOnModeSwitch(
-        from: _planMode, to: mode, hasRoute: trip.route != null);
+      from: _planMode,
+      to: mode,
+      hasRoute: trip.route != null,
+    );
     setState(() {
       _planMode = mode;
       _armSetDeparture = false;
@@ -866,8 +946,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
       }
     });
     if (dropDestination && trip.activeRoute?.destination != null) {
-      await trip
-          .saveActiveRoute(_plan(trip).copyWith(clearDestination: true));
+      await trip.saveActiveRoute(_plan(trip).copyWith(clearDestination: true));
     }
     _clearCandidates();
     // Review carry-over item 12: an open address search belongs to whatever
@@ -898,7 +977,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final plan = _plan(trip);
     if (plan.destination == null) return;
     await trip.saveActiveRoute(
-        plan.copyWith(clearDestination: true, clearRoute: true));
+      plan.copyWith(clearDestination: true, clearRoute: true),
+    );
     _clearCandidates();
   }
 
@@ -952,7 +1032,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (departure == null) {
       setState(() => _candidatePlanning = false);
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(kPositionUnavailableMessage)));
+        const SnackBar(content: Text(kPositionUnavailableMessage)),
+      );
       return;
     }
     // Fix-round-1, point 3: Distance mode + a far pin. A slider left below
@@ -965,15 +1046,23 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // at all rather than repeat the same degenerate result.
     final pinnedDestination = plan.destination;
     if (_planMode == PlanMode.loop && pinnedDestination != null) {
-      final directKm = metersBetween(departure.latitude, departure.longitude,
-              pinnedDestination.$1, pinnedDestination.$2) /
+      final directKm =
+          metersBetween(
+            departure.latitude,
+            departure.longitude,
+            pinnedDestination.$1,
+            pinnedDestination.$2,
+          ) /
           1000;
       final floor = loopTargetFloorForDestination(
-          directKm: directKm, currentTargetKm: _loopTargetKm);
+        directKm: directKm,
+        currentTargetKm: _loopTargetKm,
+      );
       if (floor == null) {
         setState(() => _candidatePlanning = false);
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(kDestinationTooFarMessage)));
+          const SnackBar(content: Text(kDestinationTooFarMessage)),
+        );
         return;
       }
       if (floor != _loopTargetKm) setState(() => _loopTargetKm = floor);
@@ -993,6 +1082,44 @@ class MapScreenState extends ConsumerState<MapScreen> {
       setState(() => _downloadProgress = (done: done, total: total));
     };
 
+    // Task 7 (Explorer): compute the unrevealed-ground bias before the plan
+    // itself is built. Best-effort, like every other game-side read — "le
+    // jeu ne bloque jamais l'outil" (Global Constraints): a failure reading
+    // the journal falls back to an empty revealed set (gameStateProvider
+    // already degrades to a fresh GameState on its own errors; the extra
+    // try/catch here is belt-and-braces against this call site specifically
+    // never being allowed to fail a Proposer request). An empty revealed set
+    // is exactly the virgin-state input `exploreBearings`/the bonus closure
+    // already handle: no bias to apply, so Explorer behaves like Distance.
+    List<double>? preferredBearingsDeg;
+    double Function(RouteResult)? explorationBonus;
+    if (_planMode == PlanMode.explore) {
+      var revealedCellKeys = const <String>{};
+      try {
+        revealedCellKeys = (await ref.read(
+          gameStateProvider.future,
+        )).revealedCellKeys;
+      } catch (_) {
+        // Falls through with the empty set above.
+      }
+      if (!mounted || !_candidateGeneration.isCurrent(gen)) return;
+      preferredBearingsDeg = exploreBearings(
+        start: (departure.latitude, departure.longitude),
+        targetKm: _loopTargetKm,
+        revealedCellKeys: revealedCellKeys,
+        count: LoopPlanner.candidateCount,
+        seed: _planSeed,
+      );
+      explorationBonus = (route) {
+        final cells = corridorCells(route.shape);
+        if (cells.isEmpty) return 0.0;
+        final unrevealed = cells
+            .where((c) => !revealedCellKeys.contains(c.key))
+            .length;
+        return unrevealed / cells.length;
+      };
+    }
+
     try {
       // Final review item 7: built *inside* the try. [LoopRequest]'s
       // constructor throws `ArgumentError` on an invalid target, and outside
@@ -1008,6 +1135,8 @@ class MapScreenState extends ConsumerState<MapScreen> {
         start: (departure.latitude, departure.longitude),
         destination: plan.destination,
         seed: _planSeed,
+        preferredBearingsDeg: preferredBearingsDeg,
+        explorationBonus: explorationBonus,
       );
       if (request == null) {
         // PlanMode.itinerary never reaches here (Proposer isn't shown), but
@@ -1082,8 +1211,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
   void _selectCandidate(int index) {
     final result = _candidateResult;
     if (result == null) return;
-    setState(() => _selectedCandidateIndex =
-        clampSelection(index, result.candidates.length));
+    setState(
+      () => _selectedCandidateIndex = clampSelection(
+        index,
+        result.candidates.length,
+      ),
+    );
     unawaited(_drawCandidateLines());
   }
 
@@ -1115,29 +1248,34 @@ class MapScreenState extends ConsumerState<MapScreen> {
   Future<void> _startCandidate() async {
     final result = _candidateResult;
     if (result == null || result.candidates.isEmpty) return;
-    final index =
-        clampSelection(_selectedCandidateIndex, result.candidates.length);
+    final index = clampSelection(
+      _selectedCandidateIndex,
+      result.candidates.length,
+    );
     final candidate = result.candidates[index];
     final trip = ref.read(tripControllerProvider);
     final plan = _plan(trip);
     // A loop has no destination — start and end are the same point, already
     // implied by the route's own closed shape — so only a fixed-duration
     // A->B candidate keeps the pin the user set.
-    final destination =
-        _candidateKind == PlanKind.toDestination ? plan.destination : null;
+    final destination = _candidateKind == PlanKind.toDestination
+        ? plan.destination
+        : null;
 
     await _removeCandidateLines();
-    await trip.saveActiveRoute(ActiveRoute(
-      route: candidate.route,
-      departure: plan.departure,
-      destination: destination,
-      profile: trip.profile,
-      // Final review item 1: the one place loop-ness is *known*. From here it
-      // rides the persisted plan into `NavSeed` and stops the tracking
-      // service from replanning a loop back to its own start point (see
-      // [ActiveRoute.isLoop]).
-      isLoop: _candidateKind == PlanKind.loop,
-    ));
+    await trip.saveActiveRoute(
+      ActiveRoute(
+        route: candidate.route,
+        departure: plan.departure,
+        destination: destination,
+        profile: trip.profile,
+        // Final review item 1: the one place loop-ness is *known*. From here it
+        // rides the persisted plan into `NavSeed` and stops the tracking
+        // service from replanning a loop back to its own start point (see
+        // [ActiveRoute.isLoop]).
+        isLoop: _candidateKind == PlanKind.loop,
+      ),
+    );
     setState(() {
       _candidateResult = null;
       _candidateKind = null;
@@ -1152,29 +1290,46 @@ class MapScreenState extends ConsumerState<MapScreen> {
     await _removeCandidateLines();
     final result = _candidateResult;
     if (result == null || controller == null) return;
-    final selected =
-        clampSelection(_selectedCandidateIndex, result.candidates.length);
+    final selected = clampSelection(
+      _selectedCandidateIndex,
+      result.candidates.length,
+    );
     for (var i = 0; i < result.candidates.length; i++) {
       final geometry = [
         for (final (lat, lon) in result.candidates[i].route.shape)
-          LatLng(lat, lon)
+          LatLng(lat, lon),
       ];
       if (i == selected) {
-        _candidateLines.add(await controller!.addLine(LineOptions(
-            geometry: geometry,
-            lineColor: AppColors.routeLineCasingHex,
-            lineWidth: 7,
-            lineOpacity: 1.0)));
-        _candidateLines.add(await controller!.addLine(LineOptions(
-            geometry: geometry,
-            lineColor: AppColors.routeLineHex,
-            lineWidth: 4.5)));
+        _candidateLines.add(
+          await controller!.addLine(
+            LineOptions(
+              geometry: geometry,
+              lineColor: AppColors.routeLineCasingHex,
+              lineWidth: 7,
+              lineOpacity: 1.0,
+            ),
+          ),
+        );
+        _candidateLines.add(
+          await controller!.addLine(
+            LineOptions(
+              geometry: geometry,
+              lineColor: AppColors.routeLineHex,
+              lineWidth: 4.5,
+            ),
+          ),
+        );
       } else {
-        _candidateLines.add(await controller!.addLine(LineOptions(
-            geometry: geometry,
-            lineColor: AppColors.hydroHex,
-            lineWidth: 3,
-            lineOpacity: 0.4)));
+        _candidateLines.add(
+          await controller!.addLine(
+            LineOptions(
+              geometry: geometry,
+              lineColor: AppColors.hydroHex,
+              lineWidth: 3,
+              lineOpacity: 0.4,
+            ),
+          ),
+        );
       }
     }
   }
@@ -1188,8 +1343,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
 
   void _showNoLoopCandidates() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text(kNoLoopCandidatesMessage)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text(kNoLoopCandidatesMessage)));
   }
 
   /// Everything that redraws map geometry from app state, run together in
@@ -1210,7 +1366,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     if (remainingKm == null) return null;
     final etaSeconds = trip.snapshot?.navEtaSeconds;
     return formatRemaining(
-        remainingKm, etaSeconds == null ? null : Duration(seconds: etaSeconds));
+      remainingKm,
+      etaSeconds == null ? null : Duration(seconds: etaSeconds),
+    );
   }
 
   @override
@@ -1228,8 +1386,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     _statsTicker.sync(trip.isRecording);
     final snapshot = trip.snapshot;
     final rawShapeEnc = snapshot?.navRouteShapeEnc;
-    final currentShapeEnc =
-        (rawShapeEnc == null || rawShapeEnc.isEmpty) ? null : rawShapeEnc;
+    final currentShapeEnc = (rawShapeEnc == null || rawShapeEnc.isEmpty)
+        ? null
+        : rawShapeEnc;
     // The plan can change from anywhere (a restore at startup, the session
     // tab, a search result); a replan happens inside the service. Either
     // redraws after the frame that noticed. Keyed on the shape itself, not
@@ -1237,19 +1396,22 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // counter that resets to 0 for every fresh trip cannot tell "nothing
     // changed" from "a previous trip's replanned line is still drawn".
     final needsOverlaySync = !identical(trip.activeRoute, _drawn) && !_syncing;
-    final needsReplanSync = decideReplanLineSync(
+    final needsReplanSync =
+        decideReplanLineSync(
           isRouteBound: trip.isRouteBound,
           currentShapeEnc: currentShapeEnc,
           lastDrawnShapeEnc: _lastDrawnRouteShapeEnc,
         ) !=
         ReplanLineSync.none;
     if (needsOverlaySync || needsReplanSync) {
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => unawaited(_syncMapForFrame()));
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => unawaited(_syncMapForFrame()),
+      );
     }
     final brightness = Theme.of(context).brightness;
-    final styleUrl =
-        brightness == Brightness.dark ? kMapStyleUrlDark : kMapStyleUrlLight;
+    final styleUrl = brightness == Brightness.dark
+        ? kMapStyleUrlDark
+        : kMapStyleUrlLight;
     final result = trip.route;
 
     final candidateResult = _candidateResult;
@@ -1263,9 +1425,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // The candidates themselves (and their polylines) are dropped via the
     // same `_clearCandidates` the ✕ uses, once per frame this is true.
     final showChips = shouldShowCandidateChips(
-        hasCandidates: candidateResult != null, isRecording: trip.isRecording);
+      hasCandidates: candidateResult != null,
+      isRecording: trip.isRecording,
+    );
     if (shouldClearCandidatesForRecording(
-        isRecording: trip.isRecording, hasCandidates: candidateResult != null)) {
+      isRecording: trip.isRecording,
+      hasCandidates: candidateResult != null,
+    )) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _clearCandidates());
     }
     // Fix-round-2: the other half of the same window — a `_proposeCandidates`
@@ -1275,9 +1441,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // late. Bumping the generation via `_cancelCandidatePlanning` is exactly
     // what the spinner's own ✕ already does.
     if (shouldCancelCandidatePlanningForRecording(
-        isRecording: trip.isRecording, candidatePlanning: _candidatePlanning)) {
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => _cancelCandidatePlanning());
+      isRecording: trip.isRecording,
+      candidatePlanning: _candidatePlanning,
+    )) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _cancelCandidatePlanning(),
+      );
     }
 
     Widget? bottomBanner;
@@ -1292,10 +1461,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
         onStop: _stopTrip,
       );
     } else if (_candidatePlanning) {
-      bottomBanner =
-          _CandidateProgressBanner(
-              onCancel: _cancelCandidatePlanning,
-              progress: _downloadProgress);
+      bottomBanner = _CandidateProgressBanner(
+        onCancel: _cancelCandidatePlanning,
+        progress: _downloadProgress,
+      );
     } else if (showChips && candidateResult != null) {
       // Task 8: fullscreen selection — the compact chip row replaces the old
       // full-size candidate cards, and (below) the top overlay steps aside
@@ -1346,8 +1515,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
         // to rejoin the line instead. Read off the persisted plan rather than
         // the snapshot: loop-ness belongs to the route, and the snapshot
         // deliberately carries only what the service computes per fix.
-        topOverlay =
-            _NavRecalculatingCard(isLoop: trip.activeRoute?.isLoop ?? false);
+        topOverlay = _NavRecalculatingCard(
+          isLoop: trip.activeRoute?.isLoop ?? false,
+        );
       } else if (snapshot.navInstruction != null &&
           snapshot.navInstruction!.isNotEmpty) {
         topOverlay = _NavInstructionCard(
@@ -1382,16 +1552,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
           _searching || _searchError != null || _searchResults.isNotEmpty;
       topOverlay = Column(
         children: [
-          SegmentedButton<PlanMode>(
-            segments: const [
-              ButtonSegment(
-                  value: PlanMode.itinerary, label: Text('Itinéraire')),
-              ButtonSegment(value: PlanMode.loop, label: Text('Distance')),
-              ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
-            ],
-            selected: {_planMode},
-            onSelectionChanged:
-                trip.isRecording ? null : (s) => _onPlanModeChanged(s.first),
+          PlanModeSegmentedButton(
+            selected: _planMode,
+            onChanged: trip.isRecording ? null : _onPlanModeChanged,
           ),
           const SizedBox(height: 8),
           _SearchBar(
@@ -1410,17 +1573,20 @@ class MapScreenState extends ConsumerState<MapScreen> {
           SegmentedButton<RoutingProfile>(
             segments: const [
               ButtonSegment(
-                  value: RoutingProfile.walk,
-                  label: Text('Marche'),
-                  icon: Icon(Icons.directions_walk)),
+                value: RoutingProfile.walk,
+                label: Text('Marche'),
+                icon: Icon(Icons.directions_walk),
+              ),
               ButtonSegment(
-                  value: RoutingProfile.bike,
-                  label: Text('Vélo'),
-                  icon: Icon(Icons.directions_bike)),
+                value: RoutingProfile.bike,
+                label: Text('Vélo'),
+                icon: Icon(Icons.directions_bike),
+              ),
             ],
             selected: {trip.profile},
-            onSelectionChanged:
-                trip.isRecording ? null : (s) => _onProfileChanged(s.first),
+            onSelectionChanged: trip.isRecording
+                ? null
+                : (s) => _onProfileChanged(s.first),
           ),
           if (_planMode != PlanMode.itinerary && !showSearchResults) ...[
             const SizedBox(height: 12),
@@ -1445,7 +1611,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
 
     final showRecenter = shouldShowRecenterButton(
-        isNavigating: trip.isRouteBound, trackingReleased: _trackingReleased);
+      isNavigating: trip.isRouteBound,
+      trackingReleased: _trackingReleased,
+    );
 
     return PopScope(
       // Fix-round-1, point 2: Android's system back gesture/button during
@@ -1465,9 +1633,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
       // have actually run, or back reads as silently swallowed by a plan
       // the walker can no longer see behind the recording pill.
       canPop: !shouldInterceptBackForCandidates(
-          hasCandidates: candidateResult != null,
-          candidatePlanning: _candidatePlanning,
-          isRecording: trip.isRecording),
+        hasCandidates: candidateResult != null,
+        candidatePlanning: _candidatePlanning,
+        isRecording: trip.isRecording,
+      ),
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_candidatePlanning) {
@@ -1482,8 +1651,10 @@ class MapScreenState extends ConsumerState<MapScreen> {
             MapLibreMap(
               key: ValueKey(styleUrl),
               styleString: styleUrl,
-              initialCameraPosition:
-                  CameraPosition(target: initialCenter, zoom: 13),
+              initialCameraPosition: CameraPosition(
+                target: initialCenter,
+                zoom: 13,
+              ),
               myLocationEnabled: _myLocationEnabled,
               myLocationTrackingMode: MyLocationTrackingMode.none,
               attributionButtonPosition: AttributionButtonPosition.bottomLeft,
@@ -1515,7 +1686,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
               right: 0,
               bottom: 0,
               child: Padding(
-                padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16),
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  bottom: bottomInset + 16,
+                ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1562,33 +1737,35 @@ class _SearchBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-        elevation: 2,
-        borderRadius: BorderRadius.circular(AppRadii.stadium),
-        child: TextField(
-          controller: controller,
-          onChanged: onChanged,
-          decoration: InputDecoration(
-            hintText: 'Rechercher une adresse…',
-            prefixIcon: const Icon(Icons.search),
-            suffixIcon: controller.text.isEmpty
-                ? null
-                : IconButton(
-                    icon: const Icon(Icons.clear),
-                    onPressed: () {
-                      controller.clear();
-                      onChanged('');
-                    },
-                  ),
-            filled: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(AppRadii.stadium),
-              borderSide: BorderSide.none,
-            ),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
+    elevation: 2,
+    borderRadius: BorderRadius.circular(AppRadii.stadium),
+    child: TextField(
+      controller: controller,
+      onChanged: onChanged,
+      decoration: InputDecoration(
+        hintText: 'Rechercher une adresse…',
+        prefixIcon: const Icon(Icons.search),
+        suffixIcon: controller.text.isEmpty
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.clear),
+                onPressed: () {
+                  controller.clear();
+                  onChanged('');
+                },
+              ),
+        filled: true,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadii.stadium),
+          borderSide: BorderSide.none,
         ),
-      );
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 12,
+        ),
+      ),
+    ),
+  );
 }
 
 class _SearchResultsPanel extends StatelessWidget {
@@ -1607,36 +1784,35 @@ class _SearchResultsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.only(top: 4),
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: Material(
-          elevation: 2,
-          borderRadius: BorderRadius.circular(AppRadii.card),
-          child: searching
-              ? const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Center(
-                      child: SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2))),
-                )
-              : error != null
-                  ? Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(error!),
-                    )
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: results.length,
-                      itemBuilder: (context, i) => ListTile(
-                        leading: const Icon(Icons.place_outlined),
-                        title: Text(results[i].label),
-                        onTap: () => onSelect(results[i]),
-                      ),
-                    ),
-        ),
-      );
+    margin: const EdgeInsets.only(top: 4),
+    constraints: BoxConstraints(maxHeight: maxHeight),
+    child: Material(
+      elevation: 2,
+      borderRadius: BorderRadius.circular(AppRadii.card),
+      child: searching
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          : error != null
+          ? Padding(padding: const EdgeInsets.all(16), child: Text(error!))
+          : ListView.builder(
+              shrinkWrap: true,
+              itemCount: results.length,
+              itemBuilder: (context, i) => ListTile(
+                leading: const Icon(Icons.place_outlined),
+                title: Text(results[i].label),
+                onTap: () => onSelect(results[i]),
+              ),
+            ),
+    ),
+  );
 }
 
 class _ProgressBanner extends StatelessWidget {
@@ -1655,11 +1831,14 @@ class _ProgressBanner extends StatelessWidget {
         child: Row(
           children: [
             const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2)),
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
             const SizedBox(width: 12),
-            Expanded(child: Text(label, style: Theme.of(context).textTheme.bodyMedium)),
+            Expanded(
+              child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+            ),
           ],
         ),
       ),
@@ -1690,28 +1869,83 @@ class _CandidateProgressBanner extends StatelessWidget {
         ? 'Téléchargement des cartes… ${p.done}/${p.total}'
         : 'Recherche de boucles…';
     return Card(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2)),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(label,
-                    style: Theme.of(context).textTheme.bodyMedium),
-              ),
-              IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'Annuler',
-                onPressed: onCancel,
-              ),
-            ],
-          ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Annuler',
+              onPressed: onCancel,
+            ),
+          ],
         ),
-      );
+      ),
+    );
+  }
+}
+
+/// The plan-mode selector — « Itinéraire » / « Distance » / « Durée » /
+/// « Explorer » (task 7 adds Explorer). Promoted out of `build()`'s inline
+/// `SegmentedButton` (and made public, matching every other sub-widget this
+/// file promotes for isolated testing — see map_screen_widgets_test.dart)
+/// specifically to wrap it in horizontal scrolling.
+///
+/// **Why scrolling, not icons/shorter labels**: `SegmentedButton` lays its
+/// segments out like a `Row` with no overflow handling of its own — it does
+/// not wrap, shrink its labels, or scroll by itself. Three French labels
+/// already ran close to the edge on a narrow phone; the fourth (« Explorer »)
+/// pushes a plain `SegmentedButton` here past a 360dp-wide screen's
+/// available width, which without this wrapper is a real
+/// `RenderFlex overflowed` exception, not just a visual squeeze (see
+/// map_screen_widgets_test.dart's narrow-phone group for the pinned
+/// regression). Icons-only or abbreviated labels were the other option the
+/// task-7 brief allowed, but the four mode names are exactly the
+/// walker-facing strings the task 6/7 briefs specify, and shortening or
+/// iconizing them would cost every walker on every device some clarity to
+/// fix a problem only the narrowest phones actually have. A horizontally
+/// scrolling row costs nothing on a phone wide enough to show all four
+/// already (nothing to scroll to), and costs a one-finger swipe on the ones
+/// that need it.
+class PlanModeSegmentedButton extends StatelessWidget {
+  const PlanModeSegmentedButton({
+    super.key,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final PlanMode selected;
+
+  /// `null` disables the selector entirely (e.g. `trip.isRecording`) — same
+  /// convention as the Marche/Vélo `SegmentedButton` right below this one.
+  final ValueChanged<PlanMode>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: SegmentedButton<PlanMode>(
+        segments: const [
+          ButtonSegment(value: PlanMode.itinerary, label: Text('Itinéraire')),
+          ButtonSegment(value: PlanMode.loop, label: Text('Distance')),
+          ButtonSegment(value: PlanMode.duration, label: Text('Durée')),
+          ButtonSegment(value: PlanMode.explore, label: Text('Explorer')),
+        ],
+        selected: {selected},
+        onSelectionChanged: onChanged == null
+            ? null
+            : (s) => onChanged!(s.first),
+      ),
+    );
   }
 }
 
@@ -1797,15 +2031,20 @@ class _PlanTargetPanel extends StatelessWidget {
           ),
         ),
       );
-    } else if (mode == PlanMode.loop) {
+    } else if (mode == PlanMode.loop || mode == PlanMode.explore) {
+      // Task 7: Explorer shares Distance's slider/floor rules verbatim (see
+      // buildLoopRequest's doc comment) — only the label prefix tells the
+      // two apart here.
+      final label = mode == PlanMode.explore ? 'Explorer' : 'Distance';
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-              'Distance : '
-              '${loopTargetKm.toStringAsFixed(1).replaceAll('.', ',')} km',
-              style: theme.textTheme.bodyMedium),
+            '$label : '
+            '${loopTargetKm.toStringAsFixed(1).replaceAll('.', ',')} km',
+            style: theme.textTheme.bodyMedium,
+          ),
           Slider(
             min: kLoopTargetMinKm,
             max: kLoopTargetMaxKm,
@@ -1842,11 +2081,12 @@ class _PlanTargetPanel extends StatelessWidget {
             max: kDurationTargetMax.inMinutes.toDouble(),
             divisions:
                 (kDurationTargetMax.inMinutes - kDurationTargetMin.inMinutes) ~/
-                    kDurationTargetStep.inMinutes,
+                kDurationTargetStep.inMinutes,
             value: durationTarget.inMinutes.toDouble(),
             onChanged: enabled
                 ? (minutes) => onDurationTargetChanged(
-                    Duration(minutes: minutes.round()))
+                    Duration(minutes: minutes.round()),
+                  )
                 : null,
           ),
           if (conversionLabel != null)
@@ -1868,7 +2108,9 @@ class _PlanTargetPanel extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (shouldShowPlanDestinationChip(
-                mode: mode, hasDestination: pinnedDestination != null)) ...[
+              mode: mode,
+              hasDestination: pinnedDestination != null,
+            )) ...[
               Row(
                 children: [
                   const Icon(Icons.flag, size: 16),
@@ -1976,35 +2218,38 @@ class _NavRecalculatingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        color: AppColors.recalcOrange,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              if (isLoop)
-                const Icon(Icons.u_turn_left, size: 18, color: AppColors.ink)
-              else
-                const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: AppColors.ink)),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  isLoop ? kNavRejoinLoopLabel : kNavRecalculatingLabel,
-                  style: const TextStyle(
-                    fontFamily: AppFonts.body,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.ink,
-                    fontSize: 16,
-                  ),
-                ),
+    color: AppColors.recalcOrange,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          if (isLoop)
+            const Icon(Icons.u_turn_left, size: 18, color: AppColors.ink)
+          else
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppColors.ink,
               ),
-            ],
+            ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              isLoop ? kNavRejoinLoopLabel : kNavRecalculatingLabel,
+              style: const TextStyle(
+                fontFamily: AppFonts.body,
+                fontWeight: FontWeight.w600,
+                color: AppColors.ink,
+                fontSize: 16,
+              ),
+            ),
           ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 }
 
 /// The walker has reached the destination — review ruling: this wins over
@@ -2071,14 +2316,14 @@ class RecenterButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => FloatingActionButton(
-        heroTag: 'recenter',
-        onPressed: onPressed,
-        tooltip: 'Recentrer',
-        child: WaymarkDiamond(
-          size: 16,
-          color: Theme.of(context).colorScheme.onPrimaryContainer,
-        ),
-      );
+    heroTag: 'recenter',
+    onPressed: onPressed,
+    tooltip: 'Recentrer',
+    child: WaymarkDiamond(
+      size: 16,
+      color: Theme.of(context).colorScheme.onPrimaryContainer,
+    ),
+  );
 }
 
 /// Route result card (T9): the primary action is the yellow "Démarrer
@@ -2107,9 +2352,7 @@ class _ResultBanner extends StatelessWidget {
           children: [
             Row(
               children: [
-                Expanded(
-                  child: Text(text, style: theme.textTheme.titleMedium),
-                ),
+                Expanded(child: Text(text, style: theme.textTheme.titleMedium)),
                 TextButton(
                   onPressed: onChangeDeparture,
                   child: const Text('Modifier le départ'),
@@ -2154,14 +2397,11 @@ class MapAttribution extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Text(
-        kMapAttribution,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: Theme.of(context)
-                  .colorScheme
-                  .onSurface
-                  .withValues(alpha: 0.55),
-            ),
-      );
+    kMapAttribution,
+    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
+    ),
+  );
 }
 
 /// Idle, no route planned: the plain one-tap "Démarrer" pill.
@@ -2171,13 +2411,13 @@ class _StartPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: double.infinity,
-        child: ElevatedButton.icon(
-          onPressed: onStart,
-          icon: const WaymarkDiamond(size: 14, color: AppColors.ink),
-          label: const Text('Démarrer'),
-        ),
-      );
+    width: double.infinity,
+    child: ElevatedButton.icon(
+      onPressed: onStart,
+      icon: const WaymarkDiamond(size: 14, color: AppColors.ink),
+      label: const Text('Démarrer'),
+    ),
+  );
 }
 
 /// Recording: pill becomes "Terminer" (ink, paper text) alongside compact
@@ -2220,12 +2460,12 @@ class StatsBanner extends StatelessWidget {
     final theme = Theme.of(context);
     final remainingLabel = remaining;
     Widget shrinkable(String value) => Flexible(
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: _Stat(value: value, theme: theme),
-          ),
-        );
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: _Stat(value: value, theme: theme),
+      ),
+    );
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -2285,37 +2525,40 @@ class _ProfileSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Démarrer un trajet',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 16),
+          Row(
             children: [
-              Text('Démarrer un trajet', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: () =>
-                          Navigator.of(context).pop(RoutingProfile.walk),
-                      icon: const Icon(Icons.directions_walk),
-                      label: const Text('Marche'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: () =>
-                          Navigator.of(context).pop(RoutingProfile.bike),
-                      icon: const Icon(Icons.directions_bike),
-                      label: const Text('Vélo'),
-                    ),
-                  ),
-                ],
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () =>
+                      Navigator.of(context).pop(RoutingProfile.walk),
+                  icon: const Icon(Icons.directions_walk),
+                  label: const Text('Marche'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () =>
+                      Navigator.of(context).pop(RoutingProfile.bike),
+                  icon: const Icon(Icons.directions_bike),
+                  label: const Text('Vélo'),
+                ),
               ),
             ],
           ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 }

@@ -4,7 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:randomwalk/adventure/adventure_screen.dart';
 import 'package:randomwalk/coverage/coverage_repository.dart';
+import 'package:randomwalk/exploration/edges_store.dart';
+import 'package:randomwalk/exploration/exploration_recorder.dart';
+import 'package:randomwalk/game/events.dart';
+import 'package:randomwalk/game/game_state_provider.dart';
+import 'package:randomwalk/game/visit_consumer.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/map/map_screen.dart';
@@ -17,9 +23,12 @@ import 'package:randomwalk/theme/tokens.dart';
 import 'package:randomwalk/tracking/permission_rationale.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
+import 'package:randomwalk/tracking/trip_snapshot.dart' show PendingVisit;
 import 'package:randomwalk/trip/active_route_store.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
+import 'package:randomwalk/valhalla/engine.dart';
+import 'package:randomwalk/valhalla/engine_channel.dart';
 
 /// Needed by the permission flow: the "Autoriser tout le temps" rationale
 /// is raised by [TripController], which has no `BuildContext` of its own.
@@ -37,10 +46,12 @@ Future<void> main() async {
   // an idle map first.
   await trip.restore();
 
-  runApp(ProviderScope(
-    overrides: [tripControllerProvider.overrideWith((ref) => trip)],
-    child: const RandomWalkApp(),
-  ));
+  runApp(
+    ProviderScope(
+      overrides: [tripControllerProvider.overrideWith((ref) => trip)],
+      child: const RandomWalkApp(),
+    ),
+  );
 }
 
 Future<TripController> _buildTripController() async {
@@ -56,7 +67,9 @@ Future<TripController> _buildTripController() async {
   // chance `resolveTileDir` grows a network path later — it would need its
   // own client if it ever does.
   final coverage = CoverageRepository(
-      root: Directory('${dir.path}/tiles'), client: http.Client()..close());
+    root: Directory('${dir.path}/tiles'),
+    client: http.Client()..close(),
+  );
   final permissions = TripPermissionCoordinator(
     PluginPermissionService(),
     showBackgroundRationale: () async {
@@ -65,28 +78,109 @@ Future<TripController> _buildTripController() async {
       return BackgroundLocationRationale.show(context);
     },
   );
+
+  // M4 exploration: best-effort post-trip processing (map-matching, covered
+  // edges, fog reveal, journal events) plus, since Task 5, mid-trip
+  // landmark-visit processing sharing the same journal. `EdgesStore.open`
+  // is the only `await` here that can fail outright (sqflite hiccup) — if
+  // it does, the whole game layer stays off for this run rather than the
+  // app failing to start; every other exploration/visit failure mode is
+  // handled inside `ExplorationRecorder`/`GameVisitConsumer` themselves.
+  Future<void> Function(FinishedTrip trip)? processTripExploration;
+  Future<void> Function(List<PendingVisit> visits)? processGameVisits;
+  try {
+    final journal = GameJournal(Directory('${dir.path}/game'));
+    final edgesStore = await EdgesStore.open('${dir.path}/covered_edges.db');
+    final recorder = ExplorationRecorder(
+      engineProvider: () => _buildExplorationEngine(coverage),
+      edgesStore: edgesStore,
+      journal: journal,
+      trackFile: File('${dir.path}/active_track.jsonl'),
+      // Lets the Aventure tab's `gameStateProvider` (game/game_state_
+      // provider.dart) know to re-read the journal once a trip's own
+      // km/cells/loop/energy events land — see `GameJournalSignal`'s own
+      // doc comment for why this is a plain callback rather than a
+      // Riverpod read (no ProviderScope exists yet at this call site).
+      onJournalChanged: GameJournalSignal.instance.bump,
+    );
+    processTripExploration = recorder.process;
+    // Shares `journal` with the recorder above — one `game_events.jsonl`,
+    // appended to by whichever of the two fires for a given trip (landmark
+    // visits mid-trip via this consumer, trip-level km/cells/loop XP and
+    // the energy drain post-trip via the recorder).
+    final visitConsumer = GameVisitConsumer(
+      journal: journal,
+      notify: GuidanceAlertNotifier().call,
+      onJournalChanged: GameJournalSignal.instance.bump,
+    );
+    processGameVisits = visitConsumer.consume;
+  } catch (e) {
+    debugPrint('main: exploration layer unavailable, game disabled: $e');
+  }
+
   return TripController(
     tracker: ForegroundServiceTripTracker(
-        File('${dir.path}/trip_snapshot.json')),
+      File('${dir.path}/trip_snapshot.json'),
+    ),
     routeStore: FileActiveRouteStore(File('${dir.path}/active_route.json')),
     totalStore: TotalDistanceStore(),
     ensurePermissions: permissions.ensureForTrip,
     readTrackingMode: permissions.currentTrackingMode,
     resolveTileDir: coverage.cachedTileDirPath,
+    resolvePoisFile: () async => (await coverage.poisFile())?.path,
+    processTripExploration: processTripExploration,
+    processGameVisits: processGameVisits,
   );
+}
+
+/// Builds and initializes a [RoutingEngine] for one
+/// [ExplorationRecorder.process] call's map-matching, or `null` when no tile
+/// directory has been downloaded yet or the engine fails to initialize —
+/// either way, [ExplorationRecorder] treats that exactly like a failed
+/// match (see its `engineProvider` doc comment).
+///
+/// Fix round 1 correction: a fresh [ChannelRoutingEngine] here is NOT a
+/// private, isolated native actor. Per `ValhallaChannel.kt`'s own doc
+/// comment, the native `Valhalla` actor is one-per-`FlutterEngine` (the UI
+/// engine gets exactly one `ValhallaChannel`), and `init` *replaces* that
+/// shared actor (`actor?.close(); actor = Valhalla(...)`) rather than
+/// standing up a second, independent one. So every post-trip
+/// `ExplorationRecorder.process()` call reopens — and briefly stalls
+/// (mmapping tiles again, on the channel's single-threaded executor) — the
+/// same native actor `routingEngineProvider` (`route_controller.dart`) hands
+/// the live route planner. This is accepted rather than fixed here: reusing
+/// the planner's own engine would mean reading `routingEngineProvider`
+/// (Riverpod), and `_buildTripController` — hence this function — runs
+/// before `runApp`/`ProviderScope` exist (see its own doc comment on why),
+/// so no `ref` is reachable at this call site without a larger restructuring
+/// of `main()`'s startup order. Each call staying independent and stateless
+/// (nothing here assumes the actor it built still exists by the time it
+/// returns) is what keeps that safe rather than merely convenient.
+Future<RoutingEngine?> _buildExplorationEngine(
+  CoverageRepository coverage,
+) async {
+  final tileDirPath = await coverage.cachedTileDirPath();
+  if (tileDirPath == null) return null;
+  final engine = ChannelRoutingEngine();
+  try {
+    await engine.init(tileDirPath);
+  } catch (_) {
+    return null;
+  }
+  return engine;
 }
 
 class RandomWalkApp extends StatelessWidget {
   const RandomWalkApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'RandomWalk',
-        navigatorKey: appNavigatorKey,
-        theme: AppTheme.light,
-        darkTheme: AppTheme.dark,
-        themeMode: ThemeMode.system,
-        home: const HomeShell(),
-      );
+    title: 'RandomWalk',
+    navigatorKey: appNavigatorKey,
+    theme: AppTheme.light,
+    darkTheme: AppTheme.dark,
+    themeMode: ThemeMode.system,
+    home: const HomeShell(),
+  );
 }
 
 class HomeShell extends ConsumerStatefulWidget {
@@ -97,7 +191,14 @@ class HomeShell extends ConsumerStatefulWidget {
     const MapScreen(),
     const SessionScreen(),
     const LeaderboardScreen(),
+    const AdventureScreen(),
   ];
+
+  /// Index of the Aventure tab within [defaultScreens]/`NavigationBar`'s
+  /// `destinations` — kept as one named constant so [_onDestinationSelected]
+  /// (the "refresh on tab focus" hook — see `gameStateProvider`'s own doc
+  /// comment) and the destinations list below can't drift apart.
+  static const kAdventureTabIndex = 3;
 
   @override
   ConsumerState<HomeShell> createState() => _HomeShellState();
@@ -148,17 +249,38 @@ class _HomeShellState extends ConsumerState<HomeShell>
       await ref.read(leaderboardRepositoryProvider).submit(identity, totalKm);
     } catch (_) {
       if (mounted) {
-        messenger.showSnackBar(const SnackBar(
-            content:
-                Text('Score non synchronisé — nouvelle tentative plus tard.')));
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Score non synchronisé — nouvelle tentative plus tard.',
+            ),
+          ),
+        );
       }
+    }
+  }
+
+  /// Task 6's "refresh on tab focus" for `gameStateProvider`: switching
+  /// *into* the Aventure tab re-reads the journal even if no
+  /// `GameJournalSignal.bump` happened to fire while the tab was hidden
+  /// (belt-and-suspenders on top of that signal — see `game_state_provider.
+  /// dart`'s own doc comment on why the signal exists at all). Deliberately
+  /// only on entry, not on every tab switch: leaving the tab has nothing to
+  /// refresh.
+  void _onDestinationSelected(int i) {
+    setState(() => _tab = i);
+    if (i == HomeShell.kAdventureTabIndex) {
+      ref.invalidate(gameStateProvider);
     }
   }
 
   Future<void> _onSessionError(String? errorMessage) async {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Signal GPS perdu — session enregistrée.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Signal GPS perdu — session enregistrée.'),
+        ),
+      );
     }
   }
 
@@ -173,31 +295,42 @@ class _HomeShellState extends ConsumerState<HomeShell>
           IconButton(
             icon: const Icon(Icons.settings),
             tooltip: 'Réglages',
-            onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SettingsScreen())),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
           ),
         ],
       ),
       body: Column(
         children: [
           if (trip.isInterrupted) const InterruptedTripBanner(),
-          if (trip.isRecording && trip.trackingMode == TrackingMode.foregroundOnly)
+          if (trip.isRecording &&
+              trip.trackingMode == TrackingMode.foregroundOnly)
             const ForegroundOnlyBanner(),
           if (trip.isRecording && trip.gpsSilent) const GpsSilentBanner(),
           // IndexedStack, not `screens[_tab]`: every screen stays mounted
           // across tab switches, so the map keeps its native surface (and
           // everything drawn on it) instead of being rebuilt from scratch
           // each time the user glances at the session tab.
-          Expanded(child: IndexedStack(index: _tab, children: screens)),
+          Expanded(
+            child: IndexedStack(index: _tab, children: screens),
+          ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        onDestinationSelected: _onDestinationSelected,
         destinations: const [
           NavigationDestination(icon: Icon(Icons.map), label: 'Carte'),
-          NavigationDestination(icon: Icon(Icons.directions_walk), label: 'Session'),
-          NavigationDestination(icon: Icon(Icons.emoji_events), label: 'Classement'),
+          NavigationDestination(
+            icon: Icon(Icons.directions_walk),
+            label: 'Session',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.emoji_events),
+            label: 'Classement',
+          ),
+          NavigationDestination(icon: Icon(Icons.diamond), label: 'Aventure'),
         ],
       ),
     );
@@ -215,8 +348,7 @@ class InterruptedTripBanner extends ConsumerStatefulWidget {
       _InterruptedTripBannerState();
 }
 
-class _InterruptedTripBannerState
-    extends ConsumerState<InterruptedTripBanner> {
+class _InterruptedTripBannerState extends ConsumerState<InterruptedTripBanner> {
   bool _busy = false;
 
   Future<void> _run(Future<void> Function(TripController trip) action) async {
@@ -238,7 +370,11 @@ class _InterruptedTripBannerState
       color: theme.colorScheme.secondaryContainer,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
-            AppSpacing.md, AppSpacing.sm, AppSpacing.sm, AppSpacing.sm),
+          AppSpacing.md,
+          AppSpacing.sm,
+          AppSpacing.sm,
+          AppSpacing.sm,
+        ),
         child: Row(
           children: [
             Expanded(
@@ -252,12 +388,16 @@ class _InterruptedTripBannerState
               ),
             ),
             TextButton(
-              onPressed: _busy ? null : () => _run((t) => t.finishInterrupted()),
+              onPressed: _busy
+                  ? null
+                  : () => _run((t) => t.finishInterrupted()),
               child: const Text('Terminer'),
             ),
             const SizedBox(width: AppSpacing.xs),
             FilledButton(
-              onPressed: _busy ? null : () => _run((t) => t.resumeInterrupted()),
+              onPressed: _busy
+                  ? null
+                  : () => _run((t) => t.resumeInterrupted()),
               child: const Text('Reprendre'),
             ),
           ],
@@ -284,14 +424,18 @@ class GpsSilentBanner extends StatelessWidget {
         onTap: () => PluginPermissionService().openSettings(),
         child: Padding(
           padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.sm,
+          ),
           child: Row(
             children: [
               const Icon(Icons.gps_off, size: 18),
               const SizedBox(width: AppSpacing.sm),
               Expanded(
-                child: Text(kGpsSilentMessage,
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  kGpsSilentMessage,
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
             ],
           ),
@@ -316,7 +460,9 @@ class ForegroundOnlyBanner extends ConsumerWidget {
         onTap: () => PluginPermissionService().openSettings(),
         child: Padding(
           padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.sm,
+          ),
           child: Row(
             children: [
               const Icon(Icons.info_outline, size: 18),

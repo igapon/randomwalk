@@ -130,14 +130,16 @@ void main() {
       expect(counter.steps, 15);
     });
 
-    test('a null reading (no permission, no sensor) leaves the count alone',
-        () async {
-      final sensor = FakeStepSensor(value: null);
-      final counter = SessionStepCounter(sensor);
-      await counter.start();
-      await counter.sample();
-      expect(counter.steps, 0);
-    });
+    test(
+      'a null reading (no permission, no sensor) leaves the count alone',
+      () async {
+        final sensor = FakeStepSensor(value: null);
+        final counter = SessionStepCounter(sensor);
+        await counter.start();
+        await counter.sample();
+        expect(counter.steps, 0);
+      },
+    );
 
     test('resuming seeds the count and only adds new steps', () async {
       final sensor = FakeStepSensor(value: 50000);

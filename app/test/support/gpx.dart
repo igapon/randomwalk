@@ -41,22 +41,26 @@ List<GpxPoint> parseGpx(String xml) {
     final timeElements = trkpt.findElements('time');
     if (timeElements.isEmpty || timeElements.first.innerText.isEmpty) {
       throw ArgumentError(
-          'gpx <trkpt lat="$latAttr" lon="$lonAttr"> is missing a <time> '
-          'child; every fixture in this harness must be fully timestamped');
+        'gpx <trkpt lat="$latAttr" lon="$lonAttr"> is missing a <time> '
+        'child; every fixture in this harness must be fully timestamped',
+      );
     }
 
     final speedElements = trkpt.findElements('speed');
-    final speedText =
-        speedElements.isEmpty ? null : speedElements.first.innerText;
+    final speedText = speedElements.isEmpty
+        ? null
+        : speedElements.first.innerText;
 
-    points.add(GpxPoint(
-      lat: double.parse(latAttr),
-      lon: double.parse(lonAttr),
-      time: DateTime.parse(timeElements.first.innerText),
-      speedMps: speedText == null || speedText.isEmpty
-          ? null
-          : double.parse(speedText),
-    ));
+    points.add(
+      GpxPoint(
+        lat: double.parse(latAttr),
+        lon: double.parse(lonAttr),
+        time: DateTime.parse(timeElements.first.innerText),
+        speedMps: speedText == null || speedText.isEmpty
+            ? null
+            : double.parse(speedText),
+      ),
+    );
   }
   return points;
 }

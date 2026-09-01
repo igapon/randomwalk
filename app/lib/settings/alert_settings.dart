@@ -25,5 +25,6 @@ class AlertSettingsStore {
       (await SharedPreferences.getInstance()).setBool(_hapticsKey, value);
 }
 
-final alertSettingsStoreProvider =
-    Provider<AlertSettingsStore>((ref) => AlertSettingsStore());
+final alertSettingsStoreProvider = Provider<AlertSettingsStore>(
+  (ref) => AlertSettingsStore(),
+);

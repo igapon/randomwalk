@@ -23,7 +23,7 @@ class TileId {
   String get path {
     final s = index.toString().padLeft(pathDigits[level], '0');
     final groups = <String>[
-      for (var i = 0; i < s.length; i += 3) s.substring(i, i + 3)
+      for (var i = 0; i < s.length; i += 3) s.substring(i, i + 3),
     ];
     return '$level/${groups.join('/')}.gph';
   }
@@ -40,7 +40,11 @@ class TileId {
 const _kmPerDegLat = 111.32;
 
 List<TileId> tilesCoveringCircle(
-    int level, double lat, double lon, double radiusKm) {
+  int level,
+  double lat,
+  double lon,
+  double radiusKm,
+) {
   final size = TileId.sizes[level];
   final dLat = radiusKm / _kmPerDegLat;
   final cosLat = math.cos(lat * math.pi / 180).abs().clamp(0.01, 1.0);
@@ -52,6 +56,6 @@ List<TileId> tilesCoveringCircle(
   return [
     for (var r = rowMin; r <= rowMax; r++)
       for (var c = colMin; c <= colMax; c++)
-        TileId(level, r * TileId.columns(level) + c)
+        TileId(level, r * TileId.columns(level) + c),
   ];
 }

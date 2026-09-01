@@ -69,30 +69,34 @@ class AppTheme {
     // font's own weight axis; `fontWeight` is kept alongside it so a
     // fallback/synthesis path (e.g. if the asset were ever swapped for a
     // static font) still lands on a sane weight.
-    List<FontVariation> wght(FontWeight weight) =>
-        [FontVariation('wght', weight.value.toDouble())];
+    List<FontVariation> wght(FontWeight weight) => [
+      FontVariation('wght', weight.value.toDouble()),
+    ];
     TextStyle display(double size, FontWeight weight) => TextStyle(
-        fontFamily: AppFonts.display,
-        fontWeight: weight,
-        fontVariations: wght(weight),
-        fontSize: size,
-        color: onSurface);
+      fontFamily: AppFonts.display,
+      fontWeight: weight,
+      fontVariations: wght(weight),
+      fontSize: size,
+      color: onSurface,
+    );
     TextStyle body(double size, FontWeight weight) => TextStyle(
-        fontFamily: AppFonts.body,
-        fontWeight: weight,
-        fontVariations: wght(weight),
-        fontSize: size,
-        color: onSurface);
+      fontFamily: AppFonts.body,
+      fontWeight: weight,
+      fontVariations: wght(weight),
+      fontSize: size,
+      color: onSurface,
+    );
     // IBM Plex Mono ships as separate static TTFs (Regular/Medium only, see
     // pubspec.yaml) — no variable-font axis, so no FontVariation here. Only
     // request weights the shipped statics actually provide.
     TextStyle mono(double size, FontWeight weight, double tracking) =>
         TextStyle(
-            fontFamily: AppFonts.mono,
-            fontWeight: weight,
-            fontSize: size,
-            letterSpacing: tracking,
-            color: onSurface);
+          fontFamily: AppFonts.mono,
+          fontWeight: weight,
+          fontSize: size,
+          letterSpacing: tracking,
+          color: onSurface,
+        );
 
     final textTheme = TextTheme(
       // Display: gros chiffres distance/durée, titres d'écrans.
@@ -131,7 +135,8 @@ class AppTheme {
         color: scheme.surface,
         elevation: 1,
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadii.card)),
+          borderRadius: BorderRadius.circular(AppRadii.card),
+        ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
@@ -139,8 +144,10 @@ class AppTheme {
           foregroundColor: scheme.onPrimary,
           textStyle: mono(16, FontWeight.w500, 0.5),
           shape: const StadiumBorder(),
-          padding:
-              const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: 16),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: 16,
+          ),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -171,8 +178,9 @@ class AppTheme {
         // Both states use w500: IBM Plex Mono only ships Regular/Medium
         // statics (see pubspec.yaml), so w600 isn't available — selection is
         // still conveyed by the indicator pill, not by a heavier weight.
-        labelTextStyle:
-            WidgetStateProperty.resolveWith((states) => mono(11, FontWeight.w500, 0.8)),
+        labelTextStyle: WidgetStateProperty.resolveWith(
+          (states) => mono(11, FontWeight.w500, 0.8),
+        ),
       ),
       appBarTheme: base.appBarTheme.copyWith(
         backgroundColor: scheme.surface,
@@ -185,7 +193,9 @@ class AppTheme {
       // this does NOT reach RefreshIndicator (it reads colorScheme.primary
       // directly, not this theme extension), so every RefreshIndicator
       // call site must also pass `color: colorScheme.onSurface` itself.
-      progressIndicatorTheme: ProgressIndicatorThemeData(color: scheme.onSurface),
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        color: scheme.onSurface,
+      ),
     );
   }
 }

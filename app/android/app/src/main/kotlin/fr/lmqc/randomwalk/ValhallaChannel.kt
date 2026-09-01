@@ -22,6 +22,14 @@ import java.util.concurrent.RejectedExecutionException
  *  - The JSON-in/JSON-out route call is `Valhalla.routeRaw(requestJson): String`, not
  *    `route(String): String`. It forwards the request to the native actor and returns Valhalla's
  *    raw trip JSON (or throws `ValhallaException.Internal` for the native error envelope).
+ *  - Map-matching (M4 exploration: on-device `trace_attributes`) follows the identical raw
+ *    JSON-in/JSON-out shape: `Valhalla.traceAttributesRaw(requestJson): String`, confirmed present
+ *    since the AAR's 0.6.0 by inspecting `valhalla-mobile-0.6.3-sources.jar` (`Valhalla.kt`) — same
+ *    `checkForError`-wrapped call as `routeRaw`, same `ValhallaException.Internal` on a Valhalla-side
+ *    error. Exposed here as the `trace` method, one level below the AAR's typed `traceAttributes`
+ *    (which needs `TraceAttributesRequest`/`TraceAttributesResponse` models this app does not
+ *    depend on) for the same reason `route` uses `routeRaw` and not `route`: Dart already builds
+ *    and parses the JSON itself.
  *  - `Valhalla` is `Closeable` and holds a native actor (incl. the mmapped tiles) for its whole
  *    lifetime; the previous instance is closed before a re-`init`, and [dispose] closes it (and
  *    shuts down the worker thread) when the Flutter engine tears down — see
@@ -142,6 +150,12 @@ class ValhallaChannel(private val context: Context) {
                     val request = call.argument<String>("request")
                         ?: throw IllegalArgumentException("route requires a request string")
                     actor?.routeRaw(request)
+                        ?: throw IllegalStateException("engine not initialized")
+                }
+                "trace" -> reply {
+                    val request = call.argument<String>("request")
+                        ?: throw IllegalArgumentException("trace requires a request string")
+                    actor?.traceAttributesRaw(request)
                         ?: throw IllegalStateException("engine not initialized")
                 }
                 else -> result.notImplemented()

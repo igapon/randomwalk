@@ -50,6 +50,15 @@ class NavFields {
   /// [offRoute] and [replanCount] to work from.
   final bool degraded;
 
+  /// Whether the [RouteFollower] behind this tick has latched having
+  /// genuinely left the destination's vicinity at least once (see
+  /// `RouteFollower.leftArrivalRadius`'s doc comment) — persisted (via
+  /// `TripSnapshot.navLeftArrivalRadius`) so a service restart can seed a
+  /// fresh follower with it instead of every restart resetting the latch and
+  /// permanently blocking arrival for a trip that had already earned it
+  /// (final review item 2).
+  final bool leftArrivalRadius;
+
   const NavFields({
     this.instruction,
     this.distanceToManeuverM,
@@ -61,6 +70,7 @@ class NavFields {
     this.routeShapeEnc,
     this.degraded = false,
     this.replanning = false,
+    this.leftArrivalRadius = false,
   });
 }
 
@@ -84,12 +94,13 @@ String _headline(NavFields f) {
   // their destination does not need to be told to go back to the line.
   if (f.arrived) return 'Arrivé à destination';
   if (f.degraded) return 'Itinéraire perdu — revenez sur le tracé';
-  final instruction =
-      (f.instruction == null || f.instruction!.isEmpty)
-          ? "Suivez l'itinéraire"
-          : '↰ ${f.instruction}';
+  final instruction = (f.instruction == null || f.instruction!.isEmpty)
+      ? "Suivez l'itinéraire"
+      : '↰ ${f.instruction}';
   final distance = f.distanceToManeuverM;
-  return distance == null ? instruction : '$instruction · ${formatDistance(distance)}';
+  return distance == null
+      ? instruction
+      : '$instruction · ${formatDistance(distance)}';
 }
 
 String? _remainingLine(NavFields f) {

@@ -52,10 +52,14 @@ class IdentityStore {
     if (trimmed.isEmpty || trimmed.length > 24) {
       throw ArgumentError('pseudo must be 1-24 chars');
     }
-    await (await SharedPreferences.getInstance())
-        .setString(_pseudoKey, trimmed);
+    await (await SharedPreferences.getInstance()).setString(
+      _pseudoKey,
+      trimmed,
+    );
     final current = await get();
-    _pending = Future.value(PlayerIdentity(userId: current.userId, pseudo: trimmed));
+    _pending = Future.value(
+      PlayerIdentity(userId: current.userId, pseudo: trimmed),
+    );
   }
 }
 

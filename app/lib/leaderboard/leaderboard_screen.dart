@@ -20,8 +20,8 @@ enum _LeaderboardErrorKind {
 
 _LeaderboardErrorKind _classifyError(Object error) =>
     error is LeaderboardException
-        ? _LeaderboardErrorKind.server
-        : _LeaderboardErrorKind.offline;
+    ? _LeaderboardErrorKind.server
+    : _LeaderboardErrorKind.offline;
 
 /// Displays the top-50 leaderboard and the player's own rank. Best-effort
 /// submits the local total km on open (and on pull-to-refresh) so the
@@ -115,8 +115,9 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
       } else {
         // Keep the existing list; just let the player know the refresh
         // failed instead of silently discarding their pulled gesture.
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(kind.message)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(kind.message)));
       }
     }
   }
@@ -140,8 +141,10 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Classement',
-                    style: Theme.of(context).textTheme.headlineSmall),
+                child: Text(
+                  'Classement',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
               ),
             ),
             Expanded(child: body),
@@ -190,7 +193,9 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   Widget _buildList(LeaderboardData data) {
     final top = data.top.take(50).toList();
     final me = data.me;
-    final meInTop = me != null && _myUserId != null &&
+    final meInTop =
+        me != null &&
+        _myUserId != null &&
         top.any((e) => e.userId == _myUserId);
     final extraRow = me != null && !meInTop;
 
@@ -237,12 +242,16 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
       // the theme (not a raw token) so it stays correct in dark mode too.
       tileColor: isMe ? theme.colorScheme.primaryContainer : null,
       leading: Text('${e.rank}', style: textTheme.labelLarge),
-      title: Text(e.pseudo,
-          style: isMe
-              ? textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w700)
-              : textTheme.bodyLarge),
-      trailing: Text('${e.totalKm.toStringAsFixed(1)} km',
-          style: textTheme.labelLarge),
+      title: Text(
+        e.pseudo,
+        style: isMe
+            ? textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w700)
+            : textTheme.bodyLarge,
+      ),
+      trailing: Text(
+        '${e.totalKm.toStringAsFixed(1)} km',
+        style: textTheme.labelLarge,
+      ),
     );
   }
 }

@@ -94,7 +94,11 @@ List<(double, double)> _referenceShape() {
 /// Offsets [from] by [distanceM] along compass bearing [bearingDeg], using
 /// the same equirectangular approximation the app's own route geometry
 /// uses internally — adequate for sub-km steps.
-(double, double) _offset((double, double) from, double bearingDeg, double distanceM) {
+(double, double) _offset(
+  (double, double) from,
+  double bearingDeg,
+  double distanceM,
+) {
   final bearingRad = bearingDeg * math.pi / 180;
   final northM = distanceM * math.cos(bearingRad);
   final eastM = distanceM * math.sin(bearingRad);
@@ -114,7 +118,10 @@ class _TracePoint {
 /// Interpolates a position [distanceM] along [shape], given its
 /// precomputed cumulative distances (meters, same length as [shape]).
 (double, double) _positionAtDistance(
-    List<(double, double)> shape, List<double> cumulativeM, double distanceM) {
+  List<(double, double)> shape,
+  List<double> cumulativeM,
+  double distanceM,
+) {
   final clamped = distanceM.clamp(0.0, cumulativeM.last);
   var i = 0;
   while (i < cumulativeM.length - 2 && cumulativeM[i + 1] < clamped) {
@@ -122,7 +129,9 @@ class _TracePoint {
   }
   final segStart = cumulativeM[i];
   final segEnd = cumulativeM[i + 1];
-  final t = segEnd > segStart ? (clamped - segStart) / (segEnd - segStart) : 0.0;
+  final t = segEnd > segStart
+      ? (clamped - segStart) / (segEnd - segStart)
+      : 0.0;
   final a = shape[i];
   final b = shape[i + 1];
   return (a.$1 + (b.$1 - a.$1) * t, a.$2 + (b.$2 - a.$2) * t);
@@ -131,7 +140,10 @@ class _TracePoint {
 /// Compass bearing (degrees) of the shape segment covering [distanceM],
 /// used to pick a perpendicular direction for the detour fixture.
 double _bearingAtDistance(
-    List<(double, double)> shape, List<double> cumulativeM, double distanceM) {
+  List<(double, double)> shape,
+  List<double> cumulativeM,
+  double distanceM,
+) {
   var i = 0;
   while (i < cumulativeM.length - 2 && cumulativeM[i + 1] < distanceM) {
     i++;
@@ -178,8 +190,13 @@ List<_TracePoint> _nominalTrace(RouteResult route) {
   // Exact final vertex, one second after the last regular sample, so the
   // trace always ends within the arrival radius.
   final last = shape.last;
-  points.add(_TracePoint(
-      last.$1, last.$2, start.add(Duration(seconds: totalSeconds + 1))));
+  points.add(
+    _TracePoint(
+      last.$1,
+      last.$2,
+      start.add(Duration(seconds: totalSeconds + 1)),
+    ),
+  );
   return points;
 }
 
@@ -219,8 +236,11 @@ List<_TracePoint> _detourTrace(RouteResult route) {
 
   final perpendicularBearing =
       _bearingAtDistance(shape, cumulativeM, leaveDistanceM) + 90;
-  final (onRouteLat, onRouteLon) =
-      _positionAtDistance(shape, cumulativeM, leaveDistanceM);
+  final (onRouteLat, onRouteLon) = _positionAtDistance(
+    shape,
+    cumulativeM,
+    leaveDistanceM,
+  );
 
   final totalSeconds = (totalM / _speedMps).floor();
   final points = <_TracePoint>[];
@@ -239,8 +259,11 @@ List<_TracePoint> _detourTrace(RouteResult route) {
     } else {
       offsetM = detourOffsetM;
     }
-    final (lat, lon) =
-        _offset((onRouteLat, onRouteLon), perpendicularBearing, offsetM);
+    final (lat, lon) = _offset(
+      (onRouteLat, onRouteLon),
+      perpendicularBearing,
+      offsetM,
+    );
     points.add(_TracePoint(lat, lon, start.add(Duration(seconds: leaveT + d))));
   }
 
@@ -250,11 +273,18 @@ List<_TracePoint> _detourTrace(RouteResult route) {
   for (var t = leaveT + 1; t <= totalSeconds; t++) {
     final (lat, lon) = _positionAtDistance(shape, cumulativeM, t * _speedMps);
     points.add(
-        _TracePoint(lat, lon, start.add(Duration(seconds: resumeT + (t - leaveT)))));
+      _TracePoint(
+        lat,
+        lon,
+        start.add(Duration(seconds: resumeT + (t - leaveT))),
+      ),
+    );
   }
   final last = shape.last;
   final lastT = resumeT + (totalSeconds + 1 - leaveT);
-  points.add(_TracePoint(last.$1, last.$2, start.add(Duration(seconds: lastT))));
+  points.add(
+    _TracePoint(last.$1, last.$2, start.add(Duration(seconds: lastT))),
+  );
   return points;
 }
 
@@ -276,13 +306,15 @@ String _toGpx(String name, List<_TracePoint> points) {
   final buffer = StringBuffer();
   buffer.writeln('<?xml version="1.0" encoding="UTF-8"?>');
   buffer.writeln(
-      '<gpx version="1.1" creator="randomwalk-fixtures" xmlns="http://www.topografix.com/GPX/1/1">');
+    '<gpx version="1.1" creator="randomwalk-fixtures" xmlns="http://www.topografix.com/GPX/1/1">',
+  );
   buffer.writeln('  <trk>');
   buffer.writeln('    <name>$name</name>');
   buffer.writeln('    <trkseg>');
   for (final p in points) {
     buffer.writeln(
-        '      <trkpt lat="${p.lat.toStringAsFixed(7)}" lon="${p.lon.toStringAsFixed(7)}">');
+      '      <trkpt lat="${p.lat.toStringAsFixed(7)}" lon="${p.lon.toStringAsFixed(7)}">',
+    );
     buffer.writeln('        <time>${p.time.toUtc().toIso8601String()}</time>');
     buffer.writeln('      </trkpt>');
   }

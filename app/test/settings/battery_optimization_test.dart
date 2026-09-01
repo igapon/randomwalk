@@ -17,9 +17,9 @@ void main() {
         expect(isAggressiveBatteryOem(oem), isTrue);
         expect(isAggressiveBatteryOem(oem.toUpperCase()), isTrue);
         expect(
-            isAggressiveBatteryOem(
-                oem[0].toUpperCase() + oem.substring(1)),
-            isTrue);
+          isAggressiveBatteryOem(oem[0].toUpperCase() + oem.substring(1)),
+          isTrue,
+        );
       });
     }
   });
