@@ -136,7 +136,8 @@ class CoverageRepository {
       final file = File('${tileDir.path}/$path');
       var have = file.existsSync();
       if (!have) {
-        final ok = await _download(manifest, path, file);
+        final ok = await _downloadAsset(
+            manifest.tiles[path]!, manifest.datasetVersion, file);
         ok ? downloaded++ : failed++;
         have = ok;
       }
@@ -144,6 +145,15 @@ class CoverageRepository {
       // Only record LRU usage for tiles that actually exist on disk after
       // this pass — a failed download must not create a phantom entry.
       if (have) await _touch(tileDir, path);
+    }
+    // Best-effort download of the optional game-POI asset. Never affects
+    // `downloaded`/`failed`/`total` (those describe the tile set this call
+    // was actually asked for) and never throws: the game degrades to
+    // `PoiStore.empty` when this file is absent or corrupt, but routing and
+    // every other tool feature must keep working regardless (see the plan's
+    // "game never blocks the tool" constraint).
+    if (manifest.pois != null) {
+      await _ensurePoisAsset(manifest, tileDir);
     }
     await _purgeLru(tileDir);
     // Purge-by-count runs unconditionally, even when this run had failed
@@ -164,9 +174,9 @@ class CoverageRepository {
         versionMismatch: fetch.versionMismatch);
   }
 
-  Future<bool> _download(TileManifest m, String path, File dest) async {
-    final asset = m.tiles[path]!;
-    final url = CoverageConfig.assetUrl(m.datasetVersion, asset.asset);
+  Future<bool> _downloadAsset(
+      TileAsset asset, String datasetVersion, File dest) async {
+    final url = CoverageConfig.assetUrl(datasetVersion, asset.asset);
     final http.Response resp;
     try {
       resp = await client.get(Uri.parse(url));
@@ -184,6 +194,38 @@ class CoverageRepository {
     await tmp.writeAsBytes(resp.bodyBytes, flush: true);
     await tmp.rename(dest.path);
     return true;
+  }
+
+  /// Downloads `<tileDir>/pois.json.gz` when the manifest advertises a
+  /// `pois` asset and it isn't already on disk. Same sha-verified atomic
+  /// write pattern as a tile ([_downloadAsset]), but errors of any kind
+  /// (network, sha mismatch, disk) are swallowed rather than surfaced —
+  /// this asset is a pure add-on the game degrades gracefully without.
+  Future<void> _ensurePoisAsset(TileManifest manifest, Directory tileDir) async {
+    final asset = manifest.pois;
+    if (asset == null) return;
+    final dest = File('${tileDir.path}/pois.json.gz');
+    if (dest.existsSync()) return;
+    try {
+      await _downloadAsset(asset, manifest.datasetVersion, dest);
+    } catch (_) {
+      // Never let a POI-asset failure bubble out of ensureCoverage.
+    }
+  }
+
+  /// The `pois.json.gz` file for the dataset version currently referenced
+  /// by the cached manifest, or `null` when there is no cached manifest, the
+  /// manifest carries no `pois` entry, or the file hasn't been downloaded
+  /// (yet, or ever — e.g. an old cached manifest from before the POI
+  /// pipeline existed). Mirrors [cachedTileDirPath]: reads only what's
+  /// already on disk, touches neither the network nor validates content —
+  /// callers that need a *fresh* copy should have gone through
+  /// [ensureCoverage] first.
+  Future<File?> poisFile() async {
+    final manifest = await _readManifestCache();
+    if (manifest == null || manifest.pois == null) return null;
+    final file = File('${root.path}/${manifest.datasetVersion}/pois.json.gz');
+    return await file.exists() ? file : null;
   }
 
   /// LRU index: JSON map tile path -> last-used epoch ms, stored next to tiles.

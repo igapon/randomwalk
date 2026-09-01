@@ -33,14 +33,27 @@ class TileManifest {
   final String datasetVersion;
   final String valhallaVersion;
   final Map<String, TileAsset> tiles;
+
+  /// Optional game-POI asset entry (`manifest.json`'s top-level `"pois"`
+  /// key — see randomwalk-tiles' `make_manifest.py` extra-assets
+  /// mechanism). `null` for any manifest that predates the M4 POI pipeline,
+  /// or simply doesn't carry one — this key is additive/backward-compatible
+  /// by design, so an old manifest JSON with no `"pois"` key parses exactly
+  /// as it always has.
+  final TileAsset? pois;
+
   const TileManifest(
       {required this.datasetVersion,
       required this.valhallaVersion,
-      required this.tiles});
+      required this.tiles,
+      this.pois});
   factory TileManifest.fromJson(Map<String, dynamic> j) => TileManifest(
         datasetVersion: j['dataset_version'] as String,
         valhallaVersion: j['valhalla_version'] as String,
         tiles: (j['tiles'] as Map<String, dynamic>).map(
             (k, v) => MapEntry(k, TileAsset.fromJson(v as Map<String, dynamic>))),
+        pois: j['pois'] == null
+            ? null
+            : TileAsset.fromJson(j['pois'] as Map<String, dynamic>),
       );
 }

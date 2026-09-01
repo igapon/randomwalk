@@ -373,4 +373,105 @@ void main() {
       expect(cacheAfter, cacheBefore);
     });
   });
+
+  group('game POI asset', () {
+    final poisBytes = utf8.encode('gzipped-pois-fixture');
+    final poisSha = sha256.convert(poisBytes).toString();
+
+    Map<String, dynamic> manifestWithPois() {
+      final m = manifestFor(knownPaths);
+      m['pois'] = {
+        'asset': 'pois.json.gz',
+        'bytes': poisBytes.length,
+        'sha256': poisSha,
+      };
+      return m;
+    }
+
+    MockClient clientWithPois({bool corruptPois = false}) =>
+        MockClient((req) async {
+          if (req.url.path.endsWith('manifest.json')) {
+            return http.Response(jsonEncode(manifestWithPois()), 200);
+          }
+          if (req.url.path.endsWith('pois.json.gz')) {
+            return http.Response.bytes(
+                corruptPois ? [0, 0, 0] : poisBytes, 200);
+          }
+          if (req.url.path.endsWith('.gph')) {
+            return http.Response.bytes(tileBytes, 200);
+          }
+          return http.Response('not found', 404);
+        });
+
+    test('downloads pois.json.gz when the manifest advertises it, sha-verified',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(root: root, client: clientWithPois());
+      final res = await repo.ensureCoverage(lat, lon);
+      final f = File('${res.tileDirPath}/pois.json.gz');
+      expect(f.existsSync(), isTrue);
+      expect(await f.readAsBytes(), poisBytes);
+    });
+
+    test('poisFile() is null before ensureCoverage has ever run', () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(root: root, client: clientWithPois());
+      expect(await repo.poisFile(), isNull);
+    });
+
+    test('poisFile() returns the downloaded file after ensureCoverage',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(root: root, client: clientWithPois());
+      await repo.ensureCoverage(lat, lon);
+      final f = await repo.poisFile();
+      expect(f, isNotNull);
+      expect(await f!.readAsBytes(), poisBytes);
+    });
+
+    test(
+        'rejects a corrupted pois asset (sha mismatch), leaves no file, '
+        'and does not fail ensureCoverage itself', () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo =
+          CoverageRepository(root: root, client: clientWithPois(corruptPois: true));
+      final res = await repo.ensureCoverage(lat, lon);
+      expect(res.failed, 0); // tile downloads are unaffected by the POI asset
+      expect(File('${res.tileDirPath}/pois.json.gz').existsSync(), isFalse);
+      expect(await repo.poisFile(), isNull);
+    });
+
+    test(
+        'old manifest without a "pois" entry: no download attempted, poisFile() null',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      final repo = CoverageRepository(root: root, client: client());
+      final res = await repo.ensureCoverage(lat, lon);
+      expect(File('${res.tileDirPath}/pois.json.gz').existsSync(), isFalse);
+      expect(await repo.poisFile(), isNull);
+    });
+
+    test('a second ensureCoverage call does not re-download an already-present pois asset',
+        () async {
+      final root = await Directory.systemTemp.createTemp('cov');
+      var poisRequests = 0;
+      final c = MockClient((req) async {
+        if (req.url.path.endsWith('manifest.json')) {
+          return http.Response(jsonEncode(manifestWithPois()), 200);
+        }
+        if (req.url.path.endsWith('pois.json.gz')) {
+          poisRequests++;
+          return http.Response.bytes(poisBytes, 200);
+        }
+        if (req.url.path.endsWith('.gph')) {
+          return http.Response.bytes(tileBytes, 200);
+        }
+        return http.Response('not found', 404);
+      });
+      final repo = CoverageRepository(root: root, client: c);
+      await repo.ensureCoverage(lat, lon);
+      await repo.ensureCoverage(lat, lon);
+      expect(poisRequests, 1);
+    });
+  });
 }
