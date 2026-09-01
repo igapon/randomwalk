@@ -1,16 +1,28 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/sync/backend.dart';
 import 'package:randomwalk/sync/supabase_backend.dart';
 
-// These tests exercise only the pure mapping/encoding helpers
+// Most of these tests exercise only the pure mapping/encoding helpers
 // (GameEvent<->row json, cursor encode/decode, error mapping) — no
-// SupabaseClient is constructed and Supabase.initialize is never called,
-// per the M5 global constraint that nothing in this task's test suite
-// attempts network I/O. The RPC/PostgREST call sites themselves are
-// verified later against a live project by the owner (see the plan and
-// supabase/README.md).
+// network I/O, no `Supabase.initialize`, per the M5 global constraint that
+// nothing in this task's test suite attempts real network I/O.
+//
+// The `buildPullRequest` group is the one exception: it constructs a plain
+// `SupabaseClient` directly (bypassing `Supabase.initialize`/the global
+// singleton — this package's `SupabaseClient`, not `supabase_flutter`'s
+// lazily-initialized one `SupabaseBackend` normally uses) with a recording
+// `httpClient` that never leaves the process, so the real query-builder
+// code path can be asserted against without any live network call — see
+// that group's own comment for why this is the request-capture test the
+// review asked for.
+//
+// The RPC/PostgREST call sites inside `SupabaseBackend`'s own instance
+// methods are still verified later against a live project by the owner
+// (see the plan and supabase/README.md).
 void main() {
   group('eventToRow', () {
     test('matches GameEvent.toJson shape with ts forced to UTC', () {
@@ -242,20 +254,56 @@ void main() {
       expect(mapped, isA<SyncAuthError>());
     });
 
-    test('any other PostgrestException (e.g. an RLS rejection) maps to '
-        'SyncNetworkError', () {
+    test('a PostgrestException with code 42501 (insufficient_privilege — '
+        'e.g. an RLS rejection, or an anon-role caller with no EXECUTE '
+        'grant on push_events/delete_account) maps to SyncAuthError', () {
       final mapped = SupabaseBackend.mapError(
         const PostgrestException(
           message: 'new row violates row-level security policy',
           code: '42501',
         ),
       );
-      expect(mapped, isA<SyncNetworkError>());
+      expect(mapped, isA<SyncAuthError>());
       expect(
-        (mapped as SyncNetworkError).message,
+        (mapped as SyncAuthError).message,
         'new row violates row-level security policy',
       );
     });
+
+    test('a PostgrestException with an HTTP-403-shaped code maps to '
+        'SyncAuthError', () {
+      final mapped = SupabaseBackend.mapError(
+        const PostgrestException(message: 'Forbidden', code: '403'),
+      );
+      expect(mapped, isA<SyncAuthError>());
+    });
+
+    test('a PostgrestException with an HTTP-401-shaped code maps to '
+        'SyncAuthError', () {
+      final mapped = SupabaseBackend.mapError(
+        const PostgrestException(message: 'Unauthorized', code: '401'),
+      );
+      expect(mapped, isA<SyncAuthError>());
+    });
+
+    test('a PostgrestException with an unrelated code (e.g. a malformed 2xx '
+        'body) maps to SyncNetworkError', () {
+      final mapped = SupabaseBackend.mapError(
+        const PostgrestException(message: 'invalid json', code: '200'),
+      );
+      expect(mapped, isA<SyncNetworkError>());
+      expect((mapped as SyncNetworkError).message, 'invalid json');
+    });
+
+    test(
+      'a PostgrestException with no code at all maps to SyncNetworkError',
+      () {
+        final mapped = SupabaseBackend.mapError(
+          const PostgrestException(message: 'something went wrong'),
+        );
+        expect(mapped, isA<SyncNetworkError>());
+      },
+    );
 
     test(
       'an unrecognized error (e.g. no connectivity) maps to SyncNetworkError',
@@ -264,5 +312,96 @@ void main() {
         expect(mapped, isA<SyncNetworkError>());
       },
     );
+  });
+
+  group('buildPullRequest (request-capture, no live network)', () {
+    // These construct a plain SupabaseClient directly — bypassing
+    // Supabase.initialize/the global singleton entirely — with a
+    // recording httpClient, so the real query-builder code path
+    // (.select/.or/.order/.limit) runs and the generated request URL can
+    // be asserted against, without any real network I/O. This is what
+    // would have caught the ascending/descending ordering bug: the
+    // request-capture approach the review asked for.
+    late List<Uri> requests;
+    late SupabaseClient client;
+
+    setUp(() {
+      requests = [];
+      client = SupabaseClient(
+        'https://example.supabase.co',
+        'test-anon-key',
+        httpClient: MockClient((request) async {
+          requests.add(request.url);
+          // postgrest-dart's response parsing reads response.request! (not
+          // nullable there), so the mock response must carry it back —
+          // omitting it throws a null-check error inside the package, not
+          // a useful assertion failure.
+          return http.Response(
+            '[]',
+            200,
+            request: request,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+    });
+
+    test(
+      'no cursor: orders ascending by inserted_at then id, no filter',
+      () async {
+        await SupabaseBackend.buildPullRequest(client, null);
+
+        expect(requests, hasLength(1));
+        final query = requests.single.queryParameters;
+        expect(query['order'], 'inserted_at.asc.nullslast,id.asc.nullslast');
+        expect(query.containsKey('or'), isFalse);
+        // postgrest-dart strips whitespace from the columns string, so the
+        // `select` param has no spaces even though buildPullRequest's own
+        // literal does — asserted here so an unrelated future edit to that
+        // literal doesn't quietly change what's actually requested.
+        expect(query['select'], 'id,ts,type,payload,inserted_at');
+      },
+    );
+
+    test('with a cursor: still orders ascending, and adds the exclusive '
+        '(inserted_at, id) OR-filter', () async {
+      final cursor = SupabaseBackend.encodeCursor(
+        insertedAt: '2026-09-01T10:00:00+00:00',
+        id: 'a1b2c3d4-0000-0000-0000-000000000001',
+      );
+
+      await SupabaseBackend.buildPullRequest(client, cursor);
+
+      expect(requests, hasLength(1));
+      final query = requests.single.queryParameters;
+      expect(query['order'], 'inserted_at.asc.nullslast,id.asc.nullslast');
+      expect(
+        query['or'],
+        '(inserted_at.gt.2026-09-01T10:00:00+00:00,'
+        'and(inserted_at.eq.2026-09-01T10:00:00+00:00,'
+        'id.gt.a1b2c3d4-0000-0000-0000-000000000001))',
+      );
+    });
+
+    test('a cursor with a tied inserted_at still produces the same '
+        'AND-tiebreaker shape (the batched-push tie case)', () async {
+      // supabase/notes.md section 1: a batched push shares one
+      // inserted_at across every event in the batch, so the tiebreaker
+      // branch of the OR-filter is the normal case, not an edge case.
+      final cursor = SupabaseBackend.encodeCursor(
+        insertedAt: '2026-09-01T10:00:00.000000+00:00',
+        id: 'tied-row-id',
+      );
+
+      await SupabaseBackend.buildPullRequest(client, cursor);
+
+      final query = requests.single.queryParameters;
+      expect(
+        query['or'],
+        '(inserted_at.gt.2026-09-01T10:00:00.000000+00:00,'
+        'and(inserted_at.eq.2026-09-01T10:00:00.000000+00:00,'
+        'id.gt.tied-row-id))',
+      );
+    });
   });
 }

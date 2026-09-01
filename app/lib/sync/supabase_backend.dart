@@ -133,26 +133,7 @@ class SupabaseBackend implements SyncBackend {
   Future<PullPage> pullEventsSince(String? cursor) async {
     try {
       final client = await _ensureClient();
-      var query = client
-          .from('game_events')
-          .select('id, ts, type, payload, inserted_at');
-      if (cursor != null) {
-        final decoded = decodeCursor(cursor);
-        // Composite-cursor pagination: PostgREST has no tuple comparison
-        // syntax, so "(inserted_at, id) > (:cursor)" (supabase/notes.md
-        // section 1) is expressed as the equivalent OR of two filters —
-        // strictly later inserted_at, OR same inserted_at with a strictly
-        // later id (the tiebreaker) — matching the composite index and the
-        // ORDER BY below exactly.
-        query = query.or(
-          'inserted_at.gt.${decoded.insertedAt},'
-          'and(inserted_at.eq.${decoded.insertedAt},id.gt.${decoded.id})',
-        );
-      }
-      final rows = await query
-          .order('inserted_at')
-          .order('id')
-          .limit(_pageSize);
+      final rows = await buildPullRequest(client, cursor);
       final events = rows.map(rowToEvent).toList();
       final nextCursor = rows.isEmpty
           ? null
@@ -210,10 +191,63 @@ class SupabaseBackend implements SyncBackend {
   }
 
   // ---------------------------------------------------------------------
-  // Pure mapping helpers below — no client, no network. These are the
-  // pieces this task's tests exercise directly (see
-  // test/sync/supabase_backend_test.dart).
+  // Helpers below take no client-construction/lazy-init dependency of
+  // their own — either pure mapping functions, or (buildPullRequest)
+  // pure *query building* against a caller-supplied client, so tests can
+  // exercise them directly without going through Supabase.initialize.
+  // See test/sync/supabase_backend_test.dart.
   // ---------------------------------------------------------------------
+
+  /// Builds (but does not await) the [pullEventsSince] request: a
+  /// `game_events` select, filtered by the exclusive `(inserted_at, id)`
+  /// cursor when [cursor] is non-null, ordered ascending by
+  /// `(inserted_at, id)`, and capped at [_pageSize].
+  ///
+  /// Pulled out of [pullEventsSince] into its own testable method because
+  /// this exact query shape is the one thing `supabase/notes.md` calls out
+  /// as the highest-risk spot in this task: postgrest-dart's `.order()`
+  /// defaults to **descending** (`ascending: false`), so both `.order()`
+  /// calls below must pass `ascending: true` explicitly, or pagination
+  /// silently breaks (see the inline comment on those calls). Tests build
+  /// a [sb.SupabaseClient] directly (bypassing `Supabase.initialize`/the
+  /// global singleton entirely) with a recording `httpClient`, call this
+  /// method, and assert the captured request URL's `order`/`or` query
+  /// parameters — a request-capture test against the real query-builder
+  /// code path, not a re-implementation of it.
+  static Future<sb.PostgrestList> buildPullRequest(
+    sb.SupabaseClient client,
+    String? cursor,
+  ) {
+    var query = client
+        .from('game_events')
+        .select('id, ts, type, payload, inserted_at');
+    if (cursor != null) {
+      final decoded = decodeCursor(cursor);
+      // Composite-cursor pagination: PostgREST has no tuple comparison
+      // syntax, so "(inserted_at, id) > (:cursor)" (supabase/notes.md
+      // section 1) is expressed as the equivalent OR of two filters —
+      // strictly later inserted_at, OR same inserted_at with a strictly
+      // later id (the tiebreaker) — matching the composite index and the
+      // ORDER BY below exactly.
+      query = query.or(
+        'inserted_at.gt.${decoded.insertedAt},'
+        'and(inserted_at.eq.${decoded.insertedAt},id.gt.${decoded.id})',
+      );
+    }
+    // `ascending: true` is NOT the default on postgrest-dart's `.order()`
+    // (it defaults to `false`, i.e. descending) — omitting it here would
+    // silently reverse the page (newest-first) and, worse, would derive
+    // `nextCursor` (back in [pullEventsSince]) from what is then the
+    // OLDEST row of that newest-first page: resuming would keep
+    // re-requesting the same newest slice forever instead of paging
+    // through history. Both columns must stay ascending to match
+    // `PullPage`'s pinned contract and the `game_events_user_cursor_idx`
+    // index order.
+    return query
+        .order('inserted_at', ascending: true)
+        .order('id', ascending: true)
+        .limit(_pageSize);
+  }
 
   /// Maps a GoTrue [sb.User] (as returned by `auth.currentUser` and
   /// `verifyOTP`) onto the contract's [AuthUser]. `null` in, `null` out —
@@ -295,15 +329,12 @@ class SupabaseBackend implements SyncBackend {
   /// - Any other [sb.AuthException] (wrong/expired OTP, missing session,
   ///   ...) → [SyncAuthError] — these are GoTrue affirmatively rejecting
   ///   the auth operation itself, exactly [SyncAuthError]'s doc comment.
-  /// - [sb.PostgrestException] whose message is the `push_events`/
-  ///   `delete_account` RPCs' own `raise exception '...: authentication
-  ///   required'` → [SyncAuthError] (the backend saying "you must be
-  ///   signed in", not a transport problem — `supabase/notes.md`'s open
-  ///   question, resolved this way here). Every other [sb.PostgrestException]
-  ///   (RLS rejections on direct table access, constraint violations,
-  ///   malformed 2xx bodies, ...) → [SyncNetworkError], matching that
-  ///   exception's own dartdoc, which explicitly lists "non-2xx/5xx
-  ///   response" and "malformed response body" as its cases.
+  /// - A [sb.PostgrestException] that is [_isAuthRejection] → [SyncAuthError]
+  ///   (see that method's doc for exactly which shapes count). Every other
+  ///   [sb.PostgrestException] (constraint violations, malformed 2xx
+  ///   bodies, ...) → [SyncNetworkError], matching that exception's own
+  ///   dartdoc, which explicitly lists "non-2xx/5xx response" and
+  ///   "malformed response body" as its cases.
   /// - Everything else (no connectivity, timeout, ...) → [SyncNetworkError].
   static Exception mapError(Object error) {
     if (error is sb.AuthRetryableFetchException) {
@@ -313,11 +344,48 @@ class SupabaseBackend implements SyncBackend {
       return SyncAuthError(error.message);
     }
     if (error is sb.PostgrestException) {
-      if (error.message.contains('authentication required')) {
+      if (_isAuthRejection(error)) {
         return SyncAuthError(error.message);
       }
       return SyncNetworkError(error.message);
     }
     return SyncNetworkError(error.toString());
   }
+
+  /// True for a [sb.PostgrestException] that represents the backend
+  /// affirmatively rejecting the caller on authorization grounds, as
+  /// opposed to a generic request failure. Two shapes count:
+  /// - the `push_events`/`delete_account` RPCs' own `raise exception '...:
+  ///   authentication required'` (reachable only when a request somehow
+  ///   carries a JWT whose `auth.uid()` still resolves to null inside the
+  ///   function body — an edge case, not the common path);
+  /// - a Postgres/PostgREST permission-denied response — `code == '42501'`
+  ///   (Postgres SQLSTATE `insufficient_privilege`) or an HTTP-401/403
+  ///   shaped `code` — which is the far more common way an *unauthenticated*
+  ///   caller actually gets rejected: `push_events`/`delete_account` are
+  ///   `REVOKE ALL FROM PUBLIC` + `GRANT EXECUTE ... TO authenticated` only
+  ///   (`supabase/migrations/0001_init.sql`), so a caller with no session
+  ///   runs as Postgres role `anon`, which has no grant at all — PostgREST
+  ///   rejects the call before the function body (and its own "auth
+  ///   required" raise) ever runs.
+  ///
+  /// NOTE: matching on `code == '42501'` also catches a signed-in caller's
+  /// row-level-security violation (e.g. `game_events_insert_own`'s `WITH
+  /// CHECK` failing) — Postgres uses the same `insufficient_privilege`
+  /// SQLSTATE for both "no grant on this function" and "this row failed
+  /// your RLS policy". Both are the backend saying "you specifically are
+  /// not allowed to do that" rather than a transport failure, so folding
+  /// them into [SyncAuthError] together is deliberate, not an
+  /// over-broad match.
+  ///
+  /// The exact code/message PostgREST sends for the `anon`-role
+  /// no-EXECUTE-grant case is unverified against a live project (none
+  /// exists in this environment, see `supabase/notes.md`) — Task 4 should
+  /// confirm this mapping (in particular "call a write method with no
+  /// session at all") once a live project exists to test against.
+  static bool _isAuthRejection(sb.PostgrestException error) =>
+      error.message.contains('authentication required') ||
+      error.code == '42501' ||
+      error.code == '401' ||
+      error.code == '403';
 }
