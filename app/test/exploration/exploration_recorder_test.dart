@@ -155,6 +155,7 @@ void main() {
 
         expect(types, [
           GameEventTypes.edgeCoveredBatch,
+          GameEventTypes.streakUpdated,
           GameEventTypes.cellRevealed,
           GameEventTypes.xpEarned, // km
           GameEventTypes.xpEarned, // cells
@@ -165,22 +166,24 @@ void main() {
 
         expect(events[0].payload['km'], 2.5);
 
-        final cellEvent = events[1];
+        expect(events[1].payload['day'], '2026-08-30');
+
+        final cellEvent = events[2];
         final cells = (cellEvent.payload['cells'] as List).cast<String>();
         expect(cells, contains(target.key));
 
-        expect(events[2].payload['amount'], closeTo(25.0, 1e-9)); // 10 * 2.5
-        expect(events[2].payload['preMultiplied'], false);
-
-        expect(events[3].payload['amount'], closeTo(5.0 * cells.length, 1e-9));
+        expect(events[3].payload['amount'], closeTo(25.0, 1e-9)); // 10 * 2.5
         expect(events[3].payload['preMultiplied'], false);
 
-        expect(events[4].payload['amount'], 50);
+        expect(events[4].payload['amount'], closeTo(5.0 * cells.length, 1e-9));
         expect(events[4].payload['preMultiplied'], false);
 
-        expect(events[5].payload, isEmpty);
+        expect(events[5].payload['amount'], 50);
+        expect(events[5].payload['preMultiplied'], false);
 
-        expect(events[6].payload['delta'], closeTo(-10.0, 1e-9)); // -4 * 2.5
+        expect(events[6].payload, isEmpty);
+
+        expect(events[7].payload['delta'], closeTo(-10.0, 1e-9)); // -4 * 2.5
       },
     );
 
@@ -209,6 +212,7 @@ void main() {
       final types = events.map((e) => e.type).toSet();
       expect(types, {
         GameEventTypes.edgeCoveredBatch,
+        GameEventTypes.streakUpdated,
         GameEventTypes.xpEarned,
         GameEventTypes.energyChanged,
       });
@@ -234,6 +238,68 @@ void main() {
           events.where((e) => e.type == GameEventTypes.xpEarned).length,
           1,
         );
+      },
+    );
+  });
+
+  group('streak_updated (final review item 1: was never emitted anywhere)', () {
+    test('the recorder emits streak_updated with the trip\'s calendar day, '
+        'beside edge_covered_batch', () async {
+      await writeTrack(const []);
+      final recorder = buildRecorder();
+      await recorder.process(const FinishedTrip(km: 1.0));
+
+      final events = await journal.readAll();
+      final streakEvents = events
+          .where((e) => e.type == GameEventTypes.streakUpdated)
+          .toList();
+      expect(streakEvents, hasLength(1));
+      expect(streakEvents.single.payload['day'], '2026-08-30');
+
+      final state = reduceAll(events);
+      expect(state.streakDays, 1);
+    });
+
+    test(
+      'journal replay through a restart (a fresh ExplorationRecorder reading '
+      'the same on-disk journal) yields streakDays 1 then 2 on '
+      'consecutive-day trips',
+      () async {
+        final day1 = DateTime.utc(2026, 8, 30, 9, 0, 0);
+        final day2 = DateTime.utc(2026, 8, 31, 9, 0, 0);
+
+        await writeTrack(const []);
+        final recorder1 = ExplorationRecorder(
+          engineProvider: () async => engine,
+          edgesStore: edgesStore,
+          journal: journal,
+          trackFile: trackFile,
+          newId: () => 'evt-${idCounter++}',
+          clock: () => day1,
+        );
+        await recorder1.process(const FinishedTrip(km: 1.0));
+
+        var state = reduceAll(await journal.readAll());
+        expect(state.streakDays, 1);
+
+        // A "restart": a brand new ExplorationRecorder instance (as a killed
+        // and relaunched process would build), reading the SAME on-disk
+        // journal the next calendar day — proves the streak is derived from
+        // the journal itself, not from any in-memory state a live instance
+        // might have carried.
+        await writeTrack(const []);
+        final recorder2 = ExplorationRecorder(
+          engineProvider: () async => engine,
+          edgesStore: edgesStore,
+          journal: journal,
+          trackFile: trackFile,
+          newId: () => 'evt2-${idCounter++}',
+          clock: () => day2,
+        );
+        await recorder2.process(const FinishedTrip(km: 1.0));
+
+        state = reduceAll(await journal.readAll());
+        expect(state.streakDays, 2);
       },
     );
   });
@@ -342,6 +408,7 @@ void main() {
         final events = await journal.readAll();
         expect(events.map((e) => e.type), [
           GameEventTypes.edgeCoveredBatch,
+          GameEventTypes.streakUpdated,
           GameEventTypes.xpEarned,
           GameEventTypes.energyChanged,
         ]);

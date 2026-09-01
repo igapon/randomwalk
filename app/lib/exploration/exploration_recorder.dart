@@ -169,18 +169,39 @@ class ExplorationRecorder {
   }
 
   /// Emits this trip's events in the Task 1 contract's required order:
-  /// `edge_covered_batch`, then `cell_revealed` (if any new cells) and a
-  /// `quartier_25` `badge_unlocked` (if crossed), then one `xp_earned` per
-  /// source (km, cells, loop — each `preMultiplied: false`), then
-  /// `loop_completed` (if applicable), then finally `energy_changed` — the
-  /// trip's XP must be appended before its energy drain so the energy
-  /// multiplier reflects what the walker had going in, not what is left
-  /// after paying for the trip.
+  /// `edge_covered_batch`, then `streak_updated` (beside it — see below),
+  /// then `cell_revealed` (if any new cells) and a `quartier_25`
+  /// `badge_unlocked` (if crossed), then one `xp_earned` per source (km,
+  /// cells, loop — each `preMultiplied: false`), then `loop_completed` (if
+  /// applicable), then finally `energy_changed` — the trip's XP must be
+  /// appended before its energy drain so the energy multiplier reflects what
+  /// the walker had going in, not what is left after paying for the trip.
+  ///
+  /// `streak_updated` was, until this fix, never emitted anywhere: the
+  /// reducer (`_reduceStreakUpdated`, `game/reducers.dart`) has always been
+  /// able to turn a bare `'YYYY-MM-DD'` calendar-day payload into
+  /// `GameState.streakDays`, but nothing in the app ever appended one, so
+  /// `streakDays` stayed 0 forever and `streak_7` was unreachable. Every
+  /// finished trip is "activity that day", so this is the natural, only
+  /// place to emit it. The reducer is reorder-invariant and idempotent per
+  /// calendar day (a set of days, not an event count), so emitting it once
+  /// per trip — even several trips the same day — is exactly right: a
+  /// second trip the same day is a no-op for the streak, and trips finishing
+  /// out of chronological order (a late-arriving retry, a clock skew) still
+  /// converge on the correct run length.
+  ///
+  /// The date is the recorder's own [_clock] (`now`, above) read as a bare
+  /// LOCAL calendar date — no `.toUtc()` conversion — via [_formatBareDate],
+  /// never as an ISO-8601 datetime string: the reducer rejects any payload
+  /// containing `'T'` or `'Z'` outright (see its own doc comment) precisely
+  /// to keep timezone/DST semantics out of what is meant to be a pure
+  /// calendar-day fact.
   Future<void> _run(FinishedTrip trip) async {
     final now = _clock();
     final shape = await _readAndClearTrack();
     final events = <GameEvent>[
       _event(GameEventTypes.edgeCoveredBatch, {'km': trip.km}, now),
+      _event(GameEventTypes.streakUpdated, {'day': _formatBareDate(now)}, now),
     ];
 
     final newCells = await _revealCorridor(shape, now, events);
@@ -350,3 +371,13 @@ class ExplorationRecorder {
   GameEvent _event(String type, Map<String, dynamic> payload, DateTime ts) =>
       GameEvent(id: _newId(), ts: ts, type: type, payload: payload);
 }
+
+/// Bare `'YYYY-MM-DD'` for [ExplorationRecorder._run]'s `streak_updated`
+/// payload — mirrors `game/reducers.dart`'s own private `_formatBareDate`
+/// exactly (that one is not exported), reading [d]'s calendar fields
+/// directly rather than converting through UTC, so a local [DateTime] yields
+/// the walker's own local calendar date.
+String _formatBareDate(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
