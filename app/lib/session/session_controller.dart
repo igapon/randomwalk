@@ -11,6 +11,10 @@ class SessionController {
   final DateTime Function() _getClock;
   final Future<bool> Function() _checkPermissions;
 
+  /// Injectable single-fix fetch, for [takeSafetyFix] (M5 Task 2d, low-power
+  /// mode) — defaults to `Geolocator.getCurrentPosition()`.
+  final Future<Position> Function() _getCurrentPosition;
+
   /// Injectable so the foreground-service isolate can ask for Android-
   /// specific background behaviour (an explicit update interval) without
   /// this class importing anything platform-specific.
@@ -50,6 +54,7 @@ class SessionController {
     Stream<Position> Function(LocationSettings)? getPositionStream,
     DateTime Function()? getClock,
     Future<bool> Function()? checkPermissions,
+    Future<Position> Function()? getCurrentPosition,
     LocationSettings? locationSettings,
     this.onSessionEnded,
     this.onSessionError,
@@ -65,7 +70,9 @@ class SessionController {
            ((LocationSettings settings) =>
                Geolocator.getPositionStream(locationSettings: settings)),
        _getClock = getClock ?? DateTime.now,
-       _checkPermissions = checkPermissions ?? _defaultCheckPermissions;
+       _checkPermissions = checkPermissions ?? _defaultCheckPermissions,
+       _getCurrentPosition =
+           getCurrentPosition ?? Geolocator.getCurrentPosition;
 
   bool get isRecording => _isRecording;
 
@@ -168,6 +175,63 @@ class SessionController {
     if (!_isRecording) return;
     _locationSettings = settings;
     _subscribe();
+  }
+
+  /// Low-power mode (M5 Task 2d, owner brief): shuts off the continuous
+  /// position stream without ending the session — [_isRecording], the
+  /// [_recorder] and everything it has accumulated survive untouched, so
+  /// [resume] simply reopens the stream where this left off. A no-op while
+  /// nothing is recording, or already paused.
+  ///
+  /// Deliberately distinct from [stop]: [_finishSession] banks the distance,
+  /// nulls [_recorder] and fires [onSessionEnded] — appropriate for a trip
+  /// actually ending, wrong for a walker who is simply standing still for a
+  /// few minutes (the trip must read as still recording throughout, per the
+  /// task brief: "l'enregistrement du trajet n'est pas terminé/altéré par la
+  /// pause").
+  Future<void> pause() async {
+    if (!_isRecording || _positionStream == null) return;
+    await _positionStream?.cancel();
+    _positionStream = null;
+  }
+
+  /// Reopens the position stream [pause] shut off, at the [LocationSettings]
+  /// still in effect when it was cancelled. A no-op while nothing is
+  /// recording, or not currently paused.
+  Future<void> resume() async {
+    if (!_isRecording || _positionStream != null) return;
+    _subscribe();
+  }
+
+  /// One isolated position request while [pause] has the stream shut off —
+  /// the "fix de sécurité" the task brief has low-power mode take every few
+  /// minutes as a guard against a missed resume signal. Feeds [_recorder]
+  /// and [onFix] exactly like a fix from the continuous stream (so track
+  /// sampling, landmark detection and turn-by-turn guidance all see it),
+  /// but does not itself reopen the stream — a caller that decides this fix
+  /// shows genuine movement calls [resume] on top of it.
+  ///
+  /// Returns null (touching nothing) while not recording, or on any
+  /// failure — a single missed safety fix is never worth ending the trip
+  /// over, same rationale as every other best-effort path in this class.
+  Future<GpsSample?> takeSafetyFix() async {
+    if (!_isRecording) return null;
+    try {
+      final position = await _getCurrentPosition();
+      _lastFixAt = _getClock();
+      final sample = GpsSample(
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyM: position.accuracy,
+        speedMps: position.speed,
+        time: position.timestamp,
+      );
+      _recorder?.add(sample);
+      if (sample.accuracyM <= kMaxFixAccuracyM) onFix?.call(sample);
+      return sample;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Stops the current session and persists distance to TotalDistanceStore.

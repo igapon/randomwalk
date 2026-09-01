@@ -415,6 +415,216 @@ void main() {
       expect(controller.isRecording, false);
     });
   });
+
+  group('pause/resume (M5 Task 2d, low-power mode)', () {
+    Position at(double lat, {DateTime? timestamp}) => Position(
+      latitude: lat,
+      longitude: 6.6,
+      accuracy: 5,
+      speed: 0,
+      speedAccuracy: 0,
+      heading: 0,
+      headingAccuracy: 0,
+      timestamp: timestamp ?? DateTime.utc(2026, 8, 31),
+      altitudeAccuracy: 0,
+      altitude: 0,
+    );
+
+    test('pause stops fixes without ending the session', () async {
+      final store = FakeStore();
+      final controllers = <StreamController<Position>>[];
+      final seen = <double>[];
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        final c = StreamController<Position>();
+        controllers.add(c);
+        return c.stream;
+      }
+
+      final session = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+        onFix: (sample) => seen.add(sample.lat),
+      );
+
+      expect(await session.start(), true);
+      expect(controllers, hasLength(1));
+
+      controllers[0].add(at(1));
+      await pumpEventQueue();
+      expect(seen, [1]);
+      final distanceBeforePause = session.recorder!.distanceKm;
+
+      await session.pause();
+      expect(session.isRecording, isTrue, reason: 'the trip is not over');
+
+      // Nothing is listening to the old controller any more — this fix
+      // simply never arrives anywhere.
+      controllers[0].add(at(2));
+      await pumpEventQueue();
+      expect(seen, [1]);
+      expect(session.recorder!.distanceKm, distanceBeforePause);
+      expect(await store.totalKm(), 0);
+    });
+
+    test('resume reopens the stream where pause left it', () async {
+      final store = FakeStore();
+      final controllers = <StreamController<Position>>[];
+      final seen = <double>[];
+
+      Stream<Position> mockStream(LocationSettings settings) {
+        final c = StreamController<Position>();
+        controllers.add(c);
+        return c.stream;
+      }
+
+      final session = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+        onFix: (sample) => seen.add(sample.lat),
+      );
+
+      await session.start();
+      await session.pause();
+      await session.resume();
+      expect(controllers, hasLength(2), reason: 'resume opened a fresh stream');
+
+      controllers[1].add(at(3));
+      await pumpEventQueue();
+      expect(seen, [3]);
+    });
+
+    test('pause and resume are no-ops while nothing is recording', () async {
+      final store = FakeStore();
+      var subscribeCount = 0;
+      final session = SessionController(
+        store: store,
+        getPositionStream: (_) {
+          subscribeCount++;
+          return const Stream<Position>.empty();
+        },
+        checkPermissions: () async => true,
+      );
+
+      await session.pause();
+      await session.resume();
+      expect(session.isRecording, isFalse);
+      expect(subscribeCount, 0);
+    });
+
+    test('resume while not paused does not resubscribe', () async {
+      final store = FakeStore();
+      var subscribeCount = 0;
+      final session = SessionController(
+        store: store,
+        getPositionStream: (_) {
+          subscribeCount++;
+          return const Stream<Position>.empty();
+        },
+        checkPermissions: () async => true,
+      );
+
+      await session.start();
+      expect(subscribeCount, 1);
+      await session.resume();
+      expect(subscribeCount, 1);
+    });
+
+    test('pause while already paused is a no-op', () async {
+      final store = FakeStore();
+      final session = SessionController(
+        store: store,
+        getPositionStream: (_) => const Stream<Position>.empty(),
+        checkPermissions: () async => true,
+      );
+
+      await session.start();
+      await session.pause();
+      // A second pause must not throw cancelling an already-null stream.
+      await session.pause();
+      expect(session.isRecording, isTrue);
+    });
+  });
+
+  group('takeSafetyFix (M5 Task 2d, low-power mode)', () {
+    Position at(double lat) => Position(
+      latitude: lat,
+      longitude: 6.6,
+      accuracy: 5,
+      speed: 0,
+      speedAccuracy: 0,
+      heading: 0,
+      headingAccuracy: 0,
+      timestamp: DateTime.utc(2026, 8, 31),
+      altitudeAccuracy: 0,
+      altitude: 0,
+    );
+
+    test('feeds the recorder and onFix without reopening the stream', () async {
+      final store = FakeStore();
+      var subscribeCount = 0;
+      final seen = <GpsSample>[];
+
+      final session = SessionController(
+        store: store,
+        getPositionStream: (_) {
+          subscribeCount++;
+          return const Stream<Position>.empty();
+        },
+        checkPermissions: () async => true,
+        getCurrentPosition: () async => at(46.6),
+        onFix: seen.add,
+      );
+
+      await session.start();
+      await session.pause();
+      expect(subscribeCount, 1);
+
+      final sample = await session.takeSafetyFix();
+
+      expect(sample, isNotNull);
+      expect(sample!.lat, closeTo(46.6, 1e-9));
+      expect(seen, hasLength(1));
+      // The whole point of a safety fix: it must not itself reopen the
+      // continuous stream — that decision belongs to whoever reads its
+      // result and decides whether it shows genuine movement.
+      expect(subscribeCount, 1);
+    });
+
+    test('returns null and touches nothing while not recording', () async {
+      final store = FakeStore();
+      var calls = 0;
+      final session = SessionController(
+        store: store,
+        getPositionStream: (_) => const Stream<Position>.empty(),
+        checkPermissions: () async => true,
+        getCurrentPosition: () async {
+          calls++;
+          return at(46.6);
+        },
+      );
+
+      expect(await session.takeSafetyFix(), isNull);
+      expect(calls, 0);
+    });
+
+    test('a failing fetch is swallowed, same as every other best-effort '
+        'path here', () async {
+      final store = FakeStore();
+      final session = SessionController(
+        store: store,
+        getPositionStream: (_) => const Stream<Position>.empty(),
+        checkPermissions: () async => true,
+        getCurrentPosition: () async => throw StateError('no fix'),
+      );
+
+      await session.start();
+      expect(await session.takeSafetyFix(), isNull);
+      expect(session.isRecording, isTrue);
+    });
+  });
 }
 
 /// [SessionController.lastFixAt] is the liveness signal the foreground
