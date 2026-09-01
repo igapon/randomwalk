@@ -4,9 +4,10 @@ import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 
 /**
- * Bundles [ValhallaChannel], [DeviceChannel] and [TtsChannel] as a single `FlutterPlugin` so one
- * `flutterEngine.plugins.add(RandomwalkPlugin())` attaches `randomwalk/valhalla`,
- * `randomwalk/device` and `randomwalk/tts` to a given [io.flutter.embedding.engine.FlutterEngine].
+ * Bundles [ValhallaChannel], [DeviceChannel], [TtsChannel] and [MotionChannel] as a single
+ * `FlutterPlugin` so one `flutterEngine.plugins.add(RandomwalkPlugin())` attaches
+ * `randomwalk/valhalla`, `randomwalk/device`, `randomwalk/tts` and `randomwalk/motion` to a given
+ * [io.flutter.embedding.engine.FlutterEngine].
  *
  * This plugin is attached to two different engines in practice:
  *  - the app's UI engine, from `MainActivity.configureFlutterEngine`;
@@ -28,6 +29,7 @@ class RandomwalkPlugin : FlutterPlugin {
     private var valhallaChannel: ValhallaChannel? = null
     private var deviceChannel: DeviceChannel? = null
     private var ttsChannel: TtsChannel? = null
+    private var motionChannel: MotionChannel? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         val context = binding.applicationContext
@@ -35,6 +37,7 @@ class RandomwalkPlugin : FlutterPlugin {
         valhallaChannel = ValhallaChannel(context).also { it.register(messenger) }
         deviceChannel = DeviceChannel(context).also { it.register(messenger) }
         ttsChannel = TtsChannel(context).also { it.register(messenger) }
+        motionChannel = MotionChannel(context).also { it.register(messenger) }
         // Cheap, deliberate breadcrumb: this is the only signal (short of a debugger) that the
         // background service's engine actually got the plugin — see Task 5 device QA notes.
         Log.i(TAG, "attached to engine")
@@ -47,6 +50,8 @@ class RandomwalkPlugin : FlutterPlugin {
         deviceChannel = null
         ttsChannel?.dispose()
         ttsChannel = null
+        motionChannel?.dispose()
+        motionChannel = null
         // Symmetric with the attach breadcrumb — lets QA confirm the background service's engine
         // was actually detached from (and not just attached to) during teardown.
         Log.i(TAG, "detached from engine")
