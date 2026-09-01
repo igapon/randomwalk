@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:randomwalk/adventure/adventure_screen.dart';
 import 'package:randomwalk/coverage/coverage_repository.dart';
 import 'package:randomwalk/exploration/edges_store.dart';
 import 'package:randomwalk/exploration/exploration_recorder.dart';
 import 'package:randomwalk/game/events.dart';
+import 'package:randomwalk/game/game_state_provider.dart';
 import 'package:randomwalk/game/visit_consumer.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
@@ -90,6 +92,12 @@ Future<TripController> _buildTripController() async {
       edgesStore: edgesStore,
       journal: journal,
       trackFile: File('${dir.path}/active_track.jsonl'),
+      // Lets the Aventure tab's `gameStateProvider` (game/game_state_
+      // provider.dart) know to re-read the journal once a trip's own
+      // km/cells/loop/energy events land — see `GameJournalSignal`'s own
+      // doc comment for why this is a plain callback rather than a
+      // Riverpod read (no ProviderScope exists yet at this call site).
+      onJournalChanged: GameJournalSignal.instance.bump,
     );
     processTripExploration = recorder.process;
     // Shares `journal` with the recorder above — one `game_events.jsonl`,
@@ -99,6 +107,7 @@ Future<TripController> _buildTripController() async {
     final visitConsumer = GameVisitConsumer(
       journal: journal,
       notify: GuidanceAlertNotifier().call,
+      onJournalChanged: GameJournalSignal.instance.bump,
     );
     processGameVisits = visitConsumer.consume;
   } catch (e) {
@@ -176,7 +185,14 @@ class HomeShell extends ConsumerStatefulWidget {
     const MapScreen(),
     const SessionScreen(),
     const LeaderboardScreen(),
+    const AdventureScreen(),
   ];
+
+  /// Index of the Aventure tab within [defaultScreens]/`NavigationBar`'s
+  /// `destinations` — kept as one named constant so [_onDestinationSelected]
+  /// (the "refresh on tab focus" hook — see `gameStateProvider`'s own doc
+  /// comment) and the destinations list below can't drift apart.
+  static const kAdventureTabIndex = 3;
 
   @override
   ConsumerState<HomeShell> createState() => _HomeShellState();
@@ -234,6 +250,20 @@ class _HomeShellState extends ConsumerState<HomeShell>
     }
   }
 
+  /// Task 6's "refresh on tab focus" for `gameStateProvider`: switching
+  /// *into* the Aventure tab re-reads the journal even if no
+  /// `GameJournalSignal.bump` happened to fire while the tab was hidden
+  /// (belt-and-suspenders on top of that signal — see `game_state_provider.
+  /// dart`'s own doc comment on why the signal exists at all). Deliberately
+  /// only on entry, not on every tab switch: leaving the tab has nothing to
+  /// refresh.
+  void _onDestinationSelected(int i) {
+    setState(() => _tab = i);
+    if (i == HomeShell.kAdventureTabIndex) {
+      ref.invalidate(gameStateProvider);
+    }
+  }
+
   Future<void> _onSessionError(String? errorMessage) async {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -272,11 +302,12 @@ class _HomeShellState extends ConsumerState<HomeShell>
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        onDestinationSelected: _onDestinationSelected,
         destinations: const [
           NavigationDestination(icon: Icon(Icons.map), label: 'Carte'),
           NavigationDestination(icon: Icon(Icons.directions_walk), label: 'Session'),
           NavigationDestination(icon: Icon(Icons.emoji_events), label: 'Classement'),
+          NavigationDestination(icon: Icon(Icons.diamond), label: 'Aventure'),
         ],
       ),
     );

@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:randomwalk/adventure/adventure_screen.dart';
 import 'package:randomwalk/main.dart';
 import 'package:randomwalk/map/map_screen.dart';
 import 'package:randomwalk/theme/theme.dart';
@@ -57,15 +58,17 @@ void main() {
   });
 
   test('HomeShell.defaultScreens wiring is correct', () {
-    expect(HomeShell.defaultScreens, hasLength(3));
+    expect(HomeShell.defaultScreens, hasLength(4));
     expect(HomeShell.defaultScreens[0], isA<MapScreen>());
+    expect(HomeShell.defaultScreens[3], isA<AdventureScreen>());
   });
 
-  testWidgets('RandomWalkApp shows the three-tab shell', (tester) async {
+  testWidgets('RandomWalkApp shows the four-tab shell', (tester) async {
     await pumpShell(tester, screens: <Widget>[
       const Center(child: Text('Tab0Marker')),
       const Center(child: Text('Tab1Marker')),
       const Center(child: Text('Tab2Marker')),
+      const Center(child: Text('Tab3Marker')),
     ]);
 
     // IndexedStack keeps every screen in the tree; only the selected one is
@@ -73,10 +76,12 @@ void main() {
     expect(find.text('Tab0Marker', skipOffstage: true), findsOneWidget);
     expect(find.text('Tab1Marker', skipOffstage: true), findsNothing);
     expect(find.text('Tab2Marker', skipOffstage: true), findsNothing);
+    expect(find.text('Tab3Marker', skipOffstage: true), findsNothing);
 
     expect(find.text('Carte'), findsOneWidget);
     expect(find.text('Session'), findsOneWidget);
     expect(find.text('Classement'), findsOneWidget);
+    expect(find.text('Aventure'), findsOneWidget);
 
     await tester.tap(find.text('Session'));
     await tester.pumpAndSettle();
@@ -86,6 +91,10 @@ void main() {
     await tester.tap(find.text('Classement'));
     await tester.pumpAndSettle();
     expect(find.text('Tab2Marker', skipOffstage: true), findsOneWidget);
+
+    await tester.tap(find.text('Aventure'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tab3Marker', skipOffstage: true), findsOneWidget);
 
     await tester.tap(find.text('Carte'));
     await tester.pumpAndSettle();
@@ -97,6 +106,7 @@ void main() {
       _CountingScreen(label: 'Carte'),
       Center(child: Text('Session')),
       Center(child: Text('Classement')),
+      Center(child: Text('Aventure')),
     ]);
     expect(_CountingScreen.initCount, 1);
 
