@@ -88,12 +88,14 @@ void main() {
   ExplorationRecorder buildRecorder({
     Future<RoutingEngine?> Function()? engineProvider,
     GameJournal? journalOverride,
+    void Function()? onJournalChanged,
   }) =>
       ExplorationRecorder(
         engineProvider: engineProvider ?? (() async => engine),
         edgesStore: edgesStore,
         journal: journalOverride ?? journal,
         trackFile: trackFile,
+        onJournalChanged: onJournalChanged,
         newId: () => 'evt-${idCounter++}',
         clock: () => now,
       );
@@ -386,6 +388,35 @@ void main() {
 
       await expectLater(
           recorder.process(const FinishedTrip(km: 1.0)), completes);
+    });
+
+    test('onJournalChanged fires once after a successful process() call',
+        () async {
+      var calls = 0;
+      await writeTrack(const []);
+      await buildRecorder(onJournalChanged: () => calls++)
+          .process(const FinishedTrip(km: 1.0));
+      expect(calls, 1);
+    });
+
+    test('a throwing onJournalChanged never escapes process()', () async {
+      await writeTrack(const []);
+      await expectLater(
+          buildRecorder(onJournalChanged: () => throw StateError('boom'))
+              .process(const FinishedTrip(km: 1.0)),
+          completes);
+    });
+
+    test('a journal that throws on appendAll never fires onJournalChanged',
+        () async {
+      final throwingJournal = ThrowingJournal(Directory('${tempDir.path}/j3'));
+      var calls = 0;
+      await writeTrack(const []);
+      await buildRecorder(
+              journalOverride: throwingJournal,
+              onJournalChanged: () => calls++)
+          .process(const FinishedTrip(km: 1.0));
+      expect(calls, 0);
     });
 
     test('the track file is deleted once read, win or lose', () async {

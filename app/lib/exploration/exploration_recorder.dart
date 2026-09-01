@@ -134,6 +134,13 @@ class ExplorationRecorder {
   /// every trip.
   final File trackFile;
 
+  /// Fired once after a finished trip's events are durably appended to
+  /// [journal] — null in tests that do not care, wired to
+  /// `GameJournalSignal.instance.bump` in `main.dart` (see
+  /// `game/game_state_provider.dart`) so the Aventure tab's
+  /// `gameStateProvider` knows to re-read the journal after a trip ends.
+  final void Function()? onJournalChanged;
+
   final String Function() _newId;
   final DateTime Function() _clock;
 
@@ -142,6 +149,7 @@ class ExplorationRecorder {
     required this.edgesStore,
     required this.journal,
     required this.trackFile,
+    this.onJournalChanged,
     String Function()? newId,
     DateTime Function()? clock,
   })  : _newId = newId ?? (() => const Uuid().v4()),
@@ -196,6 +204,11 @@ class ExplorationRecorder {
         GameEventTypes.energyChanged, {'delta': kEnergyPerKm * trip.km}, now));
 
     await journal.appendAll(events);
+    try {
+      onJournalChanged?.call();
+    } catch (_) {
+      // A misbehaving listener must never take down trip finalisation.
+    }
   }
 
   /// Map-matches [shape] (best-effort — see [engineProvider]'s doc comment)

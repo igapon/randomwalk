@@ -75,6 +75,13 @@ class GameVisitConsumer {
   /// `main.dart` in production.
   final Future<void> Function(String text)? notify;
 
+  /// Fired once after each visit's events are durably appended to
+  /// [journal] — null in tests that do not care, wired to
+  /// `GameJournalSignal.instance.bump` in `main.dart` (see
+  /// `game/game_state_provider.dart`) so the Aventure tab's
+  /// `gameStateProvider` knows to re-read the journal.
+  final void Function()? onJournalChanged;
+
   final String Function() _newId;
 
   /// `(poiId, ts)` pairs already processed, oldest-first — see the class
@@ -87,6 +94,7 @@ class GameVisitConsumer {
   GameVisitConsumer({
     required this.journal,
     this.notify,
+    this.onJournalChanged,
     String Function()? newId,
   }) : _newId = newId ?? (() => const Uuid().v4());
 
@@ -179,6 +187,11 @@ class GameVisitConsumer {
     }
 
     await journal.appendAll(toAppend);
+    try {
+      onJournalChanged?.call();
+    } catch (_) {
+      // A misbehaving listener must never take down visit processing.
+    }
 
     var after = before;
     for (final event in toAppend) {

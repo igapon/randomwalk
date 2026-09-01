@@ -455,5 +455,29 @@ void main() {
       final state = reduceAll(await journal.readAll());
       expect(state.visitedPoiIds, contains('node/other'));
     });
+
+    test('onJournalChanged fires once per processed visit', () async {
+      var calls = 0;
+      final consumer = GameVisitConsumer(
+        journal: journal,
+        onJournalChanged: () => calls++,
+        newId: () => 'evt-${idCounter++}',
+      );
+      await consumer.consume(
+          [coins(poiId: 'node/a', ts: t0), coins(poiId: 'node/b', ts: t0)]);
+      expect(calls, 2);
+    });
+
+    test('a throwing onJournalChanged never stops the journal write',
+        () async {
+      final consumer = GameVisitConsumer(
+        journal: journal,
+        onJournalChanged: () => throw StateError('boom'),
+        newId: () => 'evt-${idCounter++}',
+      );
+      await expectLater(consumer.consume([coins()]), completes);
+      final state = reduceAll(await journal.readAll());
+      expect(state.coins, 100);
+    });
   });
 }
