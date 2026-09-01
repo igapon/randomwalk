@@ -39,6 +39,16 @@ class FakeSyncBackend implements SyncBackend {
 
   List<GameEvent> get serverEvents => List.unmodifiable(_serverEvents);
 
+  /// Queue of successive [currentUser] answers — each call pops the next
+  /// entry, and the last entry repeats once the queue is drained. Lets a
+  /// test simulate the cold-start "transiently null, then resolved" race
+  /// `sync/auto_sync.dart`'s `restoreAccountAndAutoSync` tolerates (see
+  /// `task-3-report.md` concern #2), by queuing `[null, someUser]`.
+  /// Defaults to always answering `null` (nobody signed in).
+  List<AuthUser?> currentUserAnswers = const [null];
+  int _currentUserCallIndex = 0;
+  int currentUserCallCount = 0;
+
   /// Seeds server-side events directly, bypassing [pushEvents] — stands in
   /// for "another device already pushed these before this test's engine
   /// ever ran".
@@ -80,7 +90,12 @@ class FakeSyncBackend implements SyncBackend {
   }
 
   @override
-  Future<AuthUser?> currentUser() async => null;
+  Future<AuthUser?> currentUser() async {
+    final i = _currentUserCallIndex;
+    currentUserCallCount++;
+    if (i < currentUserAnswers.length - 1) _currentUserCallIndex++;
+    return currentUserAnswers[i];
+  }
 
   @override
   Future<void> signInWithOtp(String email) async {}

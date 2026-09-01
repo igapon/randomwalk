@@ -1,7 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../game/game_state_provider.dart';
 import 'account_state.dart';
 import 'backend.dart';
 import 'config.dart';
+import 'sync_engine.dart';
+import 'sync_state_store.dart';
 import 'supabase_backend.dart';
 
 /// The app's single [SyncBackend] instance.
@@ -33,3 +36,62 @@ final accountStateProvider = StateProvider<AccountState>((ref) {
       ? const AccountState.unconfigured()
       : const AccountState.signedOut();
 });
+
+/// Persists [SyncEngine]'s push/pull checkpoint (`sync/sync_state_store.
+/// dart`). One instance for the app's lifetime — `PrefsSyncStateStore`
+/// itself is cheap (each call goes through `SharedPreferences.getInstance()`,
+/// already a memoized singleton).
+final syncStateStoreProvider = Provider<SyncStateStore>(
+  (ref) => PrefsSyncStateStore(),
+);
+
+/// The app's single [SyncEngine], built from the same [gameJournalProvider]
+/// `gameStateProvider` reads (`game/game_state_provider.dart`) so a merge
+/// appends to the exact journal file the rest of the app replays, and wired
+/// to bump [GameJournalSignal] on recompute so `gameStateProvider`
+/// re-replays after a sync brings in new remote events.
+///
+/// Constructing this provider does no I/O by itself (no different from
+/// constructing any of its three dependencies) — the M5 "unconfigured
+/// stays bit-identical to M4" constraint is instead upheld by every call
+/// site gating on `accountStateProvider.phase == AccountPhase.signedIn`
+/// *before* ever reading this provider (see `sync/auto_sync.dart`), since
+/// that phase is unreachable when [syncBackendProvider] yields
+/// [UnconfiguredBackend].
+final syncEngineProvider = FutureProvider<SyncEngine>((ref) async {
+  final journal = await ref.watch(gameJournalProvider.future);
+  final backend = ref.watch(syncBackendProvider);
+  final stateStore = ref.watch(syncStateStoreProvider);
+  return SyncEngine(
+    journal: journal,
+    backend: backend,
+    stateStore: stateStore,
+    onRecompute: GameJournalSignal.instance.bump,
+  );
+});
+
+/// The outcome of the most recent [SyncEngine.sync] call this process has
+/// run (launch auto-sync, post-trip auto-sync, or the account screen's
+/// manual button — see `sync/auto_sync.dart`'s `runAutoSync`, the single
+/// entry point all three go through). `null` until the first sync attempt.
+///
+/// Deliberately in-memory only, not persisted: it exists purely to answer
+/// "how did the last sync go" for as long as this process runs, which is
+/// exactly the account screen's "dernier résultat de synchronisation" —
+/// nothing reads this across a restart.
+final lastSyncResultProvider = StateProvider<SyncResult?>((ref) => null);
+
+/// One [SyncEngine.sync] outcome, success or failure, with a French error
+/// message ready to show on the account screen (`runAutoSync` is the only
+/// place that constructs one, mapping the raw exception once so every
+/// trigger — launch, post-trip, manual — shows identical copy).
+class SyncResult {
+  final DateTime at;
+  final SyncReport? report;
+  final String? errorMessage;
+
+  const SyncResult.success(this.report, this.at) : errorMessage = null;
+  const SyncResult.failure(this.errorMessage, this.at) : report = null;
+
+  bool get isSuccess => errorMessage == null;
+}
