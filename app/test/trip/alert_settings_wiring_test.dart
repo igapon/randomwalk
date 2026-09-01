@@ -25,9 +25,10 @@ void main() {
       totalStore: FakeTotalDistanceStore(),
       finalisedTrips: MemoryFinalisedTripMemory(),
       ensurePermissions: () async => const TripPermissions(
-          outcome: TripPermissionOutcome.ready,
-          mode: TrackingMode.background,
-          stepsAvailable: true),
+        outcome: TripPermissionOutcome.ready,
+        mode: TrackingMode.background,
+        stepsAvailable: true,
+      ),
       createStepCounter: (seed) =>
           SessionStepCounter(FakeStepSensor(), seed: seed),
       persistProfile: (_) async {},
@@ -46,12 +47,13 @@ void main() {
     // The haptics value set earlier must not be clobbered by a call that
     // only meant to change tts.
     expect(await store.hapticsEnabled(), isFalse);
-    expect(tracker.alertSettingsUpdates.single,
-        (ttsEnabled: false, hapticsEnabled: false));
+    expect(tracker.alertSettingsUpdates.single, (
+      ttsEnabled: false,
+      hapticsEnabled: false,
+    ));
   });
 
-  test('setHapticsEnabled persists and forwards both current values',
-      () async {
+  test('setHapticsEnabled persists and forwards both current values', () async {
     await trip.setTtsEnabled(false);
     tracker.alertSettingsUpdates.clear();
 
@@ -60,7 +62,9 @@ void main() {
     final store = AlertSettingsStore();
     expect(await store.hapticsEnabled(), isFalse);
     expect(await store.ttsEnabled(), isFalse);
-    expect(tracker.alertSettingsUpdates.single,
-        (ttsEnabled: false, hapticsEnabled: false));
+    expect(tracker.alertSettingsUpdates.single, (
+      ttsEnabled: false,
+      hapticsEnabled: false,
+    ));
   });
 }

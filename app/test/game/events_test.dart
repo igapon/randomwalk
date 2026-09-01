@@ -8,8 +8,12 @@ void main() {
     DateTime? ts,
     String type = GameEventTypes.coinsEarned,
     Map<String, dynamic> payload = const {'amount': 10},
-  }) =>
-      GameEvent(id: id, ts: ts ?? DateTime.utc(2026, 1, 1, 12), type: type, payload: payload);
+  }) => GameEvent(
+    id: id,
+    ts: ts ?? DateTime.utc(2026, 1, 1, 12),
+    type: type,
+    payload: payload,
+  );
 
   group('GameEvent JSON round-trip', () {
     test('toJson/fromJson preserves id, ts, type, payload', () {
@@ -79,33 +83,40 @@ void main() {
       expect(await journal.readAll(), hasLength(1));
     });
 
-    test('an empty file (created but never written to) reads back as []',
-        () async {
-      final dir = await Directory.systemTemp.createTemp('journal');
-      await File('${dir.path}/game_events.jsonl').create(recursive: true);
-      final journal = GameJournal(dir);
-      expect(await journal.readAll(), isEmpty);
-    });
+    test(
+      'an empty file (created but never written to) reads back as []',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('journal');
+        await File('${dir.path}/game_events.jsonl').create(recursive: true);
+        final journal = GameJournal(dir);
+        expect(await journal.readAll(), isEmpty);
+      },
+    );
 
-    test('skips corrupt lines, counts them, and still returns the good ones',
-        () async {
-      final dir = await Directory.systemTemp.createTemp('journal');
-      final journal = GameJournal(dir);
-      await journal.append(event(id: 'good-1'));
-      // Simulate a crash mid-write: append a truncated JSON line directly.
-      final file = File('${dir.path}/game_events.jsonl');
-      await file.writeAsString('{"id": "trunc", "ty\n', mode: FileMode.append);
-      // A line that IS valid JSON but not a valid event (missing required
-      // fields) must also be tolerated, not thrown from fromJson.
-      await file.writeAsString('{"not":"an event"}\n', mode: FileMode.append);
-      // A stray blank line must not count as corrupt.
-      await file.writeAsString('\n', mode: FileMode.append);
-      await journal.append(event(id: 'good-2'));
+    test(
+      'skips corrupt lines, counts them, and still returns the good ones',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('journal');
+        final journal = GameJournal(dir);
+        await journal.append(event(id: 'good-1'));
+        // Simulate a crash mid-write: append a truncated JSON line directly.
+        final file = File('${dir.path}/game_events.jsonl');
+        await file.writeAsString(
+          '{"id": "trunc", "ty\n',
+          mode: FileMode.append,
+        );
+        // A line that IS valid JSON but not a valid event (missing required
+        // fields) must also be tolerated, not thrown from fromJson.
+        await file.writeAsString('{"not":"an event"}\n', mode: FileMode.append);
+        // A stray blank line must not count as corrupt.
+        await file.writeAsString('\n', mode: FileMode.append);
+        await journal.append(event(id: 'good-2'));
 
-      final events = await journal.readAll();
-      expect(events.map((e) => e.id).toList(), ['good-1', 'good-2']);
-      expect(journal.skippedLines, 2);
-    });
+        final events = await journal.readAll();
+        expect(events.map((e) => e.id).toList(), ['good-1', 'good-2']);
+        expect(journal.skippedLines, 2);
+      },
+    );
 
     test('skippedLines reflects only the most recent readAll call', () async {
       final dir = await Directory.systemTemp.createTemp('journal');
@@ -117,7 +128,8 @@ void main() {
 
       // Overwrite with a genuinely clean file and confirm the counter resets.
       await file.writeAsString(
-          '{"id":"clean","ts":"2026-01-01T00:00:00.000Z","type":"coins_earned","payload":{}}\n');
+        '{"id":"clean","ts":"2026-01-01T00:00:00.000Z","type":"coins_earned","payload":{}}\n',
+      );
       await journal.readAll();
       expect(journal.skippedLines, 0);
     });
@@ -158,13 +170,16 @@ void main() {
       expect(events.map((e) => e.id).toList(), ['a', 'b', 'c']);
     });
 
-    test('an empty list is a no-op (does not create the journal dir)', () async {
-      final root = await Directory.systemTemp.createTemp('journal');
-      final nested = Directory('${root.path}/nested');
-      final journal = GameJournal(nested);
-      await journal.appendAll(const []);
-      expect(await nested.exists(), isFalse);
-    });
+    test(
+      'an empty list is a no-op (does not create the journal dir)',
+      () async {
+        final root = await Directory.systemTemp.createTemp('journal');
+        final nested = Directory('${root.path}/nested');
+        final journal = GameJournal(nested);
+        await journal.appendAll(const []);
+        expect(await nested.exists(), isFalse);
+      },
+    );
 
     test('appendAll followed by append keeps a single coherent file', () async {
       final dir = await Directory.systemTemp.createTemp('journal');

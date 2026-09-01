@@ -39,13 +39,15 @@ bool isAdventureEmpty(GameState state) =>
     state.cellsRevealed == 0 &&
     state.landmarksVisited == 0;
 
-Map<String, dynamic> _emptyFeatureCollection() =>
-    const {'type': 'FeatureCollection', 'features': <dynamic>[]};
+Map<String, dynamic> _emptyFeatureCollection() => const {
+  'type': 'FeatureCollection',
+  'features': <dynamic>[],
+};
 
 Set<CellId> _parseRevealedCells(GameState state) => {
-      for (final key in state.revealedCellKeys)
-        if (CellId.parseKey(key) case final parsed?) parsed,
-    };
+  for (final key in state.revealedCellKeys)
+    if (CellId.parseKey(key) case final parsed?) parsed,
+};
 
 /// The 4th tab: a dedicated fog-of-war map (revealed corridor/landmark
 /// discs, unrevealed ground drawn as a 60%-opacity ink overlay), the
@@ -90,7 +92,9 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     try {
       await _registerIcons();
       await _controller?.addGeoJsonSource(
-          _kFogSourceId, _emptyFeatureCollection());
+        _kFogSourceId,
+        _emptyFeatureCollection(),
+      );
       await _controller?.addFillLayer(
         _kFogSourceId,
         _kFogLayerId,
@@ -121,7 +125,9 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
           filled: visited,
         );
         await _controller?.addImage(
-            poiIconId(entry.key, visited: visited), bytes);
+          poiIconId(entry.key, visited: visited),
+          bytes,
+        );
       }
     }
     _iconsRegistered = true;
@@ -135,7 +141,9 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     final state = ref.read(gameStateProvider).valueOrNull;
     final store = ref.read(poisStoreProvider).valueOrNull;
     if (state != null) unawaited(_refreshFog(state));
-    if (state != null && store != null) unawaited(_refreshLandmarks(store, state));
+    if (state != null && store != null) {
+      unawaited(_refreshLandmarks(store, state));
+    }
   }
 
   Future<void> _refreshFog(GameState state) async {
@@ -171,7 +179,9 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     );
     try {
       await controller.setGeoJsonSource(
-          _kFogSourceId, jsonDecode(geojson) as Map<String, dynamic>);
+        _kFogSourceId,
+        jsonDecode(geojson) as Map<String, dynamic>,
+      );
     } catch (_) {
       // Best-effort — a failed redraw just leaves the previous fog on
       // screen one cycle longer.
@@ -198,9 +208,14 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     // Generous radius covering the whole viewport (center-to-corner) plus a
     // margin, so `nearestPois`'s own cap — not this radius — is what
     // actually bounds how many symbols get drawn.
-    final radiusM = metersBetween(centerLat, centerLon,
-            bounds.northeast.latitude, bounds.northeast.longitude) *
-        1.2 +
+    final radiusM =
+        metersBetween(
+              centerLat,
+              centerLon,
+              bounds.northeast.latitude,
+              bounds.northeast.longitude,
+            ) *
+            1.2 +
         200;
     final nearby = store.near(centerLat, centerLon, radiusM);
     final capped = nearestPois(nearby, centerLat, centerLon);
@@ -266,8 +281,9 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     final gameStateAsync = ref.watch(gameStateProvider);
     final state = gameStateAsync.valueOrNull ?? const GameState();
     final brightness = Theme.of(context).brightness;
-    final styleUrl =
-        brightness == Brightness.dark ? kMapStyleUrlDark : kMapStyleUrlLight;
+    final styleUrl = brightness == Brightness.dark
+        ? kMapStyleUrlDark
+        : kMapStyleUrlLight;
     final empty = isAdventureEmpty(state);
 
     return Scaffold(
@@ -276,8 +292,10 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
           MapLibreMap(
             key: ValueKey(styleUrl),
             styleString: styleUrl,
-            initialCameraPosition:
-                const CameraPosition(target: kDefaultCameraCenter, zoom: 14),
+            initialCameraPosition: const CameraPosition(
+              target: kDefaultCameraCenter,
+              zoom: 14,
+            ),
             trackCameraPosition: true,
             attributionButtonPosition: AttributionButtonPosition.bottomLeft,
             onMapCreated: _onMapCreated,
@@ -345,11 +363,17 @@ class AdventureHud extends StatelessWidget {
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.sm,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.paid_outlined, size: 18, color: theme.colorScheme.onSurface),
+              Icon(
+                Icons.paid_outlined,
+                size: 18,
+                color: theme.colorScheme.onSurface,
+              ),
               const SizedBox(width: 4),
               Text(formatWholeNumber(coins), style: theme.textTheme.labelLarge),
               const SizedBox(width: AppSpacing.md),
@@ -404,12 +428,17 @@ class AdventureEmptyBanner extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadii.stadium),
       child: Padding(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.explore_outlined,
-                size: 18, color: theme.colorScheme.onSurface),
+            Icon(
+              Icons.explore_outlined,
+              size: 18,
+              color: theme.colorScheme.onSurface,
+            ),
             const SizedBox(width: AppSpacing.sm),
             Text('Explorez en marchant !', style: theme.textTheme.bodyMedium),
           ],
@@ -465,13 +494,17 @@ class BadgesSheet extends StatelessWidget {
             const SizedBox(height: AppSpacing.md),
             _StatRow(label: 'Série de jours', value: '$streakDays j'),
             _StatRow(
-                label: 'Distance totale',
-                value: '${totalKm.toStringAsFixed(1)} km'),
+              label: 'Distance totale',
+              value: '${totalKm.toStringAsFixed(1)} km',
+            ),
             _StatRow(
-                label: 'Cellules révélées',
-                value: formatWholeNumber(cellsRevealed)),
+              label: 'Cellules révélées',
+              value: formatWholeNumber(cellsRevealed),
+            ),
             _StatRow(
-                label: 'Quartier actuel', value: formatPercent(quartierPercent)),
+              label: 'Quartier actuel',
+              value: formatPercent(quartierPercent),
+            ),
           ],
         ),
       ),
@@ -488,7 +521,10 @@ class _BadgeChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Chip(
-      avatar: Icon(unlocked ? Icons.emoji_events : Icons.lock_outline, size: 16),
+      avatar: Icon(
+        unlocked ? Icons.emoji_events : Icons.lock_outline,
+        size: 16,
+      ),
       label: Text(label),
       backgroundColor: unlocked
           ? theme.colorScheme.primaryContainer

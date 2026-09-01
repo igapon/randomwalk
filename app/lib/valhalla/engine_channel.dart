@@ -30,7 +30,10 @@ const _kLoggedModules = ['mjolnir', 'loki', 'thor', 'odin', 'meili'];
 /// inlined into [ChannelRoutingEngine.init]) specifically so it is testable
 /// without needing to fake `kReleaseMode` itself, which is a compile-time
 /// constant this process cannot flip at test time.
-void quietenLoggingForRelease(Map<String, dynamic> config, {required bool release}) {
+void quietenLoggingForRelease(
+  Map<String, dynamic> config, {
+  required bool release,
+}) {
   if (!release) return;
   for (final module in _kLoggedModules) {
     final section = config[module] as Map<String, dynamic>?;
@@ -59,7 +62,9 @@ class ChannelRoutingEngine implements RoutingEngine {
     // one engine's.
     quietenLoggingForRelease(config, release: kReleaseMode);
     try {
-      await _channel.invokeMethod<String>('init', {'configJson': jsonEncode(config)});
+      await _channel.invokeMethod<String>('init', {
+        'configJson': jsonEncode(config),
+      });
     } on PlatformException catch (e) {
       throw RoutingException(e.message ?? 'init failed');
     } on MissingPluginException {
@@ -73,13 +78,15 @@ class ChannelRoutingEngine implements RoutingEngine {
   @override
   Future<RouteResult> route(RouteRequest request) async {
     try {
-      final resp = await _channel
-          .invokeMethod<String>('route', {'request': request.toValhallaJson()});
+      final resp = await _channel.invokeMethod<String>('route', {
+        'request': request.toValhallaJson(),
+      });
       if (resp == null) {
         throw RoutingException('empty engine reply');
       }
       return RouteResult.fromValhallaJson(
-          jsonDecode(resp) as Map<String, dynamic>);
+        jsonDecode(resp) as Map<String, dynamic>,
+      );
     } on PlatformException catch (e) {
       throw RoutingException(e.message ?? 'route failed');
     } on MissingPluginException {
@@ -90,13 +97,15 @@ class ChannelRoutingEngine implements RoutingEngine {
   @override
   Future<RouteResult> routeMulti(MultiPointRouteRequest request) async {
     try {
-      final resp = await _channel
-          .invokeMethod<String>('route', {'request': request.toValhallaJson()});
+      final resp = await _channel.invokeMethod<String>('route', {
+        'request': request.toValhallaJson(),
+      });
       if (resp == null) {
         throw RoutingException('empty engine reply');
       }
       return RouteResult.fromValhallaJson(
-          jsonDecode(resp) as Map<String, dynamic>);
+        jsonDecode(resp) as Map<String, dynamic>,
+      );
     } on PlatformException catch (e) {
       throw RoutingException(e.message ?? 'route failed');
     } on MissingPluginException {
@@ -107,8 +116,9 @@ class ChannelRoutingEngine implements RoutingEngine {
   @override
   Future<String> trace(String requestJson) async {
     try {
-      final resp = await _channel
-          .invokeMethod<String>('trace', {'request': requestJson});
+      final resp = await _channel.invokeMethod<String>('trace', {
+        'request': requestJson,
+      });
       if (resp == null) {
         throw RoutingException('empty engine reply');
       }

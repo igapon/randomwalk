@@ -146,112 +146,125 @@ void main() {
     expect(distance, 0);
   });
 
-  test('stream error persists distance, resets state, invokes callbacks', () async {
-    final store = FakeStore();
-    String? errorReceived;
-    double? totalKmReceived;
-    bool onErrorCalled = false;
-    bool onEndedCalled = false;
+  test(
+    'stream error persists distance, resets state, invokes callbacks',
+    () async {
+      final store = FakeStore();
+      String? errorReceived;
+      double? totalKmReceived;
+      bool onErrorCalled = false;
+      bool onEndedCalled = false;
 
-    // Create a controller for the mock stream so we can manually emit and error.
-    final streamController = StreamController<Position>();
+      // Create a controller for the mock stream so we can manually emit and error.
+      final streamController = StreamController<Position>();
 
-    Future<bool> mockPermissions() async => true;
+      Future<bool> mockPermissions() async => true;
 
-    final controller = SessionController(
-      store: store,
-      getPositionStream: (_) => streamController.stream,
-      checkPermissions: mockPermissions,
-      onSessionError: (msg) async {
-        errorReceived = msg;
-        onErrorCalled = true;
-      },
-      onSessionEnded: (totalKm) async {
-        totalKmReceived = totalKm;
-        onEndedCalled = true;
-      },
-    );
+      final controller = SessionController(
+        store: store,
+        getPositionStream: (_) => streamController.stream,
+        checkPermissions: mockPermissions,
+        onSessionError: (msg) async {
+          errorReceived = msg;
+          onErrorCalled = true;
+        },
+        onSessionEnded: (totalKm) async {
+          totalKmReceived = totalKm;
+          onEndedCalled = true;
+        },
+      );
 
-    expect(await controller.start(), true);
+      expect(await controller.start(), true);
 
-    // Emit positions manually.
-    final now = DateTime.now();
-    streamController.add(Position(
-      latitude: 46.5,
-      longitude: 6.6,
-      accuracy: 5,
-      speed: 0,
-      speedAccuracy: 0,
-      heading: 0,
-      headingAccuracy: 0,
-      timestamp: now,
-      altitudeAccuracy: 0,
-      altitude: 0,
-    ));
-    streamController.add(Position(
-      latitude: 46.501,
-      longitude: 6.6,
-      accuracy: 5,
-      speed: 0,
-      speedAccuracy: 0,
-      heading: 0,
-      headingAccuracy: 0,
-      timestamp: now.add(const Duration(seconds: 1)),
-      altitudeAccuracy: 0,
-      altitude: 0,
-    ));
+      // Emit positions manually.
+      final now = DateTime.now();
+      streamController.add(
+        Position(
+          latitude: 46.5,
+          longitude: 6.6,
+          accuracy: 5,
+          speed: 0,
+          speedAccuracy: 0,
+          heading: 0,
+          headingAccuracy: 0,
+          timestamp: now,
+          altitudeAccuracy: 0,
+          altitude: 0,
+        ),
+      );
+      streamController.add(
+        Position(
+          latitude: 46.501,
+          longitude: 6.6,
+          accuracy: 5,
+          speed: 0,
+          speedAccuracy: 0,
+          heading: 0,
+          headingAccuracy: 0,
+          timestamp: now.add(const Duration(seconds: 1)),
+          altitudeAccuracy: 0,
+          altitude: 0,
+        ),
+      );
 
-    // Let positions be processed.
-    await Future.delayed(const Duration(milliseconds: 50));
+      // Let positions be processed.
+      await Future.delayed(const Duration(milliseconds: 50));
 
-    // Now trigger the stream error.
-    streamController.addError(Exception('GPS stream error'));
-    await Future.delayed(const Duration(milliseconds: 100));
+      // Now trigger the stream error.
+      streamController.addError(Exception('GPS stream error'));
+      await Future.delayed(const Duration(milliseconds: 100));
 
-    // Verify stream error was handled: state reset and callbacks fired.
-    expect(controller.isRecording, false); // Session ended
-    expect(onErrorCalled, true); // Error callback fired
-    expect(onEndedCalled, true); // End callback fired
-    expect(errorReceived, contains('GPS stream error'));
-    // Callbacks received the total km (even if 0, due to timing).
-    expect(totalKmReceived, isNotNull);
-    expect(store._total, equals(totalKmReceived)); // Store was updated with persisted distance
-  });
+      // Verify stream error was handled: state reset and callbacks fired.
+      expect(controller.isRecording, false); // Session ended
+      expect(onErrorCalled, true); // Error callback fired
+      expect(onEndedCalled, true); // End callback fired
+      expect(errorReceived, contains('GPS stream error'));
+      // Callbacks received the total km (even if 0, due to timing).
+      expect(totalKmReceived, isNotNull);
+      expect(
+        store._total,
+        equals(totalKmReceived),
+      ); // Store was updated with persisted distance
+    },
+  );
 
-  test('restart after error creates single subscription (no duplicates)', () async {
-    final store = FakeStore();
-    int streamCreationCount = 0;
+  test(
+    'restart after error creates single subscription (no duplicates)',
+    () async {
+      final store = FakeStore();
+      int streamCreationCount = 0;
 
-    // Mock stream that tracks creation count.
-    Stream<Position> mockStream(LocationSettings settings) {
-      streamCreationCount++;
-      // Return stream that immediately errors.
-      return Stream.error(Exception('GPS error'));
-    }
+      // Mock stream that tracks creation count.
+      Stream<Position> mockStream(LocationSettings settings) {
+        streamCreationCount++;
+        // Return stream that immediately errors.
+        return Stream.error(Exception('GPS error'));
+      }
 
-    Future<bool> mockPermissions() async => true;
+      Future<bool> mockPermissions() async => true;
 
-    final controller = SessionController(
-      store: store,
-      getPositionStream: mockStream,
-      checkPermissions: mockPermissions,
-    );
+      final controller = SessionController(
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: mockPermissions,
+      );
 
-    // First session: start and let it error.
-    expect(await controller.start(), true);
-    expect(streamCreationCount, 1);
-    await Future.delayed(const Duration(milliseconds: 50));
-    expect(controller.isRecording, false);
+      // First session: start and let it error.
+      expect(await controller.start(), true);
+      expect(streamCreationCount, 1);
+      await Future.delayed(const Duration(milliseconds: 50));
+      expect(controller.isRecording, false);
 
-    // Second session: start again.
-    expect(await controller.start(), true);
-    expect(streamCreationCount, 2); // Only one new subscription created
-    await Future.delayed(const Duration(milliseconds: 50));
-    expect(controller.isRecording, false);
+      // Second session: start again.
+      expect(await controller.start(), true);
+      expect(streamCreationCount, 2); // Only one new subscription created
+      await Future.delayed(const Duration(milliseconds: 50));
+      expect(controller.isRecording, false);
 
-    // No duplicate subscriptions were created.
-    expect(streamCreationCount, 2);
-  });
+      // No duplicate subscriptions were created.
+      expect(streamCreationCount, 2);
+    },
+  );
 
   group('updateLocationSettings', () {
     test('resubscribes with the new settings while recording', () async {
@@ -274,60 +287,64 @@ void main() {
       expect(requestedFilters, [3]);
 
       await controller.updateLocationSettings(
-          const LocationSettings(distanceFilter: 12));
+        const LocationSettings(distanceFilter: 12),
+      );
       expect(requestedFilters, [3, 12]);
     });
 
-    test('the old subscription is cancelled, not left running alongside the new one',
-        () async {
-      final store = FakeStore();
-      final first = StreamController<Position>();
-      final second = StreamController<Position>();
-      var callCount = 0;
-      final seen = <double>[];
+    test(
+      'the old subscription is cancelled, not left running alongside the new one',
+      () async {
+        final store = FakeStore();
+        final first = StreamController<Position>();
+        final second = StreamController<Position>();
+        var callCount = 0;
+        final seen = <double>[];
 
-      Stream<Position> mockStream(LocationSettings settings) {
-        callCount++;
-        return (callCount == 1 ? first : second).stream;
-      }
+        Stream<Position> mockStream(LocationSettings settings) {
+          callCount++;
+          return (callCount == 1 ? first : second).stream;
+        }
 
-      final controller = SessionController(
-        store: store,
-        getPositionStream: mockStream,
-        checkPermissions: () async => true,
-        onFix: (sample) => seen.add(sample.lat),
-      );
+        final controller = SessionController(
+          store: store,
+          getPositionStream: mockStream,
+          checkPermissions: () async => true,
+          onFix: (sample) => seen.add(sample.lat),
+        );
 
-      Position at(double lat) => Position(
-            latitude: lat,
-            longitude: 6.6,
-            accuracy: 5,
-            speed: 0,
-            speedAccuracy: 0,
-            heading: 0,
-            headingAccuracy: 0,
-            timestamp: DateTime.utc(2026),
-            altitudeAccuracy: 0,
-            altitude: 0,
-          );
+        Position at(double lat) => Position(
+          latitude: lat,
+          longitude: 6.6,
+          accuracy: 5,
+          speed: 0,
+          speedAccuracy: 0,
+          heading: 0,
+          headingAccuracy: 0,
+          timestamp: DateTime.utc(2026),
+          altitudeAccuracy: 0,
+          altitude: 0,
+        );
 
-      await controller.start();
-      await controller.updateLocationSettings(
-          const LocationSettings(distanceFilter: 12));
+        await controller.start();
+        await controller.updateLocationSettings(
+          const LocationSettings(distanceFilter: 12),
+        );
 
-      // A fix from the stale (cancelled) subscription must not still reach
-      // the recorder/onFix hook.
-      first.add(at(1));
-      await pumpEventQueue();
-      expect(seen, isEmpty);
+        // A fix from the stale (cancelled) subscription must not still reach
+        // the recorder/onFix hook.
+        first.add(at(1));
+        await pumpEventQueue();
+        expect(seen, isEmpty);
 
-      second.add(at(2));
-      await pumpEventQueue();
-      expect(seen, [2]);
+        second.add(at(2));
+        await pumpEventQueue();
+        expect(seen, [2]);
 
-      await first.close();
-      await second.close();
-    });
+        await first.close();
+        await second.close();
+      },
+    );
 
     test('does nothing while not recording', () async {
       final store = FakeStore();
@@ -339,15 +356,18 @@ void main() {
       }
 
       final controller = SessionController(
-          store: store, getPositionStream: mockStream, checkPermissions: () async => true);
+        store: store,
+        getPositionStream: mockStream,
+        checkPermissions: () async => true,
+      );
 
       await controller.updateLocationSettings(
-          const LocationSettings(distanceFilter: 12));
+        const LocationSettings(distanceFilter: 12),
+      );
       expect(callCount, 0);
     });
 
-    test(
-        'a stop() racing the awaited cancel does not reopen a stream on a '
+    test('a stop() racing the awaited cancel does not reopen a stream on a '
         'finished session', () async {
       // Fix-round finding: updateLocationSettings awaits cancelling the
       // current subscription before resubscribing. A concurrent stop() —
@@ -363,8 +383,9 @@ void main() {
         // onCancel doesn't resolve until the test releases cancelGate, so
         // both updateLocationSettings' and stop()'s cancel() calls on this
         // same subscription stay pending until then.
-        return StreamController<Position>(onCancel: () => cancelGate.future)
-            .stream;
+        return StreamController<Position>(
+          onCancel: () => cancelGate.future,
+        ).stream;
       }
 
       final controller = SessionController(
@@ -377,7 +398,8 @@ void main() {
       expect(subscribeCount, 1);
 
       final updateFuture = controller.updateLocationSettings(
-          const LocationSettings(distanceFilter: 12));
+        const LocationSettings(distanceFilter: 12),
+      );
       // stop() runs synchronously up to its own first await (which sets
       // _isRecording = false before it ever reaches cancel()), so this is
       // true immediately — updateLocationSettings is still suspended inside
@@ -402,17 +424,17 @@ void main() {
 /// completely silent.
 void _lastFixAtTests() {
   Position position({double accuracy = 5}) => Position(
-        latitude: 46.5,
-        longitude: 6.6,
-        accuracy: accuracy,
-        speed: 0,
-        speedAccuracy: 0,
-        heading: 0,
-        headingAccuracy: 0,
-        timestamp: DateTime.utc(2000),
-        altitudeAccuracy: 0,
-        altitude: 0,
-      );
+    latitude: 46.5,
+    longitude: 6.6,
+    accuracy: accuracy,
+    speed: 0,
+    speedAccuracy: 0,
+    heading: 0,
+    headingAccuracy: 0,
+    timestamp: DateTime.utc(2000),
+    altitudeAccuracy: 0,
+    altitude: 0,
+  );
 
   group('lastFixAt', () {
     late StreamController<Position> positions;
@@ -437,8 +459,7 @@ void _lastFixAtTests() {
       expect(controller.lastFixAt, isNull);
     });
 
-    test('advances with the controller clock, not the fix timestamp',
-        () async {
+    test('advances with the controller clock, not the fix timestamp', () async {
       await controller.start();
       positions.add(position());
       await pumpEventQueue();
@@ -506,16 +527,18 @@ void _lastFixAtTests() {
       expect(seen.single.time, DateTime.utc(2000));
     });
 
-    test('a fix too vague to measure with is too vague to navigate on',
-        () async {
-      // The alternative is announcing a turn from a position the distance
-      // maths has just refused to believe.
-      await controller.start();
-      positions.add(position(accuracy: 500));
-      await pumpEventQueue();
+    test(
+      'a fix too vague to measure with is too vague to navigate on',
+      () async {
+        // The alternative is announcing a turn from a position the distance
+        // maths has just refused to believe.
+        await controller.start();
+        positions.add(position(accuracy: 500));
+        await pumpEventQueue();
 
-      expect(seen, isEmpty);
-    });
+        expect(seen, isEmpty);
+      },
+    );
 
     test('a free trip passes no hook and nothing changes', () async {
       final free = SessionController(

@@ -14,8 +14,7 @@ class FakeTraceEngine implements RoutingEngine {
   Future<void> init(String tileDirPath) async {}
 
   @override
-  Future<RouteResult> route(RouteRequest request) =>
-      throw UnimplementedError();
+  Future<RouteResult> route(RouteRequest request) => throw UnimplementedError();
 
   @override
   Future<RouteResult> routeMulti(MultiPointRouteRequest request) =>
@@ -40,24 +39,27 @@ void main() {
   const shape = [(46.52, 6.63), (46.521, 6.631), (46.522, 6.632)];
 
   group('request shape', () {
-    test('sends pedestrian costing, map_snap and a way_id/length filter',
-        () async {
-      engine.reply = jsonEncode({'edges': <dynamic>[]});
-      await matchTrace(engine, shape);
+    test(
+      'sends pedestrian costing, map_snap and a way_id/length filter',
+      () async {
+        engine.reply = jsonEncode({'edges': <dynamic>[]});
+        await matchTrace(engine, shape);
 
-      final sent = jsonDecode(engine.lastRequestJson!) as Map<String, dynamic>;
-      expect(sent['costing'], 'pedestrian');
-      expect(sent['shape_match'], 'map_snap');
-      expect(sent['filters'], {
-        'attributes': ['edge.way_id', 'edge.length'],
-        'action': 'include',
-      });
-      expect(sent['shape'], [
-        {'lat': 46.52, 'lon': 6.63},
-        {'lat': 46.521, 'lon': 6.631},
-        {'lat': 46.522, 'lon': 6.632},
-      ]);
-    });
+        final sent =
+            jsonDecode(engine.lastRequestJson!) as Map<String, dynamic>;
+        expect(sent['costing'], 'pedestrian');
+        expect(sent['shape_match'], 'map_snap');
+        expect(sent['filters'], {
+          'attributes': ['edge.way_id', 'edge.length'],
+          'action': 'include',
+        });
+        expect(sent['shape'], [
+          {'lat': 46.52, 'lon': 6.63},
+          {'lat': 46.521, 'lon': 6.631},
+          {'lat': 46.522, 'lon': 6.632},
+        ]);
+      },
+    );
 
     test('a shape shorter than 2 points never reaches the engine', () async {
       final result = await matchTrace(engine, const [(46.52, 6.63)]);
@@ -119,25 +121,28 @@ void main() {
   });
 
   group('failure handling', () {
-    test('a RoutingException from the engine yields null, never throws',
-        () async {
-      engine.failure = const RoutingException('no route');
-      final result = await matchTrace(engine, shape);
-      expect(result, isNull);
-    });
+    test(
+      'a RoutingException from the engine yields null, never throws',
+      () async {
+        engine.failure = const RoutingException('no route');
+        final result = await matchTrace(engine, shape);
+        expect(result, isNull);
+      },
+    );
 
-    test('malformed JSON from the engine yields null, never throws',
-        () async {
+    test('malformed JSON from the engine yields null, never throws', () async {
       engine.reply = 'not json at all {{{';
       final result = await matchTrace(engine, shape);
       expect(result, isNull);
     });
 
-    test('a JSON array instead of an object yields null, never throws',
-        () async {
-      engine.reply = jsonEncode([1, 2, 3]);
-      final result = await matchTrace(engine, shape);
-      expect(result, isNull);
-    });
+    test(
+      'a JSON array instead of an object yields null, never throws',
+      () async {
+        engine.reply = jsonEncode([1, 2, 3]);
+        final result = await matchTrace(engine, shape);
+        expect(result, isNull);
+      },
+    );
   });
 }

@@ -66,7 +66,12 @@ void main() {
       final p2 = destinationPoint(baseLat, baseLon, 0, 300); // North 300m
       final p3 = destinationPoint(p2.$1, p2.$2, 90, 300); // East 300m
       final p4 = destinationPoint(p3.$1, p3.$2, 180, 300); // South 300m
-      final p5 = destinationPoint(p4.$1, p4.$2, 270, 300); // West 300m (back to p1)
+      final p5 = destinationPoint(
+        p4.$1,
+        p4.$2,
+        270,
+        300,
+      ); // West 300m (back to p1)
       // Now add a retrace of the first segment (300m out of ~1200m loop)
       final p6 = destinationPoint(p1.$1, p1.$2, 0, 300);
 
@@ -85,7 +90,12 @@ void main() {
       final p0 = (baseLat, baseLon);
       final p1 = destinationPoint(baseLat, baseLon, 0, 300); // North
       final p2 = destinationPoint(p1.$1, p1.$2, 90, 200); // East
-      final p3 = destinationPoint(p2.$1, p2.$2, 180, 300); // South (back near start)
+      final p3 = destinationPoint(
+        p2.$1,
+        p2.$2,
+        180,
+        300,
+      ); // South (back near start)
       final p4 = destinationPoint(p3.$1, p3.$2, 270, 400); // West (past start)
       final p5 = destinationPoint(p4.$1, p4.$2, 0, 300); // North again
       final p6 = destinationPoint(p5.$1, p5.$2, 90, 200); // East
@@ -120,23 +130,25 @@ void main() {
       expect(ratio100, lessThanOrEqualTo(1.0));
     });
 
-    test('two segments in opposite directions on same cell pair → counted as repeated',
-        () {
-      // Create two segments that go between the same two points but in opposite order.
-      // This tests that the unordered cell-pair key works.
-      final p1 = (baseLat, baseLon);
-      final p2 = destinationPoint(baseLat, baseLon, 45, 200);
-      final p3 = destinationPoint(baseLat, baseLon, 45, 400);
+    test(
+      'two segments in opposite directions on same cell pair → counted as repeated',
+      () {
+        // Create two segments that go between the same two points but in opposite order.
+        // This tests that the unordered cell-pair key works.
+        final p1 = (baseLat, baseLon);
+        final p2 = destinationPoint(baseLat, baseLon, 45, 200);
+        final p3 = destinationPoint(baseLat, baseLon, 45, 400);
 
-      // Segment p1->p2, then segment p2->p1 (reversed), then p1->p3.
-      final shape = [p1, p2, p1, p3];
+        // Segment p1->p2, then segment p2->p1 (reversed), then p1->p3.
+        final shape = [p1, p2, p1, p3];
 
-      final ratio = repeatedSegmentRatio(shape);
-      // The segment p1<->p2 (in both directions) should be counted as repeated once.
-      // Assuming the cell quantization is coarse enough that both directions land
-      // in the same cell pair, we expect a nonzero ratio.
-      expect(ratio, greaterThan(0.0));
-    });
+        final ratio = repeatedSegmentRatio(shape);
+        // The segment p1<->p2 (in both directions) should be counted as repeated once.
+        // Assuming the cell quantization is coarse enough that both directions land
+        // in the same cell pair, we expect a nonzero ratio.
+        expect(ratio, greaterThan(0.0));
+      },
+    );
 
     test('shape with zero-length segments', () {
       // If two consecutive points are identical, the segment length is 0.

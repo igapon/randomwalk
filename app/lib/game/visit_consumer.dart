@@ -182,8 +182,12 @@ class GameVisitConsumer {
 
     final firstVisit = !before.visitedPoiIds.contains(visit.poiId);
     if (firstVisit) {
-      toAppend.add(_event(GameEventTypes.xpEarned,
-          {'amount': kLandmarkXp, 'preMultiplied': false}, visit.ts));
+      toAppend.add(
+        _event(GameEventTypes.xpEarned, {
+          'amount': kLandmarkXp,
+          'preMultiplied': false,
+        }, visit.ts),
+      );
     }
 
     await journal.appendAll(toAppend);
@@ -208,7 +212,10 @@ class GameVisitConsumer {
   /// a quartier can cross 25% from a landmark's reveal just as well as from
   /// ground actually walked.
   void _appendReveal(
-      List<GameEvent> toAppend, PendingVisit visit, GameState before) {
+    List<GameEvent> toAppend,
+    PendingVisit visit,
+    GameState before,
+  ) {
     // Fix round 1 (Task 5 review, item 3): diff directly against the
     // string keys `before.revealedCellKeys` already stores, instead of
     // first parsing the WHOLE revealed-cell set into `CellId`s just to
@@ -217,14 +224,16 @@ class GameVisitConsumer {
     // an O(all revealed cells) parse on the common path matters as a game
     // gets played for a while.
     final disc = discCells(visit.lat, visit.lon, kLandmarkRevealRadiusM);
-    final newCells =
-        disc.where((c) => !before.revealedCellKeys.contains(c.key)).toSet();
+    final newCells = disc
+        .where((c) => !before.revealedCellKeys.contains(c.key))
+        .toSet();
     if (newCells.isEmpty) return;
 
-    toAppend.add(_event(
-        GameEventTypes.cellRevealed,
-        {'cells': [for (final c in newCells) c.key]},
-        visit.ts));
+    toAppend.add(
+      _event(GameEventTypes.cellRevealed, {
+        'cells': [for (final c in newCells) c.key],
+      }, visit.ts),
+    );
 
     if (!before.badges.contains(GameBadges.quartier25)) {
       // Only parse the full revealed-cell-key set into `CellId`s when a
@@ -235,11 +244,15 @@ class GameVisitConsumer {
           if (CellId.parseKey(key) case final parsed?) parsed,
       };
       final revealedAfter = {...revealedIds, ...newCells};
-      final crossed = newCells.any((c) =>
-          quartierCompletion(c, revealedAfter) >= kQuartierBadgeThreshold);
+      final crossed = newCells.any(
+        (c) => quartierCompletion(c, revealedAfter) >= kQuartierBadgeThreshold,
+      );
       if (crossed) {
-        toAppend.add(_event(GameEventTypes.badgeUnlocked,
-            {'badge': GameBadges.quartier25}, visit.ts));
+        toAppend.add(
+          _event(GameEventTypes.badgeUnlocked, {
+            'badge': GameBadges.quartier25,
+          }, visit.ts),
+        );
       }
     }
   }
@@ -261,8 +274,14 @@ class GameVisitConsumer {
     final notifyFn = notify;
     if (notifyFn == null) return;
     try {
-      await notifyFn(_alertText(visit,
-          coinsDelta: coinsDelta, energyDelta: energyDelta, xpDelta: xpDelta));
+      await notifyFn(
+        _alertText(
+          visit,
+          coinsDelta: coinsDelta,
+          energyDelta: energyDelta,
+          xpDelta: xpDelta,
+        ),
+      );
     } catch (_) {
       // A notification-plugin hiccup must never surface past this.
     }
@@ -284,10 +303,10 @@ class GameVisitConsumer {
   }
 
   static String _defaultLabel(String kind) => switch (kind) {
-        'coins' => 'Banque',
-        'energy' => 'Pause',
-        _ => 'Point de repère',
-      };
+    'coins' => 'Banque',
+    'energy' => 'Pause',
+    _ => 'Point de repère',
+  };
 
   GameEvent _event(String type, Map<String, dynamic> payload, DateTime ts) =>
       GameEvent(id: _newId(), ts: ts, type: type, payload: payload);
@@ -308,7 +327,7 @@ class GuidanceAlertNotifier {
   bool _ready = false;
 
   GuidanceAlertNotifier({FlutterLocalNotificationsPlugin? plugin})
-      : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
+    : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
 
   Future<void> call(String text) async {
     if (!_ready) {

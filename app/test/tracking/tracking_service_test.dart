@@ -46,16 +46,21 @@ TripSnapshot snapshot({
   double distanceKm = 2.4,
   int steps = 3100,
   int elapsedMinutes = 32,
-}) =>
-    TripSnapshot(
-      status: status,
-      distanceKm: distanceKm,
-      steps: steps,
-      startedAt: DateTime.utc(2026, 8, 30, 10, 0),
-      updatedAt: DateTime.utc(2026, 8, 30, 10, 0).add(Duration(minutes: elapsedMinutes)),
-      profile: RoutingProfile.walk,
-      routeBound: false,
-    );
+}) => TripSnapshot(
+  status: status,
+  distanceKm: distanceKm,
+  steps: steps,
+  startedAt: DateTime.utc(2026, 8, 30, 10, 0),
+  updatedAt: DateTime.utc(
+    2026,
+    8,
+    30,
+    10,
+    0,
+  ).add(Duration(minutes: elapsedMinutes)),
+  profile: RoutingProfile.walk,
+  routeBound: false,
+);
 
 void main() {
   group('notification text', () {
@@ -68,8 +73,10 @@ void main() {
 
     test('starts at zero rather than blank', () {
       expect(
-        tripNotificationText(snapshot(distanceKm: 0),
-            DateTime.utc(2026, 8, 30, 10, 0)),
+        tripNotificationText(
+          snapshot(distanceKm: 0),
+          DateTime.utc(2026, 8, 30, 10, 0),
+        ),
         '0,0 km · 0 min',
       );
     });
@@ -81,9 +88,10 @@ void main() {
     test('a fix a moment ago is not silence', () {
       expect(
         isGpsSilent(
-            now: DateTime.utc(2026, 8, 30, 10, 5),
-            lastFixAt: DateTime.utc(2026, 8, 30, 10, 4, 30),
-            recordingSince: since),
+          now: DateTime.utc(2026, 8, 30, 10, 5),
+          lastFixAt: DateTime.utc(2026, 8, 30, 10, 4, 30),
+          recordingSince: since,
+        ),
         isFalse,
       );
     });
@@ -91,9 +99,10 @@ void main() {
     test('a minute without a single fix is silence', () {
       expect(
         isGpsSilent(
-            now: DateTime.utc(2026, 8, 30, 10, 5),
-            lastFixAt: DateTime.utc(2026, 8, 30, 10, 3, 30),
-            recordingSince: since),
+          now: DateTime.utc(2026, 8, 30, 10, 5),
+          lastFixAt: DateTime.utc(2026, 8, 30, 10, 3, 30),
+          recordingSince: since,
+        ),
         isTrue,
       );
     });
@@ -104,16 +113,18 @@ void main() {
       // must not read as "fine".
       expect(
         isGpsSilent(
-            now: DateTime.utc(2026, 8, 30, 10, 0, 30),
-            lastFixAt: null,
-            recordingSince: since),
+          now: DateTime.utc(2026, 8, 30, 10, 0, 30),
+          lastFixAt: null,
+          recordingSince: since,
+        ),
         isFalse,
       );
       expect(
         isGpsSilent(
-            now: DateTime.utc(2026, 8, 30, 10, 2),
-            lastFixAt: null,
-            recordingSince: since),
+          now: DateTime.utc(2026, 8, 30, 10, 2),
+          lastFixAt: null,
+          recordingSince: since,
+        ),
         isTrue,
       );
     });
@@ -121,9 +132,10 @@ void main() {
     test('a fix arriving after a silent spell clears it', () {
       expect(
         isGpsSilent(
-            now: DateTime.utc(2026, 8, 30, 10, 10),
-            lastFixAt: DateTime.utc(2026, 8, 30, 10, 9, 59),
-            recordingSince: since),
+          now: DateTime.utc(2026, 8, 30, 10, 10),
+          lastFixAt: DateTime.utc(2026, 8, 30, 10, 9, 59),
+          recordingSince: since,
+        ),
         isFalse,
       );
     });
@@ -134,10 +146,11 @@ void main() {
   });
 
   group('gpsSilenceThresholdFor (item 3 regression)', () {
-    test('at the close 3 m filter, the threshold is the base one minute',
-        () {
-      expect(gpsSilenceThresholdFor(kNavCloseDistanceFilterM),
-          const Duration(seconds: 60));
+    test('at the close 3 m filter, the threshold is the base one minute', () {
+      expect(
+        gpsSilenceThresholdFor(kNavCloseDistanceFilterM),
+        const Duration(seconds: 60),
+      );
     });
 
     test('at the far 12 m filter, the threshold scales to keep the same '
@@ -147,9 +160,8 @@ void main() {
 
       // 0.18 km/h at both filters — the false-positive this exists for
       // (12 m / 60 s = 0.72 km/h) never appears if this ratio holds.
-      final closeFloorKmh = kNavCloseDistanceFilterM /
-          kGpsSilenceThreshold.inSeconds *
-          3.6;
+      final closeFloorKmh =
+          kNavCloseDistanceFilterM / kGpsSilenceThreshold.inSeconds * 3.6;
       final farFloorKmh = kNavFarDistanceFilterM / threshold.inSeconds * 3.6;
       expect(farFloorKmh, closeTo(closeFloorKmh, 1e-9));
     });
@@ -157,8 +169,10 @@ void main() {
     test('never returns less than the documented base threshold', () {
       // Filters below the close filter are not expected in practice, but
       // the scaling must be a floor, never a tightening.
-      expect(gpsSilenceThresholdFor(1).inSeconds,
-          greaterThanOrEqualTo(kGpsSilenceThreshold.inSeconds));
+      expect(
+        gpsSilenceThresholdFor(1).inSeconds,
+        greaterThanOrEqualTo(kGpsSilenceThreshold.inSeconds),
+      );
     });
 
     test('a walker slower than the close-filter floor still reads as '
@@ -179,15 +193,19 @@ void main() {
   });
 
   group('resumePoint', () {
-    test('a restarted service picks up the persisted progress, not the seed',
-        () {
-      // Android restarted the service mid-trip (allowAutoRestart): resuming
-      // from the seed would reset 2.4 km to 0.
-      final resumed = resumePoint(snapshot(distanceKm: 2.4),
-          snapshot(distanceKm: 0, steps: 0, elapsedMinutes: 0));
-      expect(resumed!.distanceKm, closeTo(2.4, 1e-9));
-      expect(resumed.steps, 3100);
-    });
+    test(
+      'a restarted service picks up the persisted progress, not the seed',
+      () {
+        // Android restarted the service mid-trip (allowAutoRestart): resuming
+        // from the seed would reset 2.4 km to 0.
+        final resumed = resumePoint(
+          snapshot(distanceKm: 2.4),
+          snapshot(distanceKm: 0, steps: 0, elapsedMinutes: 0),
+        );
+        expect(resumed!.distanceKm, closeTo(2.4, 1e-9));
+        expect(resumed.steps, 3100);
+      },
+    );
 
     test('a first start with nothing on disk uses the seed', () {
       final seed = snapshot(distanceKm: 0, steps: 0);
@@ -206,39 +224,41 @@ void main() {
 
   group('withoutNavigation', () {
     TripSnapshot navigating() => snapshot().copyWith(
-          nav: const NavFields(
-            instruction: 'Tournez à gauche sur la rue de Bourg',
-            distanceToManeuverM: 120,
-            remainingKm: 2.4,
-            etaSeconds: 1920,
-            offRoute: true,
-            arrived: true,
-            replanCount: 3,
-            routeShapeEnc: '_izlhA~rlgdF',
-            replanning: true,
-          ),
-        );
+      nav: const NavFields(
+        instruction: 'Tournez à gauche sur la rue de Bourg',
+        distanceToManeuverM: 120,
+        remainingKm: 2.4,
+        etaSeconds: 1920,
+        offRoute: true,
+        arrived: true,
+        replanCount: 3,
+        routeShapeEnc: '_izlhA~rlgdF',
+        replanning: true,
+      ),
+    );
 
-    test('a restarting incarnation keeps the distance and drops the guidance',
-        () {
-      // The failure this exists for: with no nav seed to read (blank or
-      // corrupt), the new incarnation builds no follower, so nothing would
-      // ever overwrite these — the UI would show the dead incarnation's
-      // instruction, and its route line, for the rest of the trip.
-      final fresh = withoutNavigation(navigating());
+    test(
+      'a restarting incarnation keeps the distance and drops the guidance',
+      () {
+        // The failure this exists for: with no nav seed to read (blank or
+        // corrupt), the new incarnation builds no follower, so nothing would
+        // ever overwrite these — the UI would show the dead incarnation's
+        // instruction, and its route line, for the rest of the trip.
+        final fresh = withoutNavigation(navigating());
 
-      expect(fresh.distanceKm, closeTo(2.4, 1e-9));
-      expect(fresh.steps, 3100);
-      expect(fresh.navInstruction, isNull);
-      expect(fresh.navDistanceToManeuverM, isNull);
-      expect(fresh.navRemainingKm, isNull);
-      expect(fresh.navEtaSeconds, isNull);
-      expect(fresh.navRouteShapeEnc, isNull);
-      expect(fresh.navOffRoute, isFalse);
-      expect(fresh.navArrived, isFalse);
-      expect(fresh.navReplanCount, 0);
-      expect(fresh.navReplanning, isFalse);
-    });
+        expect(fresh.distanceKm, closeTo(2.4, 1e-9));
+        expect(fresh.steps, 3100);
+        expect(fresh.navInstruction, isNull);
+        expect(fresh.navDistanceToManeuverM, isNull);
+        expect(fresh.navRemainingKm, isNull);
+        expect(fresh.navEtaSeconds, isNull);
+        expect(fresh.navRouteShapeEnc, isNull);
+        expect(fresh.navOffRoute, isFalse);
+        expect(fresh.navArrived, isFalse);
+        expect(fresh.navReplanCount, 0);
+        expect(fresh.navReplanning, isFalse);
+      },
+    );
 
     test('a snapshot that was never navigating comes back unchanged', () {
       final free = withoutNavigation(snapshot());
@@ -264,23 +284,31 @@ void main() {
       TripTaskHandler.speakerFactory = NativeTtsSpeaker.new;
     });
 
-    Future<void> seedPrefs({
-      required bool routeBound,
-      NavSeed? navSeed,
-    }) async {
+    Future<void> seedPrefs({required bool routeBound, NavSeed? navSeed}) async {
       final seed = TripSnapshot.starting(
         startedAt: DateTime.utc(2026, 8, 31, 9),
         profile: RoutingProfile.walk,
         routeBound: routeBound,
       );
       SharedPreferences.setMockInitialValues({
-        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
-        '$_prefsPrefix' 'randomwalk_snapshot_path':
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
             '${tempDir.path}/snapshot.json',
-        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
-        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
         if (navSeed != null)
-          '$_prefsPrefix' 'randomwalk_nav_seed': jsonEncode(navSeed.toJson()),
+          '$_prefsPrefix'
+              'randomwalk_nav_seed': jsonEncode(
+            navSeed.toJson(),
+          ),
       });
     }
 
@@ -294,16 +322,16 @@ void main() {
 
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
 
       expect(constructed, 0);
       expect(handler.debugIsRecording, isTrue);
     });
 
-    test(
-        'a hung speaker init on a route-bound trip never blocks the GPS '
-        'subscription from starting',
-        () async {
+    test('a hung speaker init on a route-bound trip never blocks the GPS '
+        'subscription from starting', () async {
       TripTaskHandler.speakerFactory = () =>
           FakeInitializableTtsSpeaker(hang: true);
       final route = fakeRoute();
@@ -353,10 +381,19 @@ void main() {
         routeBound: false,
       );
       SharedPreferences.setMockInitialValues({
-        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
-        '$_prefsPrefix' 'randomwalk_snapshot_path': snapshotPath,
-        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
-        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
       });
     }
 
@@ -364,20 +401,22 @@ void main() {
         'by an earlier, already-finalised trip', () async {
       final snapshotPath = '${tempDir.path}/snapshot.json';
       final trackPath = '${tempDir.path}/active_track.jsonl';
-      await File(trackPath).writeAsString(
-          '${jsonEncode({'lat': 1.0, 'lon': 2.0})}\n');
+      await File(
+        trackPath,
+      ).writeAsString('${jsonEncode({'lat': 1.0, 'lon': 2.0})}\n');
       await seedPrefs(snapshotPath); // no on-disk snapshot -> not a restart.
 
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
 
       expect(await File(trackPath).exists(), isFalse);
     });
 
     test('a genuine restart (an already-recording on-disk snapshot) keeps '
-        'the existing track file\'s content rather than wiping it',
-        () async {
+        'the existing track file\'s content rather than wiping it', () async {
       final snapshotPath = '${tempDir.path}/snapshot.json';
       final trackPath = '${tempDir.path}/active_track.jsonl';
       final onDiskSnapshot = TripSnapshot(
@@ -389,15 +428,18 @@ void main() {
         profile: RoutingProfile.walk,
         routeBound: false,
       );
-      await File(snapshotPath)
-          .writeAsString(jsonEncode(onDiskSnapshot.toJson()));
+      await File(
+        snapshotPath,
+      ).writeAsString(jsonEncode(onDiskSnapshot.toJson()));
       final trackLine = '${jsonEncode({'lat': 46.5, 'lon': 6.6})}\n';
       await File(trackPath).writeAsString(trackLine);
       await seedPrefs(snapshotPath);
 
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9, 10), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9, 10),
+        TaskStarter.developer,
+      );
 
       expect(await File(trackPath).readAsString(), trackLine);
     });
@@ -408,12 +450,13 @@ void main() {
       await seedPrefs(snapshotPath);
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
       expect(handler.debugIsRecording, isTrue);
     });
 
-    test(
-        'a freshly-seeded on-disk snapshot (updatedAt == startedAt) is NOT '
+    test('a freshly-seeded on-disk snapshot (updatedAt == startedAt) is NOT '
         'treated as a restart even though its status is recording — fix '
         'round 1 finding 1: isRecording alone was the whole bug', () async {
       final snapshotPath = '${tempDir.path}/snapshot.json';
@@ -429,19 +472,21 @@ void main() {
         routeBound: false,
       );
       await File(snapshotPath).writeAsString(jsonEncode(freshOnDisk.toJson()));
-      await File(trackPath)
-          .writeAsString('${jsonEncode({'lat': 1.0, 'lon': 2.0})}\n');
+      await File(
+        trackPath,
+      ).writeAsString('${jsonEncode({'lat': 1.0, 'lon': 2.0})}\n');
       await seedPrefs(snapshotPath);
 
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
 
       expect(await File(trackPath).exists(), isFalse);
     });
 
-    test(
-        'the on-disk track stays bounded at kTrackMaxPoints even after far '
+    test('the on-disk track stays bounded at kTrackMaxPoints even after far '
         'more fixes than that, kept in sync via the thinned-rewrite — fix '
         'round 1 finding 2', () async {
       final snapshotPath = '${tempDir.path}/snapshot.json';
@@ -449,20 +494,24 @@ void main() {
       await seedPrefs(snapshotPath);
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
 
       // Each step is ~33 m north — comfortably over the 25 m distance
       // filter default, so every fix is kept by TrackSampler.
       var lat = 46.5;
       for (var i = 0; i < kTrackMaxPoints + 500; i++) {
         lat += 0.0003;
-        await handler.debugOnFix(GpsSample(
-          lat: lat,
-          lon: 6.63,
-          accuracyM: 5,
-          speedMps: 1.2,
-          time: DateTime.utc(2026, 8, 31, 9, 0, 0, i),
-        ));
+        await handler.debugOnFix(
+          GpsSample(
+            lat: lat,
+            lon: 6.63,
+            accuracyM: 5,
+            speedMps: 1.2,
+            time: DateTime.utc(2026, 8, 31, 9, 0, 0, i),
+          ),
+        );
       }
 
       final lines = await File(trackPath).readAsLines();
@@ -483,8 +532,7 @@ void main() {
       expect(isFreshTripSeed(seed), isTrue);
     });
 
-    test(
-        'a snapshot whose updatedAt has moved past startedAt (a real '
+    test('a snapshot whose updatedAt has moved past startedAt (a real '
         'restart, or a resume) is not fresh', () {
       final seed = TripSnapshot(
         status: TripStatus.recording,
@@ -498,8 +546,7 @@ void main() {
       expect(isFreshTripSeed(seed), isFalse);
     });
 
-    test(
-        'a resumeInterrupted-style seed (same startedAt, freshly-stamped '
+    test('a resumeInterrupted-style seed (same startedAt, freshly-stamped '
         'updatedAt) is not fresh', () {
       final original = TripSnapshot.starting(
         startedAt: DateTime.utc(2026, 8, 31, 9),
@@ -552,40 +599,58 @@ void main() {
         routeBound: false,
       );
       SharedPreferences.setMockInitialValues({
-        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
-        '$_prefsPrefix' 'randomwalk_snapshot_path': snapshotPath,
-        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
-        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
         if (poisFilePath != null)
-          '$_prefsPrefix' 'randomwalk_pois_file_path': poisFilePath,
+          '$_prefsPrefix'
+                  'randomwalk_pois_file_path':
+              poisFilePath,
       });
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
       await handler.debugPoiStoreLoad;
       return handler;
     }
 
-    test('no poisFilePath at all: recording still works, no visits ever',
-        () async {
-      final snapshotPath = '${tempDir.path}/snapshot.json';
-      final handler =
-          await startedHandler(snapshotPath: snapshotPath, poisFilePath: null);
-      expect(handler.debugIsRecording, isTrue);
-
-      await handler.debugOnFix(GpsSample(
-        lat: churchLat,
-        lon: churchLon,
-        accuracyM: 5,
-        speedMps: 1.2,
-        time: DateTime.utc(2026, 8, 31, 9, 0, 10),
-      ));
-
-      expect(handler.debugPendingVisits, isEmpty);
-    });
-
     test(
-        'a dwell of >=5s within 25m of a landmark publishes it via '
+      'no poisFilePath at all: recording still works, no visits ever',
+      () async {
+        final snapshotPath = '${tempDir.path}/snapshot.json';
+        final handler = await startedHandler(
+          snapshotPath: snapshotPath,
+          poisFilePath: null,
+        );
+        expect(handler.debugIsRecording, isTrue);
+
+        await handler.debugOnFix(
+          GpsSample(
+            lat: churchLat,
+            lon: churchLon,
+            accuracyM: 5,
+            speedMps: 1.2,
+            time: DateTime.utc(2026, 8, 31, 9, 0, 10),
+          ),
+        );
+
+        expect(handler.debugPendingVisits, isEmpty);
+      },
+    );
+
+    test('a dwell of >=5s within 25m of a landmark publishes it via '
         'pendingVisits on the snapshot', () async {
       final snapshotPath = '${tempDir.path}/snapshot.json';
       final poisPath = await writePoisFixture([
@@ -598,21 +663,29 @@ void main() {
         },
       ]);
       final handler = await startedHandler(
-          snapshotPath: snapshotPath, poisFilePath: poisPath);
+        snapshotPath: snapshotPath,
+        poisFilePath: poisPath,
+      );
 
       final t0 = DateTime.utc(2026, 8, 31, 9, 0, 0);
-      await handler.debugOnFix(GpsSample(
+      await handler.debugOnFix(
+        GpsSample(
           lat: churchLat,
           lon: churchLon,
           accuracyM: 5,
           speedMps: 0,
-          time: t0));
-      await handler.debugOnFix(GpsSample(
+          time: t0,
+        ),
+      );
+      await handler.debugOnFix(
+        GpsSample(
           lat: churchLat,
           lon: churchLon,
           accuracyM: 5,
           speedMps: 0,
-          time: t0.add(const Duration(seconds: 5))));
+          time: t0.add(const Duration(seconds: 5)),
+        ),
+      );
 
       expect(handler.debugPendingVisits, hasLength(1));
       final visit = handler.debugPendingVisits.single;
@@ -628,7 +701,11 @@ void main() {
       // on the persisted snapshot — not just on the debug accessor above.
       handler.onRepeatEvent(t0.add(const Duration(seconds: 6)));
       TripSnapshot? persisted;
-      for (var i = 0; i < 20 && persisted?.pendingVisits.isEmpty != false; i++) {
+      for (
+        var i = 0;
+        i < 20 && persisted?.pendingVisits.isEmpty != false;
+        i++
+      ) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
         persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
       }
@@ -636,96 +713,152 @@ void main() {
       expect(persisted!.pendingVisits.single.poiId, 'node/1');
     });
 
-    test('a landmark far outside the 3km disc is never even a candidate',
-        () async {
-      final snapshotPath = '${tempDir.path}/snapshot.json';
-      final poisPath = await writePoisFixture([
-        {
-          // Comfortably beyond a 3km disc around the church.
-          'id': 'node/far',
-          'kind': 'reveal',
-          'lat': churchLat + 1.0,
-          'lon': churchLon,
-        },
-      ]);
-      final handler = await startedHandler(
-          snapshotPath: snapshotPath, poisFilePath: poisPath);
-
-      final t0 = DateTime.utc(2026, 8, 31, 9, 0, 0);
-      await handler.debugOnFix(GpsSample(
-          lat: churchLat, lon: churchLon, accuracyM: 5, speedMps: 0, time: t0));
-      await handler.debugOnFix(GpsSample(
-          lat: churchLat,
-          lon: churchLon,
-          accuracyM: 5,
-          speedMps: 0,
-          time: t0.add(const Duration(seconds: 30))));
-
-      expect(handler.debugPendingVisits, isEmpty);
-    });
-
-    test('pendingVisits is capped at kPendingVisitsMax, oldest dropped first',
-        () async {
-      final snapshotPath = '${tempDir.path}/snapshot.json';
-      // kPendingVisitsMax + 3 distinct landmarks, each far enough apart
-      // (~15m spacing north) to have its own geofence, all within the same
-      // initial 3km disc around the church.
-      final pois = [
-        for (var i = 0; i < kPendingVisitsMax + 3; i++)
+    test(
+      'a landmark far outside the 3km disc is never even a candidate',
+      () async {
+        final snapshotPath = '${tempDir.path}/snapshot.json';
+        final poisPath = await writePoisFixture([
           {
-            'id': 'node/$i',
+            // Comfortably beyond a 3km disc around the church.
+            'id': 'node/far',
             'kind': 'reveal',
-            'lat': churchLat + i * 0.0003,
+            'lat': churchLat + 1.0,
             'lon': churchLon,
           },
-      ];
-      final poisPath = await writePoisFixture(pois);
-      final handler = await startedHandler(
-          snapshotPath: snapshotPath, poisFilePath: poisPath);
+        ]);
+        final handler = await startedHandler(
+          snapshotPath: snapshotPath,
+          poisFilePath: poisPath,
+        );
 
-      var t = DateTime.utc(2026, 8, 31, 9, 0, 0);
-      for (var i = 0; i < pois.length; i++) {
-        final lat = churchLat + i * 0.0003;
+        final t0 = DateTime.utc(2026, 8, 31, 9, 0, 0);
         await handler.debugOnFix(
-            GpsSample(lat: lat, lon: churchLon, accuracyM: 5, speedMps: 0, time: t));
-        t = t.add(const Duration(seconds: 5));
+          GpsSample(
+            lat: churchLat,
+            lon: churchLon,
+            accuracyM: 5,
+            speedMps: 0,
+            time: t0,
+          ),
+        );
         await handler.debugOnFix(
-            GpsSample(lat: lat, lon: churchLon, accuracyM: 5, speedMps: 0, time: t));
-        t = t.add(const Duration(seconds: 1));
-      }
+          GpsSample(
+            lat: churchLat,
+            lon: churchLon,
+            accuracyM: 5,
+            speedMps: 0,
+            time: t0.add(const Duration(seconds: 30)),
+          ),
+        );
 
-      expect(handler.debugPendingVisits, hasLength(kPendingVisitsMax));
-      // The oldest (node/0) must have been dropped; the newest survives.
-      final ids = handler.debugPendingVisits.map((v) => v.poiId).toList();
-      expect(ids, isNot(contains('node/0')));
-      expect(ids.last, 'node/${pois.length - 1}');
-    });
-
-    test('a landmark already visited via debugOnFix is never detected twice',
-        () async {
-      final snapshotPath = '${tempDir.path}/snapshot.json';
-      final poisPath = await writePoisFixture([
-        {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
-      ]);
-      final handler = await startedHandler(
-          snapshotPath: snapshotPath, poisFilePath: poisPath);
-
-      var t = DateTime.utc(2026, 8, 31, 9, 0, 0);
-      await handler.debugOnFix(
-          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
-      t = t.add(const Duration(seconds: 5));
-      await handler.debugOnFix(
-          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
-      // Keep dwelling at the same spot for a long time afterwards.
-      t = t.add(const Duration(minutes: 5));
-      await handler.debugOnFix(
-          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
-
-      expect(handler.debugPendingVisits, hasLength(1));
-    });
+        expect(handler.debugPendingVisits, isEmpty);
+      },
+    );
 
     test(
-        'a genuine restart seeds pendingVisits from the previous '
+      'pendingVisits is capped at kPendingVisitsMax, oldest dropped first',
+      () async {
+        final snapshotPath = '${tempDir.path}/snapshot.json';
+        // kPendingVisitsMax + 3 distinct landmarks, each far enough apart
+        // (~15m spacing north) to have its own geofence, all within the same
+        // initial 3km disc around the church.
+        final pois = [
+          for (var i = 0; i < kPendingVisitsMax + 3; i++)
+            {
+              'id': 'node/$i',
+              'kind': 'reveal',
+              'lat': churchLat + i * 0.0003,
+              'lon': churchLon,
+            },
+        ];
+        final poisPath = await writePoisFixture(pois);
+        final handler = await startedHandler(
+          snapshotPath: snapshotPath,
+          poisFilePath: poisPath,
+        );
+
+        var t = DateTime.utc(2026, 8, 31, 9, 0, 0);
+        for (var i = 0; i < pois.length; i++) {
+          final lat = churchLat + i * 0.0003;
+          await handler.debugOnFix(
+            GpsSample(
+              lat: lat,
+              lon: churchLon,
+              accuracyM: 5,
+              speedMps: 0,
+              time: t,
+            ),
+          );
+          t = t.add(const Duration(seconds: 5));
+          await handler.debugOnFix(
+            GpsSample(
+              lat: lat,
+              lon: churchLon,
+              accuracyM: 5,
+              speedMps: 0,
+              time: t,
+            ),
+          );
+          t = t.add(const Duration(seconds: 1));
+        }
+
+        expect(handler.debugPendingVisits, hasLength(kPendingVisitsMax));
+        // The oldest (node/0) must have been dropped; the newest survives.
+        final ids = handler.debugPendingVisits.map((v) => v.poiId).toList();
+        expect(ids, isNot(contains('node/0')));
+        expect(ids.last, 'node/${pois.length - 1}');
+      },
+    );
+
+    test(
+      'a landmark already visited via debugOnFix is never detected twice',
+      () async {
+        final snapshotPath = '${tempDir.path}/snapshot.json';
+        final poisPath = await writePoisFixture([
+          {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
+        ]);
+        final handler = await startedHandler(
+          snapshotPath: snapshotPath,
+          poisFilePath: poisPath,
+        );
+
+        var t = DateTime.utc(2026, 8, 31, 9, 0, 0);
+        await handler.debugOnFix(
+          GpsSample(
+            lat: bankLat,
+            lon: bankLon,
+            accuracyM: 5,
+            speedMps: 0,
+            time: t,
+          ),
+        );
+        t = t.add(const Duration(seconds: 5));
+        await handler.debugOnFix(
+          GpsSample(
+            lat: bankLat,
+            lon: bankLon,
+            accuracyM: 5,
+            speedMps: 0,
+            time: t,
+          ),
+        );
+        // Keep dwelling at the same spot for a long time afterwards.
+        t = t.add(const Duration(minutes: 5));
+        await handler.debugOnFix(
+          GpsSample(
+            lat: bankLat,
+            lon: bankLon,
+            accuracyM: 5,
+            speedMps: 0,
+            time: t,
+          ),
+        );
+
+        expect(handler.debugPendingVisits, hasLength(1));
+      },
+    );
+
+    test('a genuine restart seeds pendingVisits from the previous '
         "incarnation's last persisted snapshot, rather than dropping them "
         '(fix round 1, item 4) — and the seeded poiId is not re-detected '
         'even if the walker is still dwelling there', () async {
@@ -749,7 +882,9 @@ void main() {
         routeBound: false,
         pendingVisits: [priorVisit],
       );
-      await File(snapshotPath).writeAsString(jsonEncode(onDiskSnapshot.toJson()));
+      await File(
+        snapshotPath,
+      ).writeAsString(jsonEncode(onDiskSnapshot.toJson()));
 
       final poisPath = await writePoisFixture([
         {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
@@ -760,16 +895,29 @@ void main() {
         routeBound: false,
       );
       SharedPreferences.setMockInitialValues({
-        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
-        '$_prefsPrefix' 'randomwalk_snapshot_path': snapshotPath,
-        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
-        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
-        '$_prefsPrefix' 'randomwalk_pois_file_path': poisPath,
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_pois_file_path':
+            poisPath,
       });
 
       final handler = TripTaskHandler();
       await handler.onStart(
-          DateTime.utc(2026, 8, 31, 9, 10), TaskStarter.developer);
+        DateTime.utc(2026, 8, 31, 9, 10),
+        TaskStarter.developer,
+      );
       await handler.debugPoiStoreLoad;
 
       // Seeded immediately, before any fix at all.
@@ -779,42 +927,58 @@ void main() {
       // Still dwelling at the same spot post-restart must not re-detect it.
       var t = DateTime.utc(2026, 8, 31, 9, 10, 0);
       await handler.debugOnFix(
-          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+        GpsSample(
+          lat: bankLat,
+          lon: bankLon,
+          accuracyM: 5,
+          speedMps: 0,
+          time: t,
+        ),
+      );
       t = t.add(const Duration(seconds: 5));
       await handler.debugOnFix(
-          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+        GpsSample(
+          lat: bankLat,
+          lon: bankLon,
+          accuracyM: 5,
+          speedMps: 0,
+          time: t,
+        ),
+      );
 
       expect(handler.debugPendingVisits, hasLength(1));
     });
   });
 
-  group('ForegroundServiceTripTracker.deleteTrackFile (fix round 1 finding 1)',
-      () {
-    late Directory tempDir;
+  group(
+    'ForegroundServiceTripTracker.deleteTrackFile (fix round 1 finding 1)',
+    () {
+      late Directory tempDir;
 
-    setUp(() async {
-      tempDir = await Directory.systemTemp.createTemp('rw_delete_track_test');
-    });
+      setUp(() async {
+        tempDir = await Directory.systemTemp.createTemp('rw_delete_track_test');
+      });
 
-    tearDown(() async {
-      await tempDir.delete(recursive: true);
-    });
+      tearDown(() async {
+        await tempDir.delete(recursive: true);
+      });
 
-    test('deletes the sibling active_track.jsonl file if present', () async {
-      final snapshotFile = File('${tempDir.path}/trip_snapshot.json');
-      final trackFile = File('${tempDir.path}/active_track.jsonl');
-      await trackFile.writeAsString('leftover\n');
-      final tracker = ForegroundServiceTripTracker(snapshotFile);
+      test('deletes the sibling active_track.jsonl file if present', () async {
+        final snapshotFile = File('${tempDir.path}/trip_snapshot.json');
+        final trackFile = File('${tempDir.path}/active_track.jsonl');
+        await trackFile.writeAsString('leftover\n');
+        final tracker = ForegroundServiceTripTracker(snapshotFile);
 
-      await tracker.deleteTrackFile();
+        await tracker.deleteTrackFile();
 
-      expect(await trackFile.exists(), isFalse);
-    });
+        expect(await trackFile.exists(), isFalse);
+      });
 
-    test('is a silent no-op when no track file exists', () async {
-      final snapshotFile = File('${tempDir.path}/trip_snapshot.json');
-      final tracker = ForegroundServiceTripTracker(snapshotFile);
-      await expectLater(tracker.deleteTrackFile(), completes);
-    });
-  });
+      test('is a silent no-op when no track file exists', () async {
+        final snapshotFile = File('${tempDir.path}/trip_snapshot.json');
+        final tracker = ForegroundServiceTripTracker(snapshotFile);
+        await expectLater(tracker.deleteTrackFile(), completes);
+      });
+    },
+  );
 }

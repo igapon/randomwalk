@@ -5,21 +5,25 @@ import 'package:randomwalk/trip/active_route_store.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
 RouteResult _route() => const RouteResult(
-      shape: [(46.52, 6.63), (46.53, 6.64), (46.54, 6.65)],
-      distanceKm: 2.4,
-      duration: Duration(minutes: 32),
-      maneuvers: [
-        Maneuver(instruction: 'Prenez à gauche', lengthKm: 0.4, beginShapeIndex: 0),
-        Maneuver(instruction: 'Continuez tout droit', lengthKm: 2.0, beginShapeIndex: 1),
-      ],
-    );
+  shape: [(46.52, 6.63), (46.53, 6.64), (46.54, 6.65)],
+  distanceKm: 2.4,
+  duration: Duration(minutes: 32),
+  maneuvers: [
+    Maneuver(instruction: 'Prenez à gauche', lengthKm: 0.4, beginShapeIndex: 0),
+    Maneuver(
+      instruction: 'Continuez tout droit',
+      lengthKm: 2.0,
+      beginShapeIndex: 1,
+    ),
+  ],
+);
 
 ActiveRoute _activeRoute() => ActiveRoute(
-      route: _route(),
-      destination: const (46.54, 6.65),
-      departure: const (46.52, 6.63),
-      profile: RoutingProfile.bike,
-    );
+  route: _route(),
+  destination: const (46.54, 6.65),
+  departure: const (46.52, 6.63),
+  profile: RoutingProfile.bike,
+);
 
 void main() {
   late Directory dir;
@@ -50,15 +54,19 @@ void main() {
         'passed', () {
       final route = _activeRoute();
       final cleared = route.copyWith(
-          destination: const (0, 0), clearDestination: true);
+        destination: const (0, 0),
+        clearDestination: true,
+      );
 
       expect(cleared.destination, isNull);
     });
 
     test('clearDestination and clearDeparture compose', () {
       final route = _activeRoute();
-      final cleared =
-          route.copyWith(clearDestination: true, clearDeparture: true);
+      final cleared = route.copyWith(
+        clearDestination: true,
+        clearDeparture: true,
+      );
 
       expect(cleared.destination, isNull);
       expect(cleared.departure, isNull);
@@ -82,10 +90,18 @@ void main() {
 
     test('survives a JSON round trip in both states', () {
       for (final isLoop in [true, false]) {
-        final decoded = ActiveRoute.fromJson(jsonDecode(jsonEncode(
-                ActiveRoute(route: _route(), profile: RoutingProfile.walk, isLoop: isLoop)
-                    .toJson()))
-            as Map<String, dynamic>);
+        final decoded = ActiveRoute.fromJson(
+          jsonDecode(
+                jsonEncode(
+                  ActiveRoute(
+                    route: _route(),
+                    profile: RoutingProfile.walk,
+                    isLoop: isLoop,
+                  ).toJson(),
+                ),
+              )
+              as Map<String, dynamic>,
+        );
         expect(decoded.isLoop, isLoop);
       }
     });
@@ -103,9 +119,13 @@ void main() {
       // case writes nothing rather than a `false`.
       expect(_activeRoute().toJson().containsKey('isLoop'), isFalse);
       expect(
-          ActiveRoute(route: _route(), profile: RoutingProfile.walk, isLoop: true)
-              .toJson()['isLoop'],
-          isTrue);
+        ActiveRoute(
+          route: _route(),
+          profile: RoutingProfile.walk,
+          isLoop: true,
+        ).toJson()['isLoop'],
+        isTrue,
+      );
     });
 
     test('copyWith carries it, and can set it either way', () {
@@ -119,8 +139,10 @@ void main() {
       // `isLoop` is a property of the route, not of the screen: a plan whose
       // route has been cleared must not leave a stale "this is a loop" flag
       // behind for whatever A→B route is computed into it next.
-      expect(_activeRoute().copyWith(isLoop: true).copyWith(clearRoute: true).isLoop,
-          isFalse);
+      expect(
+        _activeRoute().copyWith(isLoop: true).copyWith(clearRoute: true).isLoop,
+        isFalse,
+      );
     });
 
     test('persists through the file store', () async {
@@ -155,10 +177,13 @@ void main() {
   });
 
   test('departure is optional (live GPS departure is not pinned)', () async {
-    await store().save(ActiveRoute(
+    await store().save(
+      ActiveRoute(
         route: _route(),
         destination: const (46.54, 6.65),
-        profile: RoutingProfile.walk));
+        profile: RoutingProfile.walk,
+      ),
+    );
 
     final restored = await store().load();
     expect(restored!.departure, isNull);
@@ -189,18 +214,24 @@ void main() {
     expect(await store().load(), isNull);
   });
 
-  test('a departure picked before any destination is persisted on its own',
-      () async {
-    // The map lets the user pin a custom departure first; losing it on a tab
-    // switch is the same bug as losing the route, just smaller.
-    await store().save(const ActiveRoute(
-        departure: (46.52, 6.63), profile: RoutingProfile.walk));
+  test(
+    'a departure picked before any destination is persisted on its own',
+    () async {
+      // The map lets the user pin a custom departure first; losing it on a tab
+      // switch is the same bug as losing the route, just smaller.
+      await store().save(
+        const ActiveRoute(
+          departure: (46.52, 6.63),
+          profile: RoutingProfile.walk,
+        ),
+      );
 
-    final restored = await store().load();
-    expect(restored!.departure, const (46.52, 6.63));
-    expect(restored.route, isNull);
-    expect(restored.destination, isNull);
-  });
+      final restored = await store().load();
+      expect(restored!.departure, const (46.52, 6.63));
+      expect(restored.route, isNull);
+      expect(restored.destination, isNull);
+    },
+  );
 
   test('saving an empty plan removes the document', () async {
     final s = store();
@@ -209,12 +240,16 @@ void main() {
     expect(await s.load(), isNull);
   });
 
-  test('save creates the parent directory when it does not exist yet', () async {
-    final nested = FileActiveRouteStore(
-        File('${dir.path}/deep/deeper/active_route.json'));
-    await nested.save(_activeRoute());
-    expect(await nested.load(), isNotNull);
-  });
+  test(
+    'save creates the parent directory when it does not exist yet',
+    () async {
+      final nested = FileActiveRouteStore(
+        File('${dir.path}/deep/deeper/active_route.json'),
+      );
+      await nested.save(_activeRoute());
+      expect(await nested.load(), isNotNull);
+    },
+  );
 
   test('save leaves no temp file behind (atomic replace)', () async {
     await store().save(_activeRoute());
@@ -228,10 +263,13 @@ void main() {
   test('overwriting a saved route replaces it entirely', () async {
     final s = store();
     await s.save(_activeRoute());
-    await s.save(ActiveRoute(
+    await s.save(
+      ActiveRoute(
         route: _route(),
         destination: const (47.0, 7.0),
-        profile: RoutingProfile.walk));
+        profile: RoutingProfile.walk,
+      ),
+    );
 
     final restored = await s.load();
     expect(restored!.destination, const (47.0, 7.0));

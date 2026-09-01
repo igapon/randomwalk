@@ -55,21 +55,23 @@ class NavSeed {
   });
 
   Map<String, dynamic> toJson() => {
-        'route': route.toJson(),
-        'destLat': destLat,
-        'destLon': destLon,
-        'profile': profile.name,
-        if (tileDirPath != null) 'tileDirPath': tileDirPath,
-        if (isLoop) 'isLoop': true,
-      };
+    'route': route.toJson(),
+    'destLat': destLat,
+    'destLon': destLon,
+    'profile': profile.name,
+    if (tileDirPath != null) 'tileDirPath': tileDirPath,
+    if (isLoop) 'isLoop': true,
+  };
 
   factory NavSeed.fromJson(Map<String, dynamic> j) => NavSeed(
-        route: RouteResult.fromJson(j['route'] as Map<String, dynamic>),
-        destLat: (j['destLat'] as num).toDouble(),
-        destLon: (j['destLon'] as num).toDouble(),
-        profile: RoutingProfile.values.firstWhere((p) => p.name == j['profile'],
-            orElse: () => RoutingProfile.walk),
-        tileDirPath: j['tileDirPath'] as String?,
-        isLoop: j['isLoop'] as bool? ?? false,
-      );
+    route: RouteResult.fromJson(j['route'] as Map<String, dynamic>),
+    destLat: (j['destLat'] as num).toDouble(),
+    destLon: (j['destLon'] as num).toDouble(),
+    profile: RoutingProfile.values.firstWhere(
+      (p) => p.name == j['profile'],
+      orElse: () => RoutingProfile.walk,
+    ),
+    tileDirPath: j['tileDirPath'] as String?,
+    isLoop: j['isLoop'] as bool? ?? false,
+  );
 }

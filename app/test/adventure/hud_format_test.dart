@@ -23,14 +23,20 @@ void main() {
       expect(xpProgressFraction(50, 0), closeTo(0.5, 1e-9));
     });
 
-    test('at/just under the next threshold: clamps to 1.0, never overshoots', () {
-      expect(xpProgressFraction(100, 0), 1.0);
-      expect(xpProgressFraction(1000000, 0), 1.0);
-    });
+    test(
+      'at/just under the next threshold: clamps to 1.0, never overshoots',
+      () {
+        expect(xpProgressFraction(100, 0), 1.0);
+        expect(xpProgressFraction(1000000, 0), 1.0);
+      },
+    );
 
-    test('never goes negative for an XP value below the level\'s own floor', () {
-      expect(xpProgressFraction(-10, 1), 0.0);
-    });
+    test(
+      'never goes negative for an XP value below the level\'s own floor',
+      () {
+        expect(xpProgressFraction(-10, 1), 0.0);
+      },
+    );
   });
 
   group('energyFraction', () {

@@ -4,19 +4,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 class GpsSample {
   final double lat, lon, accuracyM, speedMps;
   final DateTime time;
-  const GpsSample(
-      {required this.lat,
-      required this.lon,
-      required this.accuracyM,
-      required this.speedMps,
-      required this.time});
+  const GpsSample({
+    required this.lat,
+    required this.lon,
+    required this.accuracyM,
+    required this.speedMps,
+    required this.time,
+  });
 }
 
 double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   const r = 6371.0;
   final dLat = (lat2 - lat1) * math.pi / 180;
   final dLon = (lon2 - lon1) * math.pi / 180;
-  final a = math.pow(math.sin(dLat / 2), 2) +
+  final a =
+      math.pow(math.sin(dLat / 2), 2) +
       math.cos(lat1 * math.pi / 180) *
           math.cos(lat2 * math.pi / 180) *
           math.pow(math.sin(dLon / 2), 2);

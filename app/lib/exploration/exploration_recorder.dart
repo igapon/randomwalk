@@ -152,8 +152,8 @@ class ExplorationRecorder {
     this.onJournalChanged,
     String Function()? newId,
     DateTime Function()? clock,
-  })  : _newId = newId ?? (() => const Uuid().v4()),
-        _clock = clock ?? DateTime.now;
+  }) : _newId = newId ?? (() => const Uuid().v4()),
+       _clock = clock ?? DateTime.now;
 
   /// Processes one finished trip. Never throws — any failure anywhere in
   /// the pipeline is logged and swallowed here, on top of every individual
@@ -185,23 +185,36 @@ class ExplorationRecorder {
 
     final newCells = await _revealCorridor(shape, now, events);
 
-    events.add(_event(GameEventTypes.xpEarned,
-        {'amount': kXpPerKm * trip.km, 'preMultiplied': false}, now));
+    events.add(
+      _event(GameEventTypes.xpEarned, {
+        'amount': kXpPerKm * trip.km,
+        'preMultiplied': false,
+      }, now),
+    );
     if (newCells > 0) {
-      events.add(_event(
-          GameEventTypes.xpEarned,
-          {'amount': kXpPerNewCell * newCells, 'preMultiplied': false},
-          now));
+      events.add(
+        _event(GameEventTypes.xpEarned, {
+          'amount': kXpPerNewCell * newCells,
+          'preMultiplied': false,
+        }, now),
+      );
     }
     final loopCompleted = trip.isLoop && trip.navArrived;
     if (loopCompleted) {
-      events.add(_event(GameEventTypes.xpEarned,
-          {'amount': kXpPerLoop, 'preMultiplied': false}, now));
+      events.add(
+        _event(GameEventTypes.xpEarned, {
+          'amount': kXpPerLoop,
+          'preMultiplied': false,
+        }, now),
+      );
       events.add(_event(GameEventTypes.loopCompleted, const {}, now));
     }
 
-    events.add(_event(
-        GameEventTypes.energyChanged, {'delta': kEnergyPerKm * trip.km}, now));
+    events.add(
+      _event(GameEventTypes.energyChanged, {
+        'delta': kEnergyPerKm * trip.km,
+      }, now),
+    );
 
     await journal.appendAll(events);
     try {
@@ -247,18 +260,23 @@ class ExplorationRecorder {
     final newCells = corridor.difference(revealedIds);
     if (newCells.isEmpty) return 0;
 
-    events.add(_event(
-        GameEventTypes.cellRevealed,
-        {'cells': [for (final c in newCells) c.key]},
-        now));
+    events.add(
+      _event(GameEventTypes.cellRevealed, {
+        'cells': [for (final c in newCells) c.key],
+      }, now),
+    );
 
     if (!state.badges.contains(GameBadges.quartier25)) {
       final revealedAfter = {...revealedIds, ...newCells};
-      final crossed = newCells.any((c) =>
-          quartierCompletion(c, revealedAfter) >= kQuartierBadgeThreshold);
+      final crossed = newCells.any(
+        (c) => quartierCompletion(c, revealedAfter) >= kQuartierBadgeThreshold,
+      );
       if (crossed) {
-        events.add(_event(GameEventTypes.badgeUnlocked,
-            {'badge': GameBadges.quartier25}, now));
+        events.add(
+          _event(GameEventTypes.badgeUnlocked, {
+            'badge': GameBadges.quartier25,
+          }, now),
+        );
       }
     }
 
@@ -269,7 +287,9 @@ class ExplorationRecorder {
   /// matched way ids costs this trip its edge/way credit, never its fog
   /// reveal or economy events (see [_revealCorridor]'s doc comment).
   Future<void> _tryMatchAndStore(
-      List<(double, double)> shape, DateTime now) async {
+    List<(double, double)> shape,
+    DateTime now,
+  ) async {
     try {
       final engine = await engineProvider();
       if (engine == null) return;
@@ -308,7 +328,9 @@ class ExplorationRecorder {
         try {
           final j = jsonDecode(line) as Map<String, dynamic>;
           sampler.seed(
-              (j['lat'] as num).toDouble(), (j['lon'] as num).toDouble());
+            (j['lat'] as num).toDouble(),
+            (j['lon'] as num).toDouble(),
+          );
         } catch (_) {
           // One corrupt line costs one point, not the whole track.
         }

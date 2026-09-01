@@ -68,7 +68,7 @@ class SessionStepCounter {
   bool _available = false;
 
   SessionStepCounter(this._sensor, {int seed = 0})
-      : _tally = StepTally(seed: seed);
+    : _tally = StepTally(seed: seed);
 
   int get steps => _tally.steps;
   bool get isAvailable => _available;
@@ -112,7 +112,7 @@ class SessionStepCounter {
 class ChannelStepSensor implements StepSensor {
   final DeviceChannel _channel;
   ChannelStepSensor([DeviceChannel? channel])
-      : _channel = channel ?? const DeviceChannel();
+    : _channel = channel ?? const DeviceChannel();
 
   @override
   Future<bool> start() => _channel.startStepCounter();

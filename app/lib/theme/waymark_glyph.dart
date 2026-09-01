@@ -25,16 +25,16 @@ class WaymarkDiamond extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Transform.rotate(
-        angle: 0.7853981633974483, // 45deg in radians
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: filled ? color : null,
-            border: filled ? null : Border.all(color: color, width: strokeWidth),
-          ),
-        ),
-      );
+    angle: 0.7853981633974483, // 45deg in radians
+    child: Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: filled ? color : null,
+        border: filled ? null : Border.all(color: color, width: strokeWidth),
+      ),
+    ),
+  );
 }
 
 /// Renders a waymark diamond to PNG bytes for MapLibre's `addImage`, so A/B
@@ -69,8 +69,7 @@ Future<Uint8List> waymarkDiamondPng({
   canvas.drawPath(path, paint);
 
   final picture = recorder.endRecording();
-  final image =
-      await picture.toImage(sizePx.round(), sizePx.round());
+  final image = await picture.toImage(sizePx.round(), sizePx.round());
   final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
   return bytes!.buffer.asUint8List();
 }

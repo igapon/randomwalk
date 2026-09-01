@@ -6,8 +6,11 @@ class GeocodeResult {
   final String label;
   final double lat;
   final double lon;
-  const GeocodeResult(
-      {required this.label, required this.lat, required this.lon});
+  const GeocodeResult({
+    required this.label,
+    required this.lat,
+    required this.lon,
+  });
 }
 
 /// Thrown when a geocoding lookup could not be completed (offline, HTTP
@@ -24,8 +27,11 @@ abstract class GeocodingService {
   /// Searches for addresses matching [query]. [nearLat]/[nearLon], when
   /// given, bias results towards that location (typically the user's
   /// current position).
-  Future<List<GeocodeResult>> search(String query,
-      {double? nearLat, double? nearLon});
+  Future<List<GeocodeResult>> search(
+    String query, {
+    double? nearLat,
+    double? nearLon,
+  });
 }
 
 class GeocodingConfig {
@@ -40,15 +46,20 @@ class PhotonGeocodingService implements GeocodingService {
   PhotonGeocodingService({required this.client});
 
   @override
-  Future<List<GeocodeResult>> search(String query,
-      {double? nearLat, double? nearLon}) async {
-    final uri = Uri.parse(GeocodingConfig.endpoint).replace(queryParameters: {
-      'q': query,
-      'lang': 'fr',
-      'limit': '6',
-      if (nearLat != null) 'lat': '$nearLat',
-      if (nearLon != null) 'lon': '$nearLon',
-    });
+  Future<List<GeocodeResult>> search(
+    String query, {
+    double? nearLat,
+    double? nearLon,
+  }) async {
+    final uri = Uri.parse(GeocodingConfig.endpoint).replace(
+      queryParameters: {
+        'q': query,
+        'lang': 'fr',
+        'limit': '6',
+        if (nearLat != null) 'lat': '$nearLat',
+        if (nearLon != null) 'lon': '$nearLon',
+      },
+    );
     http.Response resp;
     try {
       resp = await client.get(uri);
@@ -92,8 +103,10 @@ class PhotonGeocodingService implements GeocodingService {
     }
 
     final name = str('name');
-    final street =
-        [str('housenumber'), str('street')].whereType<String>().join(' ');
+    final street = [
+      str('housenumber'),
+      str('street'),
+    ].whereType<String>().join(' ');
     final city = [str('postcode'), str('city')].whereType<String>().join(' ');
     final country = str('country');
     final parts = <String>[

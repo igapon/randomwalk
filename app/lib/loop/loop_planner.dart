@@ -36,8 +36,8 @@ import 'package:randomwalk/valhalla/models.dart';
 /// Routes through an ordered list of (lat, lon) locations, or returns null
 /// when no route exists (the planner treats null as "this geometry is not
 /// routable", never as an error).
-typedef LoopRouter = Future<RouteResult?> Function(
-    List<(double, double)> locations);
+typedef LoopRouter =
+    Future<RouteResult?> Function(List<(double, double)> locations);
 
 enum PlanKind {
   /// Closed loop starting and ending at [LoopRequest.start].
@@ -221,7 +221,7 @@ class LoopPlanner {
   /// unseeded generator, which is what makes [LoopRequest.seed] reproduce a
   /// plan exactly.
   LoopPlanner({required this.router, math.Random Function(int seed)? rng})
-      : _rng = rng ?? math.Random.new;
+    : _rng = rng ?? math.Random.new;
 
   /// Candidate score, lower is better: distance accuracy dominates, with
   /// self-overlap as the tie-breaker. A→B leans harder on accuracy because
@@ -229,8 +229,8 @@ class LoopPlanner {
   /// origin/destination pair.
   static double scoreOf(PlanKind kind, double gapRatio, double repeatedRatio) =>
       kind == PlanKind.loop
-          ? 0.6 * gapRatio.abs() + 0.4 * repeatedRatio
-          : 0.7 * gapRatio.abs() + 0.3 * repeatedRatio;
+      ? 0.6 * gapRatio.abs() + 0.4 * repeatedRatio
+      : 0.7 * gapRatio.abs() + 0.3 * repeatedRatio;
 
   Future<LoopPlanResult> plan(LoopRequest request) async {
     final routes = <RouteResult>[];
@@ -248,8 +248,12 @@ class LoopPlanner {
       }
     }
 
-    final scored = _scoreAndSort(request.kind, request.targetKm, routes,
-        explorationBonus: request.explorationBonus);
+    final scored = _scoreAndSort(
+      request.kind,
+      request.targetKm,
+      routes,
+      explorationBonus: request.explorationBonus,
+    );
     // Measured before deduplication, on purpose: dedup keeps the
     // better-*scored* survivor of a duplicate pair, which is not necessarily
     // the closest-*distance* one. "Closest we found" has to mean closest
@@ -259,7 +263,8 @@ class LoopPlanner {
         : scored.map((c) => c.gapRatio.abs()).reduce((a, b) => a < b ? a : b);
 
     final candidates = _dedup(scored);
-    final targetMet = candidates.isNotEmpty &&
+    final targetMet =
+        candidates.isNotEmpty &&
         candidates.first.gapRatio.abs() <= targetTolerance + _epsilon;
     return LoopPlanResult(
       candidates: candidates,
@@ -416,12 +421,14 @@ class LoopPlanner {
       final score = explorationBonus == null
           ? baseScore
           : baseScore - explorationBonusWeight * explorationBonus(route);
-      scored.add(LoopCandidate(
-        route: route,
-        gapRatio: gapRatio,
-        repeatedRatio: repeatedRatio,
-        score: score,
-      ));
+      scored.add(
+        LoopCandidate(
+          route: route,
+          gapRatio: gapRatio,
+          repeatedRatio: repeatedRatio,
+          score: score,
+        ),
+      );
     }
     // Index tie-break: List.sort is not stable, and equal-scoring
     // candidates must still come back in a reproducible order.
@@ -442,10 +449,9 @@ class LoopPlanner {
     final kept = <LoopCandidate>[];
     for (final candidate in sorted) {
       final duplicate = kept.any((k) {
-        final distanceDelta =
-            (candidate.route.distanceKm - k.route.distanceKm).abs();
-        final longer =
-            math.max(candidate.route.distanceKm, k.route.distanceKm);
+        final distanceDelta = (candidate.route.distanceKm - k.route.distanceKm)
+            .abs();
+        final longer = math.max(candidate.route.distanceKm, k.route.distanceKm);
         // A zero-length route is degenerate; there is no meaningful relative
         // comparison to make, so never merge on one.
         if (longer <= 0) return false;

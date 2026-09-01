@@ -25,11 +25,13 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   /// The service publishes a snapshot every couple of seconds, but the
   /// duration has to advance every second — and the tick is also where the
   /// hardware step counter is sampled (see [TripController.tick]).
-  late final _ticker = GatedTicker(onTick: () {
-    if (!mounted) return;
-    ref.read(tripControllerProvider).tick();
-    setState(() {});
-  });
+  late final _ticker = GatedTicker(
+    onTick: () {
+      if (!mounted) return;
+      ref.read(tripControllerProvider).tick();
+      setState(() {});
+    },
+  );
 
   @override
   void dispose() {
@@ -41,7 +43,8 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     final trip = ref.read(tripControllerProvider);
     if (!await trip.startTrip(profile: trip.profile) && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))));
+        SnackBar(content: Text(startFailureMessage(trip.lastStartFailure))),
+      );
     }
   }
 
@@ -75,7 +78,9 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     final remainingLabel = remainingKm == null
         ? null
         : formatRemaining(
-            remainingKm, etaSeconds == null ? null : Duration(seconds: etaSeconds));
+            remainingKm,
+            etaSeconds == null ? null : Duration(seconds: etaSeconds),
+          );
 
     return Scaffold(
       body: SafeArea(
@@ -97,8 +102,9 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                   ),
                 ],
                 selected: {trip.profile},
-                onSelectionChanged:
-                    isRecording ? null : (s) => trip.setProfile(s.first),
+                onSelectionChanged: isRecording
+                    ? null
+                    : (s) => trip.setProfile(s.first),
               ),
             ),
             Expanded(
@@ -108,35 +114,47 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                   if (navigating) ...[
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
-                      child: Text('Trajet lié à l\'itinéraire',
-                          style: textTheme.labelMedium),
+                      child: Text(
+                        'Trajet lié à l\'itinéraire',
+                        style: textTheme.labelMedium,
+                      ),
                     ),
                     // Review ruling: arrived wins over off-route.
                     if (arrived)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(kNavArrivedLabel,
-                            style: textTheme.headlineSmall),
+                        child: Text(
+                          kNavArrivedLabel,
+                          style: textTheme.headlineSmall,
+                        ),
                       )
                     else if (offRoute)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(kNavRecalculatingLabel,
-                            style: textTheme.titleMedium
-                                ?.copyWith(color: AppColors.recalcOrange)),
+                        child: Text(
+                          kNavRecalculatingLabel,
+                          style: textTheme.titleMedium?.copyWith(
+                            color: AppColors.recalcOrange,
+                          ),
+                        ),
                       )
                     else if (snapshot?.navInstruction != null &&
                         snapshot!.navInstruction!.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(snapshot.navInstruction!,
-                            textAlign: TextAlign.center,
-                            style: textTheme.titleMedium),
+                        child: Text(
+                          snapshot.navInstruction!,
+                          textAlign: TextAlign.center,
+                          style: textTheme.titleMedium,
+                        ),
                       ),
                     if (remainingLabel != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(remainingLabel, style: textTheme.titleMedium),
+                        child: Text(
+                          remainingLabel,
+                          style: textTheme.titleMedium,
+                        ),
                       ),
                   ],
                   // Distance display — Bricolage Grotesque, "gros chiffres".
@@ -171,8 +189,12 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     // ink/paper one — brief: "bouton Terminer mis en avant".
                     style: isRecording && !arrived
                         ? ElevatedButton.styleFrom(
-                            backgroundColor: Theme.of(context).colorScheme.onSurface,
-                            foregroundColor: Theme.of(context).colorScheme.surface,
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.onSurface,
+                            foregroundColor: Theme.of(
+                              context,
+                            ).colorScheme.surface,
                           )
                         : null,
                     child: Text(isRecording ? 'Terminer' : 'Démarrer'),
@@ -190,7 +212,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                             trip.trackingMode == TrackingMode.foregroundOnly
                         ? 'Le suivi s\'arrêtera si l\'écran s\'éteint.'
                         : 'Le trajet continue écran éteint, même si vous '
-                            'quittez l\'application.',
+                              'quittez l\'application.',
                     style: textTheme.bodySmall,
                     textAlign: TextAlign.center,
                   ),

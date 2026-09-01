@@ -65,7 +65,11 @@ List<double> exploreBearings({
   final scores = List<double>.generate(
     sectors,
     (i) => _sectorUnrevealedFraction(
-        start, i * sectorStepDeg, radiusM, revealedCellKeys),
+      start,
+      i * sectorStepDeg,
+      radiusM,
+      revealedCellKeys,
+    ),
   );
 
   final randomFactory = rng ?? math.Random.new;
@@ -107,8 +111,12 @@ double _sectorUnrevealedFraction(
   var unrevealed = 0;
   for (var s = 1; s <= steps; s++) {
     final distanceM = math.min(s * _sampleStepM, radiusM);
-    final (sampleLat, sampleLon) =
-        destinationPoint(lat, lon, bearingDeg, distanceM);
+    final (sampleLat, sampleLon) = destinationPoint(
+      lat,
+      lon,
+      bearingDeg,
+      distanceM,
+    );
     final cell = cellIdFor(sampleLat, sampleLon);
     if (!revealedCellKeys.contains(cell.key)) unrevealed++;
   }

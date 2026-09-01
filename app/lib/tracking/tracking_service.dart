@@ -94,8 +94,10 @@ abstract class TripTracker {
   /// effect on the very next maneuver alert instead of waiting for the trip
   /// to end. A no-op while nothing is recording — the next [start] reads the
   /// setting fresh from disk anyway (see `AlertSettingsStore`).
-  Future<void> updateAlertSettings(
-      {required bool ttsEnabled, required bool hapticsEnabled});
+  Future<void> updateAlertSettings({
+    required bool ttsEnabled,
+    required bool hapticsEnabled,
+  });
 
   Future<void> dispose();
 }
@@ -113,6 +115,7 @@ const _kServiceId = 4211;
 const _kSnapshotPathKey = 'randomwalk_snapshot_path';
 const _kSeedKey = 'randomwalk_seed_snapshot';
 const _kNavSeedKey = 'randomwalk_nav_seed';
+
 /// M4 Task 5: the `pois.json.gz` path for this trip, saved unconditionally
 /// (unlike [_kNavSeedKey]) on every [ForegroundServiceTripTracker.start] —
 /// see [TripTracker.start]'s doc comment.
@@ -192,7 +195,8 @@ const kGpsSilenceThreshold = Duration(seconds: 60);
 /// *tighten* the threshold below the documented base value if one ever
 /// showed up.
 Duration gpsSilenceThresholdFor(int distanceFilterM) {
-  final scaledMs = kGpsSilenceThreshold.inMilliseconds *
+  final scaledMs =
+      kGpsSilenceThreshold.inMilliseconds *
       distanceFilterM /
       kNavCloseDistanceFilterM;
   final scaled = Duration(milliseconds: scaledMs.round());
@@ -213,8 +217,7 @@ bool isGpsSilent({
   required DateTime? lastFixAt,
   required DateTime recordingSince,
   Duration threshold = kGpsSilenceThreshold,
-}) =>
-    now.difference(lastFixAt ?? recordingSince) > threshold;
+}) => now.difference(lastFixAt ?? recordingSince) > threshold;
 
 /// Android foreground service (`flutter_foreground_task` 11.x) hosting a
 /// [SessionController] in its own isolate.
@@ -233,14 +236,18 @@ class ForegroundServiceTripTracker implements TripTracker {
   final AlertSettingsStore _alertSettings;
 
   /// `.ui.tmp`, not the isolate's `.tmp`: both sides write this document.
-  late final TripSnapshotStore _store =
-      FileTripSnapshotStore(snapshotFile, tmpSuffix: '.ui.tmp');
+  late final TripSnapshotStore _store = FileTripSnapshotStore(
+    snapshotFile,
+    tmpSuffix: '.ui.tmp',
+  );
   final _updates = StreamController<TripSnapshot>.broadcast();
   final _errors = StreamController<String?>.broadcast();
   bool _callbackAttached = false;
 
-  ForegroundServiceTripTracker(this.snapshotFile, {AlertSettingsStore? alertSettings})
-      : _alertSettings = alertSettings ?? AlertSettingsStore();
+  ForegroundServiceTripTracker(
+    this.snapshotFile, {
+    AlertSettingsStore? alertSettings,
+  }) : _alertSettings = alertSettings ?? AlertSettingsStore();
 
   /// Must run in `main()` before `runApp`: without it the service isolate
   /// has nowhere to send data.
@@ -266,8 +273,11 @@ class ForegroundServiceTripTracker implements TripTracker {
   Future<void> clearSnapshot() => _store.clear();
 
   @override
-  Future<bool> start(TripSnapshot seed,
-      {NavSeed? nav, String? poisFilePath}) async {
+  Future<bool> start(
+    TripSnapshot seed, {
+    NavSeed? nav,
+    String? poisFilePath,
+  }) async {
     _configure();
     await attach();
 
@@ -294,25 +304,37 @@ class ForegroundServiceTripTracker implements TripTracker {
     // first snapshot still leaves a resumable trip behind.
     await _store.write(seed);
     await FlutterForegroundTask.saveData(
-        key: _kSnapshotPathKey, value: snapshotFile.path);
+      key: _kSnapshotPathKey,
+      value: snapshotFile.path,
+    );
     await FlutterForegroundTask.saveData(
-        key: _kSeedKey, value: jsonEncode(seed.toJson()));
+      key: _kSeedKey,
+      value: jsonEncode(seed.toJson()),
+    );
     // Overwritten (or blanked) on every start, never left over: a free trip
     // started after a route-bound one must not inherit its itinerary — this
     // store outlives both the service and the process.
     await FlutterForegroundTask.saveData(
-        key: _kNavSeedKey, value: nav == null ? '' : jsonEncode(nav.toJson()));
+      key: _kNavSeedKey,
+      value: nav == null ? '' : jsonEncode(nav.toJson()),
+    );
     // M4 Task 5: unconditional (unlike the nav seed above) — every trip,
     // free or route-bound, is eligible for landmark visits.
     await FlutterForegroundTask.saveData(
-        key: _kPoisFilePathKey, value: poisFilePath ?? '');
+      key: _kPoisFilePathKey,
+      value: poisFilePath ?? '',
+    );
     // Read fresh at every start (not just once, ever) so a setting flipped
     // between two trips is honoured by the second one even without
     // [updateAlertSettings] ever having been called on a running service.
     await FlutterForegroundTask.saveData(
-        key: _kTtsEnabledKey, value: await _alertSettings.ttsEnabled());
+      key: _kTtsEnabledKey,
+      value: await _alertSettings.ttsEnabled(),
+    );
     await FlutterForegroundTask.saveData(
-        key: _kHapticsEnabledKey, value: await _alertSettings.hapticsEnabled());
+      key: _kHapticsEnabledKey,
+      value: await _alertSettings.hapticsEnabled(),
+    );
 
     final result = await FlutterForegroundTask.startService(
       serviceId: _kServiceId,
@@ -338,8 +360,7 @@ class ForegroundServiceTripTracker implements TripTracker {
   @visibleForTesting
   Future<void> deleteTrackFile() async {
     try {
-      final trackFile =
-          File('${snapshotFile.parent.path}/$_kTrackFileName');
+      final trackFile = File('${snapshotFile.parent.path}/$_kTrackFileName');
       if (await trackFile.exists()) await trackFile.delete();
     } catch (_) {
       // Best-effort; see the doc comment above.
@@ -366,18 +387,26 @@ class ForegroundServiceTripTracker implements TripTracker {
   }
 
   @override
-  Future<void> updateAlertSettings(
-      {required bool ttsEnabled, required bool hapticsEnabled}) async {
+  Future<void> updateAlertSettings({
+    required bool ttsEnabled,
+    required bool hapticsEnabled,
+  }) async {
     // Persisted regardless of whether a service is running: an
     // Android-restarted service (allowAutoRestart) re-reads these at its own
     // `onStart`, same as the nav seed.
     await FlutterForegroundTask.saveData(
-        key: _kTtsEnabledKey, value: ttsEnabled);
+      key: _kTtsEnabledKey,
+      value: ttsEnabled,
+    );
     await FlutterForegroundTask.saveData(
-        key: _kHapticsEnabledKey, value: hapticsEnabled);
+      key: _kHapticsEnabledKey,
+      value: hapticsEnabled,
+    );
     if (!await isRunning()) return;
-    FlutterForegroundTask.sendDataToTask(
-        {'ttsEnabled': ttsEnabled, 'hapticsEnabled': hapticsEnabled});
+    FlutterForegroundTask.sendDataToTask({
+      'ttsEnabled': ttsEnabled,
+      'hapticsEnabled': hapticsEnabled,
+    });
   }
 
   @override
@@ -415,30 +444,32 @@ class ForegroundServiceTripTracker implements TripTracker {
   }
 
   void _configure() => FlutterForegroundTask.init(
-        androidNotificationOptions: AndroidNotificationOptions(
-          channelId: _kChannelId,
-          channelName: 'Trajet en cours',
-          channelDescription: 'Suivi du trajet, même écran éteint.',
-          // LOW keeps it silent and un-intrusive: a walk tracker has no
-          // business buzzing every time it updates the distance.
-          channelImportance: NotificationChannelImportance.LOW,
-          priority: NotificationPriority.LOW,
-          onlyAlertOnce: true,
-          showWhen: false,
-        ),
-        iosNotificationOptions: const IOSNotificationOptions(
-            showNotification: false, playSound: false),
-        foregroundTaskOptions: ForegroundTaskOptions(
-          eventAction: ForegroundTaskEventAction.repeat(2000),
-          // The point of the whole exercise: keep the CPU awake enough to
-          // keep receiving GPS with the screen off, and keep the service
-          // alive when the task is swiped out of the recents list.
-          allowWakeLock: true,
-          allowWifiLock: false,
-          allowAutoRestart: true,
-          stopWithTask: false,
-        ),
-      );
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: _kChannelId,
+      channelName: 'Trajet en cours',
+      channelDescription: 'Suivi du trajet, même écran éteint.',
+      // LOW keeps it silent and un-intrusive: a walk tracker has no
+      // business buzzing every time it updates the distance.
+      channelImportance: NotificationChannelImportance.LOW,
+      priority: NotificationPriority.LOW,
+      onlyAlertOnce: true,
+      showWhen: false,
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(
+      showNotification: false,
+      playSound: false,
+    ),
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.repeat(2000),
+      // The point of the whole exercise: keep the CPU awake enough to
+      // keep receiving GPS with the screen off, and keep the service
+      // alive when the task is swiped out of the recents list.
+      allowWakeLock: true,
+      allowWifiLock: false,
+      allowAutoRestart: true,
+      stopWithTask: false,
+    ),
+  );
 }
 
 /// Where a (re)starting service isolate picks the trip up from.
@@ -645,7 +676,8 @@ class TripTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     final path = await FlutterForegroundTask.getData<String>(
-        key: _kSnapshotPathKey);
+      key: _kSnapshotPathKey,
+    );
     if (path == null) return;
 
     final store = FileTripSnapshotStore(File(path));
@@ -680,8 +712,9 @@ class TripTaskHandler extends TaskHandler {
     // M4 Task 5: fire-and-forget, never awaited — see [_initPoiStore]'s doc
     // comment. Unconditional (every trip, free or route-bound, is eligible
     // for landmark visits), unlike the nav seed just below.
-    final poisFilePath =
-        await FlutterForegroundTask.getData<String>(key: _kPoisFilePathKey);
+    final poisFilePath = await FlutterForegroundTask.getData<String>(
+      key: _kPoisFilePathKey,
+    );
     final poiStoreLoad = _initPoiStore(poisFilePath);
     debugPoiStoreLoad = poiStoreLoad;
     unawaited(poiStoreLoad);
@@ -707,7 +740,7 @@ class TripTaskHandler extends TaskHandler {
 
     _hapticsEnabled =
         await FlutterForegroundTask.getData<bool>(key: _kHapticsEnabledKey) ??
-            true;
+        true;
     _ttsEnabled =
         await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ?? true;
 
@@ -721,7 +754,8 @@ class TripTaskHandler extends TaskHandler {
       // [_snapshotAt] reads the distance from that recorder.
       onSessionEnded: _bank,
       onSessionError: (message) async => FlutterForegroundTask.sendDataToMain(
-          jsonEncode({_kGpsErrorKey: message})),
+        jsonEncode({_kGpsErrorKey: message}),
+      ),
       // Guidance rides the recording's own GPS subscription: a second one
       // would double the fix rate the OS bills a screen-off trip for. Always
       // wired now (M4 exploration) rather than only for route-bound trips —
@@ -877,15 +911,17 @@ class TripTaskHandler extends TaskHandler {
       if (visit == null) return;
 
       _visitedThisTrip.add(visit.poi.id);
-      _pendingVisits.add(PendingVisit(
-        poiId: visit.poi.id,
-        kind: visit.poi.kind.name,
-        subkind: visit.poi.subkind,
-        name: visit.poi.name,
-        lat: visit.poi.lat,
-        lon: visit.poi.lon,
-        ts: visit.ts,
-      ));
+      _pendingVisits.add(
+        PendingVisit(
+          poiId: visit.poi.id,
+          kind: visit.poi.kind.name,
+          subkind: visit.poi.subkind,
+          name: visit.poi.name,
+          lat: visit.poi.lat,
+          lon: visit.poi.lon,
+          ts: visit.ts,
+        ),
+      );
       while (_pendingVisits.length > kPendingVisitsMax) {
         _pendingVisits.removeAt(0);
       }
@@ -920,8 +956,11 @@ class TripTaskHandler extends TaskHandler {
         for (final (lat, lon) in sampler.points) {
           buffer.writeln(jsonEncode({'lat': lat, 'lon': lon}));
         }
-        await file.writeAsString(buffer.toString(),
-            mode: FileMode.write, flush: true);
+        await file.writeAsString(
+          buffer.toString(),
+          mode: FileMode.write,
+          flush: true,
+        );
       } else {
         await file.writeAsString(
           '${jsonEncode({'lat': sample.lat, 'lon': sample.lon})}\n',
@@ -944,9 +983,15 @@ class TripTaskHandler extends TaskHandler {
     _navBusy = true;
     try {
       _navFields = await nav.onFix(
-          sample.lat, sample.lon, sample.speedMps, sample.time);
-      await _maybeAlert(nav.lastUpdate,
-          replanning: _navFields?.replanning ?? false);
+        sample.lat,
+        sample.lon,
+        sample.speedMps,
+        sample.time,
+      );
+      await _maybeAlert(
+        nav.lastUpdate,
+        replanning: _navFields?.replanning ?? false,
+      );
       await _maybeAdaptGps();
       // Publishing is inside the try for the same reason [_stopped] exists:
       // a fix whose replan outlived the teardown must not raise from a
@@ -981,8 +1026,11 @@ class TripTaskHandler extends TaskHandler {
 
     if (!policy.shouldAlert(update, replanning: replanning)) return;
 
-    final text = alertText(update,
-        replanning: replanning, isLoop: _navSeed?.isLoop ?? false);
+    final text = alertText(
+      update,
+      replanning: replanning,
+      isLoop: _navSeed?.isLoop ?? false,
+    );
     final tasks = <Future<void>>[];
     if (_hapticsEnabled) tasks.add(_postAlertNotification(text));
     if (_ttsEnabled) tasks.add(_speaker.speak(text).catchError((_) {}));
@@ -1002,14 +1050,18 @@ class TripTaskHandler extends TaskHandler {
     if (session == null || _stopped) return;
     final desired = adaptiveDistanceFilter(_navFields?.distanceToManeuverM);
     if (!_gpsRateLimiter.shouldResubscribe(
-        currentFilter: _currentDistanceFilter, desiredFilter: desired)) {
+      currentFilter: _currentDistanceFilter,
+      desiredFilter: desired,
+    )) {
       return;
     }
-    await session.updateLocationSettings(AndroidSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: desired,
-      intervalDuration: const Duration(seconds: 2),
-    ));
+    await session.updateLocationSettings(
+      AndroidSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: desired,
+        intervalDuration: const Duration(seconds: 2),
+      ),
+    );
     _currentDistanceFilter = desired;
     _gpsRateLimiter.recordChange();
   }
@@ -1031,7 +1083,8 @@ class TripTaskHandler extends TaskHandler {
   /// sticky trip notification.
   Future<void> _postAlertNotification(String text) async {
     try {
-      final notifications = _notifications ??= FlutterLocalNotificationsPlugin();
+      final notifications = _notifications ??=
+          FlutterLocalNotificationsPlugin();
       if (!_notificationsReady) {
         // Each engine — this service's included — needs its own
         // `initialize()` call; the plugin keeps no state across isolates.
@@ -1094,13 +1147,15 @@ class TripTaskHandler extends TaskHandler {
       await engine.init(tileDirPath);
       _engine = engine;
     }
-    return engine.route(RouteRequest(
-      fromLat: lat,
-      fromLon: lon,
-      toLat: seed.destLat,
-      toLon: seed.destLon,
-      profile: seed.profile,
-    ));
+    return engine.route(
+      RouteRequest(
+        fromLat: lat,
+        fromLon: lon,
+        toLat: seed.destLat,
+        toLon: seed.destLon,
+        profile: seed.profile,
+      ),
+    );
   }
 
   /// The UI hands us the step count it sampled from the hardware sensor;
@@ -1204,7 +1259,8 @@ class TripTaskHandler extends TaskHandler {
   /// brand-new trip's `persisted` reads exactly as "recording" as a genuine
   /// restart's does. [isFreshTripSeed] is what actually tells them apart.
   Future<({TripSnapshot? snapshot, bool isRestart})> _resumePoint(
-      TripSnapshotStore store) async {
+    TripSnapshotStore store,
+  ) async {
     final persisted = await store.read();
     final raw = await FlutterForegroundTask.getData<String>(key: _kSeedKey);
     final seed = raw == null
@@ -1212,7 +1268,8 @@ class TripTaskHandler extends TaskHandler {
         : TripSnapshot.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     return (
       snapshot: resumePoint(persisted, seed),
-      isRestart: persisted != null &&
+      isRestart:
+          persisted != null &&
           persisted.isRecording &&
           !isFreshTripSeed(persisted),
     );
@@ -1232,10 +1289,11 @@ class TripTaskHandler extends TaskHandler {
   /// Best-effort throughout: any failure here still leaves [_trackSampler]
   /// set to a usable (if empty) sampler, and [_trackFile] pointed at the
   /// right path, rather than stopping trip recording.
-  Future<void> _initTrackSampler(File snapshotFile,
-      {required bool isRestart}) async {
-    final trackFile =
-        File('${snapshotFile.parent.path}/$_kTrackFileName');
+  Future<void> _initTrackSampler(
+    File snapshotFile, {
+    required bool isRestart,
+  }) async {
+    final trackFile = File('${snapshotFile.parent.path}/$_kTrackFileName');
     final sampler = TrackSampler();
     if (isRestart) {
       try {
@@ -1245,7 +1303,9 @@ class TripTaskHandler extends TaskHandler {
             try {
               final j = jsonDecode(line) as Map<String, dynamic>;
               sampler.seed(
-                  (j['lat'] as num).toDouble(), (j['lon'] as num).toDouble());
+                (j['lat'] as num).toDouble(),
+                (j['lon'] as num).toDouble(),
+              );
             } catch (_) {
               // One corrupt line costs one point, not the whole track.
             }

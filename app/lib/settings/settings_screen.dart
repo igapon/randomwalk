@@ -24,7 +24,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _pseudoController = TextEditingController();
 
   late Future<
-      ({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})> _future;
+    ({
+      PlayerIdentity identity,
+      double totalKm,
+      bool ttsEnabled,
+      bool hapticsEnabled,
+    })
+  >
+  _future;
 
   /// Probed once, independently of [_future] — a toggle change (haptics
   /// included) reloads [_future] via [_load], and re-asking the native side
@@ -65,8 +72,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return available;
   }
 
-  Future<({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>
-      _load() async {
+  Future<
+    ({
+      PlayerIdentity identity,
+      double totalKm,
+      bool ttsEnabled,
+      bool hapticsEnabled,
+    })
+  >
+  _load() async {
     final identity = await ref.read(identityStoreProvider).get();
     final totalKm = await _totalStore.totalKm();
     final alertSettings = ref.read(alertSettingsStoreProvider);
@@ -106,10 +120,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    await ref.read(identityStoreProvider).setPseudo(_pseudoController.text.trim());
+    await ref
+        .read(identityStoreProvider)
+        .setPseudo(_pseudoController.text.trim());
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Pseudo enregistré.')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Pseudo enregistré.')));
     setState(() => _future = _load());
   }
 
@@ -117,92 +134,110 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Réglages')),
-      body: FutureBuilder<
-          ({PlayerIdentity identity, double totalKm, bool ttsEnabled, bool hapticsEnabled})>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final identity = snapshot.data!.identity;
-          final totalKm = snapshot.data!.totalKm;
-          final ttsEnabled = snapshot.data!.ttsEnabled;
-          final hapticsEnabled = snapshot.data!.hapticsEnabled;
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextFormField(
-                      controller: _pseudoController,
-                      decoration: const InputDecoration(labelText: 'Pseudo'),
-                      maxLength: 24,
-                      validator: _validatePseudo,
-                      onFieldSubmitted: (_) => _save(),
-                    ),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: ElevatedButton(
-                        onPressed: _save,
-                        child: const Text('Enregistrer'),
-                      ),
-                    ),
-                    const Divider(height: 32),
-                    Text('Identifiant : ${identity.userId}',
-                        style: Theme.of(context).textTheme.bodyMedium),
-                    const SizedBox(height: 8),
-                    Text('Distance totale : ${totalKm.toStringAsFixed(1)} km',
-                        style: Theme.of(context).textTheme.bodyMedium),
-                    const Divider(height: 32),
-                    FutureBuilder<bool>(
-                      future: _ttsAvailable,
-                      builder: (context, ttsSnapshot) {
-                        // Defaults to unavailable while the native probe is
-                        // still in flight — briefly disabled rather than
-                        // briefly claiming a capability the device may not
-                        // have.
-                        final available = ttsSnapshot.data ?? false;
-                        return SwitchListTile(
+      body:
+          FutureBuilder<
+            ({
+              PlayerIdentity identity,
+              double totalKm,
+              bool ttsEnabled,
+              bool hapticsEnabled,
+            })
+          >(
+            future: _future,
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final identity = snapshot.data!.identity;
+              final totalKm = snapshot.data!.totalKm;
+              final ttsEnabled = snapshot.data!.ttsEnabled;
+              final hapticsEnabled = snapshot.data!.hapticsEnabled;
+              return SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextFormField(
+                          controller: _pseudoController,
+                          decoration: const InputDecoration(
+                            labelText: 'Pseudo',
+                          ),
+                          maxLength: 24,
+                          validator: _validatePseudo,
+                          onFieldSubmitted: (_) => _save(),
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: ElevatedButton(
+                            onPressed: _save,
+                            child: const Text('Enregistrer'),
+                          ),
+                        ),
+                        const Divider(height: 32),
+                        Text(
+                          'Identifiant : ${identity.userId}',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Distance totale : ${totalKm.toStringAsFixed(1)} km',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        const Divider(height: 32),
+                        FutureBuilder<bool>(
+                          future: _ttsAvailable,
+                          builder: (context, ttsSnapshot) {
+                            // Defaults to unavailable while the native probe is
+                            // still in flight — briefly disabled rather than
+                            // briefly claiming a capability the device may not
+                            // have.
+                            final available = ttsSnapshot.data ?? false;
+                            return SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('Guidage vocal'),
+                              subtitle: Text(
+                                available
+                                    ? 'Instructions de navigation lues à voix haute'
+                                    : 'Synthèse vocale indisponible sur cet appareil',
+                              ),
+                              value: available && ttsEnabled,
+                              onChanged: available ? _setTtsEnabled : null,
+                            );
+                          },
+                        ),
+                        SwitchListTile(
                           contentPadding: EdgeInsets.zero,
-                          title: const Text('Guidage vocal'),
-                          subtitle: Text(available
-                              ? 'Instructions de navigation lues à voix haute'
-                              : 'Synthèse vocale indisponible sur cet appareil'),
-                          value: available && ttsEnabled,
-                          onChanged: available ? _setTtsEnabled : null,
-                        );
-                      },
+                          title: const Text('Vibrations et alertes'),
+                          subtitle: const Text(
+                            "Vibration et son à l'approche d'une manœuvre",
+                          ),
+                          value: hapticsEnabled,
+                          onChanged: _setHapticsEnabled,
+                        ),
+                        FutureBuilder<String?>(
+                          future: _manufacturer,
+                          builder: (context, manufacturerSnapshot) {
+                            if (!isAggressiveBatteryOem(
+                              manufacturerSnapshot.data,
+                            )) {
+                              return const SizedBox.shrink();
+                            }
+                            return const _BatteryReliabilityTile();
+                          },
+                        ),
+                        const Divider(height: 32),
+                        const AboutDataTile(),
+                      ],
                     ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Vibrations et alertes'),
-                      subtitle: const Text(
-                          "Vibration et son à l'approche d'une manœuvre"),
-                      value: hapticsEnabled,
-                      onChanged: _setHapticsEnabled,
-                    ),
-                    FutureBuilder<String?>(
-                      future: _manufacturer,
-                      builder: (context, manufacturerSnapshot) {
-                        if (!isAggressiveBatteryOem(manufacturerSnapshot.data)) {
-                          return const SizedBox.shrink();
-                        }
-                        return const _BatteryReliabilityTile();
-                      },
-                    ),
-                    const Divider(height: 32),
-                    const AboutDataTile(),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          );
-        },
-      ),
+              );
+            },
+          ),
     );
   }
 }
@@ -224,17 +259,17 @@ class _BatteryReliabilityTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.battery_alert_outlined),
-        title: const Text('Suivi fiable en arrière-plan'),
-        subtitle: const Text(
-          "Ce téléphone peut interrompre le suivi en arrière-plan. "
-          "Ouvrez les réglages de l'app et autorisez-la à fonctionner "
-          "sans restriction de batterie (démarrage automatique / sans "
-          'contrainte).',
-        ),
-        onTap: () => PluginPermissionService().openSettings(),
-      );
+    contentPadding: EdgeInsets.zero,
+    leading: const Icon(Icons.battery_alert_outlined),
+    title: const Text('Suivi fiable en arrière-plan'),
+    subtitle: const Text(
+      "Ce téléphone peut interrompre le suivi en arrière-plan. "
+      "Ouvrez les réglages de l'app et autorisez-la à fonctionner "
+      "sans restriction de batterie (démarrage automatique / sans "
+      'contrainte).',
+    ),
+    onTap: () => PluginPermissionService().openSettings(),
+  );
 }
 
 /// Settings tile disclosing the map/routing data sources — required
@@ -246,15 +281,15 @@ class AboutDataTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.info_outline),
-        title: const Text('À propos des données'),
-        subtitle: const Text('Sources des cartes et du calcul d\'itinéraire'),
-        onTap: () => showDialog<void>(
-          context: context,
-          builder: (context) => const _AboutDataDialog(),
-        ),
-      );
+    contentPadding: EdgeInsets.zero,
+    leading: const Icon(Icons.info_outline),
+    title: const Text('À propos des données'),
+    subtitle: const Text('Sources des cartes et du calcul d\'itinéraire'),
+    onTap: () => showDialog<void>(
+      context: context,
+      builder: (context) => const _AboutDataDialog(),
+    ),
+  );
 }
 
 class _AboutDataDialog extends StatelessWidget {
@@ -262,20 +297,20 @@ class _AboutDataDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('À propos des données'),
-        content: const Text(
-          '• Cartes : © les contributeurs d\'OpenStreetMap, sous licence '
-          'ODbL.\n'
-          '• Tuiles cartographiques : OpenFreeMap (openfreemap.org), à '
-          'partir des mêmes données OpenStreetMap.\n'
-          '• Calcul d\'itinéraire : moteur de routage Valhalla, hors ligne '
-          'à partir de données OpenStreetMap traitées par ce projet.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Fermer'),
-          ),
-        ],
-      );
+    title: const Text('À propos des données'),
+    content: const Text(
+      '• Cartes : © les contributeurs d\'OpenStreetMap, sous licence '
+      'ODbL.\n'
+      '• Tuiles cartographiques : OpenFreeMap (openfreemap.org), à '
+      'partir des mêmes données OpenStreetMap.\n'
+      '• Calcul d\'itinéraire : moteur de routage Valhalla, hors ligne '
+      'à partir de données OpenStreetMap traitées par ce projet.',
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Fermer'),
+      ),
+    ],
+  );
 }

@@ -172,15 +172,16 @@ class TripController extends ChangeNotifier {
     this.resolvePoisFile,
     this.processGameVisits,
     AlertSettingsStore? alertSettings,
-  })  : _totals = totalStore,
-        _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
-        _speedHistory = speedHistory ?? SpeedHistoryStore(),
-        _createStepCounter = createStepCounter ??
-            ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
-        _clock = clock ?? DateTime.now,
-        _persistProfile = persistProfile ?? _defaultPersistProfile,
-        _loadProfile = loadProfile ?? _defaultLoadProfile,
-        _alertSettings = alertSettings ?? AlertSettingsStore() {
+  }) : _totals = totalStore,
+       _finalisedTrips = finalisedTrips ?? PrefsFinalisedTripMemory(),
+       _speedHistory = speedHistory ?? SpeedHistoryStore(),
+       _createStepCounter =
+           createStepCounter ??
+           ((seed) => SessionStepCounter(ChannelStepSensor(), seed: seed)),
+       _clock = clock ?? DateTime.now,
+       _persistProfile = persistProfile ?? _defaultPersistProfile,
+       _loadProfile = loadProfile ?? _defaultLoadProfile,
+       _alertSettings = alertSettings ?? AlertSettingsStore() {
     _updates = tracker.updates.listen(_onTrackerSnapshot);
     _errors = tracker.errors.listen((message) => onSessionError?.call(message));
   }
@@ -193,8 +194,9 @@ class TripController extends ChangeNotifier {
   double get distanceKm => _snapshot?.distanceKm ?? 0;
   int get steps => _snapshot?.steps ?? 0;
   bool get needsReview => _snapshot?.needsReview ?? false;
-  Duration get elapsed =>
-      _state == TripState.idle ? Duration.zero : _snapshot?.elapsedAt(_clock()) ?? Duration.zero;
+  Duration get elapsed => _state == TripState.idle
+      ? Duration.zero
+      : _snapshot?.elapsedAt(_clock()) ?? Duration.zero;
 
   ActiveRoute? get activeRoute => _activeRoute;
   RouteResult? get route => _activeRoute?.route;
@@ -225,13 +227,16 @@ class TripController extends ChangeNotifier {
   bool get gpsSilent => isRecording && (_snapshot?.gpsSilent ?? false);
 
   static Future<void> _defaultPersistProfile(RoutingProfile profile) async {
-    await (await SharedPreferences.getInstance())
-        .setString(_kTripProfileKey, profile.name);
+    await (await SharedPreferences.getInstance()).setString(
+      _kTripProfileKey,
+      profile.name,
+    );
   }
 
   static Future<RoutingProfile?> _defaultLoadProfile() async {
-    final stored =
-        (await SharedPreferences.getInstance()).getString(_kTripProfileKey);
+    final stored = (await SharedPreferences.getInstance()).getString(
+      _kTripProfileKey,
+    );
     return RoutingProfile.values
         .where((p) => p.name == stored)
         .cast<RoutingProfile?>()
@@ -377,10 +382,11 @@ class TripController extends ChangeNotifier {
     // happens to replan again — which might be never.
     return _launch(
       snapshot.copyWith(
-          status: TripStatus.recording,
-          updatedAt: _clock(),
-          gpsSilent: false,
-          nav: const NavFields()),
+        status: TripStatus.recording,
+        updatedAt: _clock(),
+        gpsSilent: false,
+        nav: const NavFields(),
+      ),
       // A resumed route-bound trip is re-seeded from the planned route
       // (which outlives the trip, see [ActiveRouteStore]); without this,
       // « Reprendre » would silently come back without guidance.
@@ -460,8 +466,7 @@ class TripController extends ChangeNotifier {
       switch (outcome) {
         TripPermissionOutcome.locationServiceOff =>
           TripStartFailure.locationServiceOff,
-        TripPermissionOutcome.openedSettings =>
-          TripStartFailure.openedSettings,
+        TripPermissionOutcome.openedSettings => TripStartFailure.openedSettings,
         _ => TripStartFailure.locationDenied,
       };
 
@@ -546,7 +551,10 @@ class TripController extends ChangeNotifier {
       // stuck mid-finalise.
       try {
         await _speedHistory.recordSession(
-            snapshot.profile, distanceKm, _clock().difference(snapshot.startedAt));
+          snapshot.profile,
+          distanceKm,
+          _clock().difference(snapshot.startedAt),
+        );
       } catch (e) {
         debugPrint('TripController: recordSession failed, continuing: $e');
       }
@@ -559,13 +567,19 @@ class TripController extends ChangeNotifier {
     // `stopTrip()`/`finishInterrupted()` call that got us here.
     final exploration = processTripExploration;
     if (exploration != null && snapshot != null) {
-      unawaited(exploration(FinishedTrip(
-        km: distanceKm,
-        isLoop: _activeRoute?.isLoop ?? false,
-        navArrived: snapshot.navArrived,
-      )).catchError((e) {
-        debugPrint('TripController: exploration processing failed, continuing: $e');
-      }));
+      unawaited(
+        exploration(
+          FinishedTrip(
+            km: distanceKm,
+            isLoop: _activeRoute?.isLoop ?? false,
+            navArrived: snapshot.navArrived,
+          ),
+        ).catchError((e) {
+          debugPrint(
+            'TripController: exploration processing failed, continuing: $e',
+          );
+        }),
+      );
     }
 
     await tracker.clearSnapshot();
@@ -636,7 +650,8 @@ class TripController extends ChangeNotifier {
     // backwards between the two channels.
     final steps = _steps?.steps ?? snapshot.steps;
     _snapshot = snapshot.copyWith(
-        steps: steps > snapshot.steps ? steps : snapshot.steps);
+      steps: steps > snapshot.steps ? steps : snapshot.steps,
+    );
     notifyListeners();
     // M4 exploration Task 5: fed the just-adopted snapshot's OWN
     // pendingVisits (not `_snapshot`'s field again) since that is exactly
@@ -651,9 +666,13 @@ class TripController extends ChangeNotifier {
   void _maybeProcessGameVisits(List<PendingVisit> visits) {
     final process = processGameVisits;
     if (process == null || visits.isEmpty) return;
-    unawaited(process(visits).catchError((e) {
-      debugPrint('TripController: game visit processing failed, continuing: $e');
-    }));
+    unawaited(
+      process(visits).catchError((e) {
+        debugPrint(
+          'TripController: game visit processing failed, continuing: $e',
+        );
+      }),
+    );
   }
 
   /// Persists the planned route. Called by the map screen on every planning
@@ -700,7 +719,9 @@ class TripController extends ChangeNotifier {
   Future<void> setTtsEnabled(bool value) async {
     await _alertSettings.setTtsEnabled(value);
     await tracker.updateAlertSettings(
-        ttsEnabled: value, hapticsEnabled: await _alertSettings.hapticsEnabled());
+      ttsEnabled: value,
+      hapticsEnabled: await _alertSettings.hapticsEnabled(),
+    );
   }
 
   /// Persists « Vibrations et alertes » and pushes it into a running trip's
@@ -708,7 +729,9 @@ class TripController extends ChangeNotifier {
   Future<void> setHapticsEnabled(bool value) async {
     await _alertSettings.setHapticsEnabled(value);
     await tracker.updateAlertSettings(
-        ttsEnabled: await _alertSettings.ttsEnabled(), hapticsEnabled: value);
+      ttsEnabled: await _alertSettings.ttsEnabled(),
+      hapticsEnabled: value,
+    );
   }
 
   /// Re-reads whether "Autoriser tout le temps" has since been granted —
@@ -738,5 +761,6 @@ class TripController extends ChangeNotifier {
 /// flickering through "idle". Widget tests override it with fakes.
 final tripControllerProvider = ChangeNotifierProvider<TripController>((ref) {
   throw UnimplementedError(
-      'tripControllerProvider must be overridden — see main().');
+    'tripControllerProvider must be overridden — see main().',
+  );
 });

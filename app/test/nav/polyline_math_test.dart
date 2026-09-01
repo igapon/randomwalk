@@ -36,7 +36,9 @@ void main() {
     // Boucle aller-retour sur le même tronçon : projeté près du départ,
     // mais searchFrom force la seconde passe.
     final loop = RouteGeometry([
-      (46.5200, 6.6300), (46.5210, 6.6300), (46.5200, 6.6300),
+      (46.5200, 6.6300),
+      (46.5210, 6.6300),
+      (46.5200, 6.6300),
     ]);
     final back = projectOntoRoute(loop, 46.52045, 6.63005, searchFrom: 1);
     expect(back.segmentIndex, 1);

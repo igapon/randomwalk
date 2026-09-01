@@ -47,18 +47,20 @@ class CoverageResult {
   final int downloaded;
   final int failed;
   final int total;
+
   /// True when the manifest actually used this run is a stale cached copy
   /// kept because the freshly-fetched one had a `valhalla_version` this app
   /// build cannot use (see [DatasetVersionMismatch]). The caller should
   /// warn the user that new coverage needs an app update.
   final bool versionMismatch;
-  const CoverageResult(
-      {required this.datasetVersion,
-      required this.tileDirPath,
-      required this.downloaded,
-      required this.failed,
-      required this.total,
-      this.versionMismatch = false});
+  const CoverageResult({
+    required this.datasetVersion,
+    required this.tileDirPath,
+    required this.downloaded,
+    required this.failed,
+    required this.total,
+    this.versionMismatch = false,
+  });
 }
 
 /// A manifest fetch outcome: the manifest to use, plus whether it is a
@@ -79,10 +81,11 @@ class CoverageRepository {
   /// never resolves) without actually waiting out the real 30 s budget.
   final Duration totalTimeout;
 
-  CoverageRepository(
-      {required this.root,
-      required this.client,
-      this.totalTimeout = CoverageConfig.totalTimeout});
+  CoverageRepository({
+    required this.root,
+    required this.client,
+    this.totalTimeout = CoverageConfig.totalTimeout,
+  });
 
   String get _manifestCachePath => '${root.path}/manifest.cache.json';
 
@@ -100,8 +103,9 @@ class CoverageRepository {
       if (resp.statusCode != 200) {
         throw HttpException('manifest: HTTP ${resp.statusCode}');
       }
-      final manifest =
-          TileManifest.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      final manifest = TileManifest.fromJson(
+        jsonDecode(resp.body) as Map<String, dynamic>,
+      );
       if (manifest.valhallaVersion != kExpectedValhallaVersion) {
         // Never adopt (or cache) a manifest built for an engine version this
         // app build does not ship — routing against it could crash or
@@ -133,7 +137,8 @@ class CoverageRepository {
     if (!f.existsSync()) return null;
     try {
       return TileManifest.fromJson(
-          jsonDecode(await f.readAsString()) as Map<String, dynamic>);
+        jsonDecode(await f.readAsString()) as Map<String, dynamic>,
+      );
     } catch (_) {
       // Corrupt/partial cache: treat as absent rather than crashing.
       return null;
@@ -155,27 +160,34 @@ class CoverageRepository {
   }
 
   List<String> neededPaths(double lat, double lon) => [
-        for (final e in CoverageConfig.radiiKmByLevel.entries)
-          for (final t in tilesCoveringCircle(e.key, lat, lon, e.value)) t.path
-      ];
+    for (final e in CoverageConfig.radiiKmByLevel.entries)
+      for (final t in tilesCoveringCircle(e.key, lat, lon, e.value)) t.path,
+  ];
 
-  Future<CoverageResult> ensureCoverage(double lat, double lon,
-      {void Function(int done, int total)? onProgress}) async {
+  Future<CoverageResult> ensureCoverage(
+    double lat,
+    double lon, {
+    void Function(int done, int total)? onProgress,
+  }) async {
     final fetch = await _fetchManifest();
     final manifest = fetch.manifest;
     final tileDir = Directory('${root.path}/${manifest.datasetVersion}');
     await tileDir.create(recursive: true);
     _sweepPartFiles(tileDir);
-    final wanted = neededPaths(lat, lon)
-        .where(manifest.tiles.containsKey)
-        .toList();
+    final wanted = neededPaths(
+      lat,
+      lon,
+    ).where(manifest.tiles.containsKey).toList();
     var downloaded = 0, failed = 0, done = 0;
     for (final path in wanted) {
       final file = File('${tileDir.path}/$path');
       var have = file.existsSync();
       if (!have) {
         final ok = await _downloadAsset(
-            manifest.tiles[path]!, manifest.datasetVersion, file);
+          manifest.tiles[path]!,
+          manifest.datasetVersion,
+          file,
+        );
         ok ? downloaded++ : failed++;
         have = ok;
       }
@@ -204,16 +216,20 @@ class CoverageRepository {
     // at least one tile on disk.
     await _purgeByCount(manifest.datasetVersion);
     return CoverageResult(
-        datasetVersion: manifest.datasetVersion,
-        tileDirPath: tileDir.path,
-        downloaded: downloaded,
-        failed: failed,
-        total: wanted.length,
-        versionMismatch: fetch.versionMismatch);
+      datasetVersion: manifest.datasetVersion,
+      tileDirPath: tileDir.path,
+      downloaded: downloaded,
+      failed: failed,
+      total: wanted.length,
+      versionMismatch: fetch.versionMismatch,
+    );
   }
 
   Future<bool> _downloadAsset(
-      TileAsset asset, String datasetVersion, File dest) async {
+    TileAsset asset,
+    String datasetVersion,
+    File dest,
+  ) async {
     final url = CoverageConfig.assetUrl(datasetVersion, asset.asset);
     final http.Response resp;
     try {
@@ -239,7 +255,10 @@ class CoverageRepository {
   /// write pattern as a tile ([_downloadAsset]), but errors of any kind
   /// (network, sha mismatch, disk) are swallowed rather than surfaced —
   /// this asset is a pure add-on the game degrades gracefully without.
-  Future<void> _ensurePoisAsset(TileManifest manifest, Directory tileDir) async {
+  Future<void> _ensurePoisAsset(
+    TileManifest manifest,
+    Directory tileDir,
+  ) async {
     final asset = manifest.pois;
     if (asset == null) return;
     final dest = File('${tileDir.path}/pois.json.gz');
@@ -294,6 +313,7 @@ class CoverageRepository {
           .replaceAll('\\', '/');
       return (lru[rel] as int?) ?? 0;
     }
+
     files.sort((a, b) => lastUsed(a).compareTo(lastUsed(b)));
     for (final f in files) {
       if (totalBytes <= CoverageConfig.maxCacheBytes) break;

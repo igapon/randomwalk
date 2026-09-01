@@ -44,16 +44,16 @@ class MatchResult {
 /// default (see `Valhalla.traceAttributes`'s own doc comment on the AAR
 /// side).
 String _buildTraceRequest(List<(double, double)> shape) => jsonEncode({
-      'shape': [
-        for (final (lat, lon) in shape) {'lat': lat, 'lon': lon},
-      ],
-      'costing': 'pedestrian',
-      'shape_match': 'map_snap',
-      'filters': {
-        'attributes': ['edge.way_id', 'edge.length'],
-        'action': 'include',
-      },
-    });
+  'shape': [
+    for (final (lat, lon) in shape) {'lat': lat, 'lon': lon},
+  ],
+  'costing': 'pedestrian',
+  'shape_match': 'map_snap',
+  'filters': {
+    'attributes': ['edge.way_id', 'edge.length'],
+    'action': 'include',
+  },
+});
 
 /// Map-matches [shape] onto the road network via [engine]'s `trace`
 /// (`trace_attributes`) and extracts the matched way ids and total matched

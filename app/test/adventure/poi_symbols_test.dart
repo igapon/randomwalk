@@ -17,14 +17,17 @@ void main() {
     test('distinct ids per kind and visited state', () {
       final ids = {
         for (final kind in PoiKind.values)
-          for (final visited in [true, false]) poiIconId(kind, visited: visited),
+          for (final visited in [true, false])
+            poiIconId(kind, visited: visited),
       };
       expect(ids, hasLength(PoiKind.values.length * 2));
     });
 
     test('is stable for the same inputs', () {
-      expect(poiIconId(PoiKind.reveal, visited: true),
-          poiIconId(PoiKind.reveal, visited: true));
+      expect(
+        poiIconId(PoiKind.reveal, visited: true),
+        poiIconId(PoiKind.reveal, visited: true),
+      );
     });
   });
 
@@ -52,27 +55,35 @@ void main() {
       expect(nearestPois(pois, center.$1, center.$2), hasLength(200));
     });
 
-    test('an input shorter than the cap is returned unchanged (length-wise)', () {
-      final pois = [poi('a', PoiKind.reveal, 0, 0)];
-      expect(nearestPois(pois, center.$1, center.$2, cap: 200), hasLength(1));
-    });
+    test(
+      'an input shorter than the cap is returned unchanged (length-wise)',
+      () {
+        final pois = [poi('a', PoiKind.reveal, 0, 0)];
+        expect(nearestPois(pois, center.$1, center.$2, cap: 200), hasLength(1));
+      },
+    );
   });
 
   group('buildPoiSymbolSpecs', () {
-    test('resolves the visited flag from the visitedPoiIds set, by bare poiId', () {
-      final pois = [
-        poi('visited-1', PoiKind.coins, 0, 0),
-        poi('unvisited-1', PoiKind.energy, 0.001, 0),
-      ];
-      final specs = buildPoiSymbolSpecs(pois, {'visited-1'});
+    test(
+      'resolves the visited flag from the visitedPoiIds set, by bare poiId',
+      () {
+        final pois = [
+          poi('visited-1', PoiKind.coins, 0, 0),
+          poi('unvisited-1', PoiKind.energy, 0.001, 0),
+        ];
+        final specs = buildPoiSymbolSpecs(pois, {'visited-1'});
 
-      final visitedSpec = specs.firstWhere((s) => s.poi.id == 'visited-1');
-      final unvisitedSpec = specs.firstWhere((s) => s.poi.id == 'unvisited-1');
-      expect(visitedSpec.visited, isTrue);
-      expect(visitedSpec.iconId, poiIconId(PoiKind.coins, visited: true));
-      expect(unvisitedSpec.visited, isFalse);
-      expect(unvisitedSpec.iconId, poiIconId(PoiKind.energy, visited: false));
-    });
+        final visitedSpec = specs.firstWhere((s) => s.poi.id == 'visited-1');
+        final unvisitedSpec = specs.firstWhere(
+          (s) => s.poi.id == 'unvisited-1',
+        );
+        expect(visitedSpec.visited, isTrue);
+        expect(visitedSpec.iconId, poiIconId(PoiKind.coins, visited: true));
+        expect(unvisitedSpec.visited, isFalse);
+        expect(unvisitedSpec.iconId, poiIconId(PoiKind.energy, visited: false));
+      },
+    );
 
     test('an empty POI list yields an empty spec list', () {
       expect(buildPoiSymbolSpecs(const [], {}), isEmpty);

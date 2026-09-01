@@ -37,7 +37,10 @@ void main() {
     test('idle: never re-engages', () {
       expect(
         shouldReengageTrackingOnRemount(
-            isRecording: false, isRouteBound: false, trackingReleased: false),
+          isRecording: false,
+          isRouteBound: false,
+          trackingReleased: false,
+        ),
         isFalse,
       );
     });
@@ -45,7 +48,10 @@ void main() {
     test('recording a free (not route-bound) trip: never re-engages', () {
       expect(
         shouldReengageTrackingOnRemount(
-            isRecording: true, isRouteBound: false, trackingReleased: false),
+          isRecording: true,
+          isRouteBound: false,
+          trackingReleased: false,
+        ),
         isFalse,
       );
     });
@@ -53,28 +59,38 @@ void main() {
     test('navigating, tracking never released: re-engages', () {
       expect(
         shouldReengageTrackingOnRemount(
-            isRecording: true, isRouteBound: true, trackingReleased: false),
+          isRecording: true,
+          isRouteBound: true,
+          trackingReleased: false,
+        ),
         isTrue,
       );
     });
 
-    test(
-        'navigating, tracking released by a gesture: does NOT re-engage — '
+    test('navigating, tracking released by a gesture: does NOT re-engage — '
         'the fix-round regression this guards against', () {
       expect(
         shouldReengageTrackingOnRemount(
-            isRecording: true, isRouteBound: true, trackingReleased: true),
+          isRecording: true,
+          isRouteBound: true,
+          trackingReleased: true,
+        ),
         isFalse,
       );
     });
 
-    test('tracking released but no longer navigating: stays false either way',
-        () {
-      expect(
-        shouldReengageTrackingOnRemount(
-            isRecording: false, isRouteBound: true, trackingReleased: true),
-        isFalse,
-      );
-    });
+    test(
+      'tracking released but no longer navigating: stays false either way',
+      () {
+        expect(
+          shouldReengageTrackingOnRemount(
+            isRecording: false,
+            isRouteBound: true,
+            trackingReleased: true,
+          ),
+          isFalse,
+        );
+      },
+    );
   });
 }

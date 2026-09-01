@@ -14,8 +14,16 @@ void main() {
       GameBadges.streak7,
       GameBadges.quartier25,
     ]) {
-      expect(kBadgeLabels.containsKey(id), isTrue, reason: 'missing label for $id');
-      expect(badgeLabel(id), isNot(id), reason: '$id should not fall back to its raw id');
+      expect(
+        kBadgeLabels.containsKey(id),
+        isTrue,
+        reason: 'missing label for $id',
+      );
+      expect(
+        badgeLabel(id),
+        isNot(id),
+        reason: '$id should not fall back to its raw id',
+      );
     }
   });
 

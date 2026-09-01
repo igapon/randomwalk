@@ -13,16 +13,17 @@ import '../support/trip_fakes.dart';
 void main() {
   group('NavSeed', () {
     NavSeed seed({String? tileDirPath = '/data/tiles/2026.08'}) => NavSeed(
-          route: fakeRoute(),
-          destLat: 46.51,
-          destLon: 6.61,
-          profile: RoutingProfile.bike,
-          tileDirPath: tileDirPath,
-        );
+      route: fakeRoute(),
+      destLat: 46.51,
+      destLon: 6.61,
+      profile: RoutingProfile.bike,
+      tileDirPath: tileDirPath,
+    );
 
     test('round-trips everything a service-side replan needs', () {
-      final restored =
-          NavSeed.fromJson(jsonDecode(jsonEncode(seed().toJson())));
+      final restored = NavSeed.fromJson(
+        jsonDecode(jsonEncode(seed().toJson())),
+      );
 
       expect(restored.route.distanceKm, closeTo(1.2, 1e-9));
       expect(restored.route.shape, hasLength(2));
@@ -34,8 +35,9 @@ void main() {
     });
 
     test('survives having no tile directory to point at', () {
-      final restored =
-          NavSeed.fromJson(jsonDecode(jsonEncode(seed(tileDirPath: null).toJson())));
+      final restored = NavSeed.fromJson(
+        jsonDecode(jsonEncode(seed(tileDirPath: null).toJson())),
+      );
       expect(restored.tileDirPath, isNull);
     });
 
@@ -44,22 +46,28 @@ void main() {
       expect(NavSeed.fromJson(json).profile, RoutingProfile.walk);
     });
 
-    test('isLoop round-trips, defaults false, and tolerates a legacy document',
-        () {
-      expect(seed().isLoop, isFalse);
-      final loop = NavSeed(
-        route: fakeRoute(),
-        destLat: 46.51,
-        destLon: 6.61,
-        profile: RoutingProfile.walk,
-        tileDirPath: null,
-        isLoop: true,
-      );
-      expect(NavSeed.fromJson(jsonDecode(jsonEncode(loop.toJson()))).isLoop,
-          isTrue);
-      expect(NavSeed.fromJson(seed().toJson()..remove('isLoop')).isLoop,
-          isFalse);
-    });
+    test(
+      'isLoop round-trips, defaults false, and tolerates a legacy document',
+      () {
+        expect(seed().isLoop, isFalse);
+        final loop = NavSeed(
+          route: fakeRoute(),
+          destLat: 46.51,
+          destLon: 6.61,
+          profile: RoutingProfile.walk,
+          tileDirPath: null,
+          isLoop: true,
+        );
+        expect(
+          NavSeed.fromJson(jsonDecode(jsonEncode(loop.toJson()))).isLoop,
+          isTrue,
+        );
+        expect(
+          NavSeed.fromJson(seed().toJson()..remove('isLoop')).isLoop,
+          isFalse,
+        );
+      },
+    );
   });
 
   group('TripController seeds the service for navigation', () {
@@ -73,9 +81,10 @@ void main() {
           totalStore: FakeTotalDistanceStore(),
           finalisedTrips: MemoryFinalisedTripMemory(),
           ensurePermissions: () async => const TripPermissions(
-              outcome: TripPermissionOutcome.ready,
-              mode: TrackingMode.background,
-              stepsAvailable: true),
+            outcome: TripPermissionOutcome.ready,
+            mode: TrackingMode.background,
+            stepsAvailable: true,
+          ),
           createStepCounter: (seed) =>
               SessionStepCounter(FakeStepSensor(), seed: seed),
           clock: () => DateTime.utc(2026, 8, 30, 10, 0, 0),
@@ -89,19 +98,21 @@ void main() {
       routes = MemoryRouteStore()..current = fakeActiveRoute();
     });
 
-    test('a route-bound trip carries route, destination, profile and tiles',
-        () async {
-      final trip = build(resolveTileDir: () async => '/data/tiles/2026.08');
-      await trip.restore();
-      expect(await trip.startTrip(route: fakeRoute()), isTrue);
+    test(
+      'a route-bound trip carries route, destination, profile and tiles',
+      () async {
+        final trip = build(resolveTileDir: () async => '/data/tiles/2026.08');
+        await trip.restore();
+        expect(await trip.startTrip(route: fakeRoute()), isTrue);
 
-      final nav = tracker.startedNav.single!;
-      expect(nav.route.distanceKm, closeTo(1.2, 1e-9));
-      expect(nav.destLat, closeTo(46.51, 1e-9));
-      expect(nav.destLon, closeTo(6.61, 1e-9));
-      expect(nav.profile, RoutingProfile.walk);
-      expect(nav.tileDirPath, '/data/tiles/2026.08');
-    });
+        final nav = tracker.startedNav.single!;
+        expect(nav.route.distanceKm, closeTo(1.2, 1e-9));
+        expect(nav.destLat, closeTo(46.51, 1e-9));
+        expect(nav.destLon, closeTo(6.61, 1e-9));
+        expect(nav.profile, RoutingProfile.walk);
+        expect(nav.tileDirPath, '/data/tiles/2026.08');
+      },
+    );
 
     test('a free trip seeds no navigation at all', () async {
       final trip = build(resolveTileDir: () async => '/data/tiles/2026.08');
@@ -111,21 +122,24 @@ void main() {
       expect(tracker.startedNav.single, isNull);
     });
 
-    test('with no destination planned, the route\'s own end is the target',
-        () async {
-      routes.current = ActiveRoute(
-          route: fakeRoute(), profile: RoutingProfile.walk);
-      final trip = build();
-      await trip.restore();
-      await trip.startTrip(route: fakeRoute());
+    test(
+      'with no destination planned, the route\'s own end is the target',
+      () async {
+        routes.current = ActiveRoute(
+          route: fakeRoute(),
+          profile: RoutingProfile.walk,
+        );
+        final trip = build();
+        await trip.restore();
+        await trip.startTrip(route: fakeRoute());
 
-      final nav = tracker.startedNav.single!;
-      expect(nav.destLat, closeTo(fakeRoute().shape.last.$1, 1e-9));
-      expect(nav.destLon, closeTo(fakeRoute().shape.last.$2, 1e-9));
-    });
+        final nav = tracker.startedNav.single!;
+        expect(nav.destLat, closeTo(fakeRoute().shape.last.$1, 1e-9));
+        expect(nav.destLon, closeTo(fakeRoute().shape.last.$2, 1e-9));
+      },
+    );
 
-    test('no tile directory still navigates — it only cannot replan',
-        () async {
+    test('no tile directory still navigates — it only cannot replan', () async {
       final trip = build(resolveTileDir: () async => null);
       await trip.restore();
       await trip.startTrip(route: fakeRoute());
@@ -139,7 +153,10 @@ void main() {
       // A→B route, and its first off-route replan reroutes the walker to the
       // loop's own start point — ending the trip.
       routes.current = ActiveRoute(
-          route: fakeRoute(), profile: RoutingProfile.walk, isLoop: true);
+        route: fakeRoute(),
+        profile: RoutingProfile.walk,
+        isLoop: true,
+      );
       final trip = build();
       await trip.restore();
       await trip.startTrip(route: fakeRoute());

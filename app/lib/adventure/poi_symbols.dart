@@ -29,8 +29,14 @@ List<GamePoi> nearestPois(
   int cap = kMaxAdventureSymbols,
 }) {
   final sorted = [...pois]
-    ..sort((a, b) => metersBetween(lat, lon, a.lat, a.lon)
-        .compareTo(metersBetween(lat, lon, b.lat, b.lon)));
+    ..sort(
+      (a, b) => metersBetween(
+        lat,
+        lon,
+        a.lat,
+        a.lon,
+      ).compareTo(metersBetween(lat, lon, b.lat, b.lon)),
+    );
   return sorted.length <= cap ? sorted : sorted.sublist(0, cap);
 }
 

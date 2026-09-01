@@ -38,16 +38,15 @@ void main() {
   });
 
   group('AdventureHud', () {
-    Widget app(Widget child) =>
-        MaterialApp(theme: AppTheme.light, home: Scaffold(body: child));
+    Widget app(Widget child) => MaterialApp(
+      theme: AppTheme.light,
+      home: Scaffold(body: child),
+    );
 
     testWidgets('shows coins and level', (tester) async {
-      await tester.pumpWidget(app(const AdventureHud(
-        coins: 1234,
-        energy: 80,
-        xp: 150,
-        level: 2,
-      )));
+      await tester.pumpWidget(
+        app(const AdventureHud(coins: 1234, energy: 80, xp: 150, level: 2)),
+      );
 
       expect(find.text('1 234'), findsOneWidget);
       expect(find.text('Niveau 2'), findsOneWidget);
@@ -55,54 +54,64 @@ void main() {
 
     testWidgets('tapping invokes onTap', (tester) async {
       var tapped = false;
-      await tester.pumpWidget(app(AdventureHud(
-        coins: 0,
-        energy: 100,
-        xp: 0,
-        level: 0,
-        onTap: () => tapped = true,
-      )));
+      await tester.pumpWidget(
+        app(
+          AdventureHud(
+            coins: 0,
+            energy: 100,
+            xp: 0,
+            level: 0,
+            onTap: () => tapped = true,
+          ),
+        ),
+      );
 
       await tester.tap(find.byType(AdventureHud));
       expect(tapped, isTrue);
     });
 
     testWidgets('energy bar reflects the energy fraction', (tester) async {
-      await tester.pumpWidget(app(const AdventureHud(
-        coins: 0,
-        energy: 50,
-        xp: 0,
-        level: 0,
-      )));
+      await tester.pumpWidget(
+        app(const AdventureHud(coins: 0, energy: 50, xp: 0, level: 0)),
+      );
 
       final bars = tester.widgetList<LinearProgressIndicator>(
-          find.byType(LinearProgressIndicator));
+        find.byType(LinearProgressIndicator),
+      );
       expect(bars.first.value, closeTo(0.5, 1e-9));
     });
   });
 
   group('AdventureEmptyBanner', () {
     testWidgets('shows the discreet French copy', (tester) async {
-      await tester.pumpWidget(const MaterialApp(
-        theme: null,
-        home: Scaffold(body: AdventureEmptyBanner()),
-      ));
+      await tester.pumpWidget(
+        const MaterialApp(
+          theme: null,
+          home: Scaffold(body: AdventureEmptyBanner()),
+        ),
+      );
       expect(find.text('Explorez en marchant !'), findsOneWidget);
     });
   });
 
   group('BadgesSheet', () {
-    Widget app(Widget child) =>
-        MaterialApp(theme: AppTheme.light, home: Scaffold(body: child));
+    Widget app(Widget child) => MaterialApp(
+      theme: AppTheme.light,
+      home: Scaffold(body: child),
+    );
 
     testWidgets('shows all 8 badges, and stats', (tester) async {
-      await tester.pumpWidget(app(BadgesSheet(
-        unlockedBadges: {GameBadges.firstTrip, GameBadges.km10},
-        streakDays: 3,
-        totalKm: 12.5,
-        cellsRevealed: 42,
-        quartierPercent: 0.25,
-      )));
+      await tester.pumpWidget(
+        app(
+          BadgesSheet(
+            unlockedBadges: {GameBadges.firstTrip, GameBadges.km10},
+            streakDays: 3,
+            totalKm: 12.5,
+            cellsRevealed: 42,
+            quartierPercent: 0.25,
+          ),
+        ),
+      );
 
       expect(find.text('Badges'), findsOneWidget);
       expect(find.text('Premier trajet'), findsOneWidget);
@@ -114,15 +123,20 @@ void main() {
       expect(find.text('25 %'), findsOneWidget);
     });
 
-    testWidgets('unlocked and locked badges render distinct icons',
-        (tester) async {
-      await tester.pumpWidget(app(BadgesSheet(
-        unlockedBadges: const {GameBadges.firstTrip},
-        streakDays: 0,
-        totalKm: 0,
-        cellsRevealed: 0,
-        quartierPercent: 0,
-      )));
+    testWidgets('unlocked and locked badges render distinct icons', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        app(
+          BadgesSheet(
+            unlockedBadges: const {GameBadges.firstTrip},
+            streakDays: 0,
+            totalKm: 0,
+            cellsRevealed: 0,
+            quartierPercent: 0,
+          ),
+        ),
+      );
 
       expect(find.byIcon(Icons.emoji_events), findsOneWidget);
       expect(find.byIcon(Icons.lock_outline), findsNWidgets(7));

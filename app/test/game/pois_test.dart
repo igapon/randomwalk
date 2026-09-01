@@ -17,12 +17,7 @@ void main() {
       'lon': churchLon,
       'name': 'Église Saint-Pierre',
     },
-    {
-      'id': 'node/2',
-      'kind': 'coins',
-      'lat': bankLat,
-      'lon': bankLon,
-    },
+    {'id': 'node/2', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
     {
       'id': 'node/3',
       'kind': 'energy',
@@ -33,8 +28,11 @@ void main() {
     },
   ]);
 
-  Future<File> writeFixture(Directory dir,
-      {required String name, required bool gzipped}) async {
+  Future<File> writeFixture(
+    Directory dir, {
+    required String name,
+    required bool gzipped,
+  }) async {
     final file = File('${dir.path}/$name');
     final bytes = utf8.encode(fixtureJson);
     await file.writeAsBytes(gzipped ? gzip.encode(bytes) : bytes);
@@ -61,8 +59,12 @@ void main() {
     });
 
     test('parses a minimal entry (no subkind/name)', () {
-      final poi = GamePoi.tryParse(
-          {'id': 'way/2', 'kind': 'reveal', 'lat': 1.0, 'lon': 2.0});
+      final poi = GamePoi.tryParse({
+        'id': 'way/2',
+        'kind': 'reveal',
+        'lat': 1.0,
+        'lon': 2.0,
+      });
       expect(poi, isNotNull);
       expect(poi!.subkind, isNull);
       expect(poi.name, isNull);
@@ -70,18 +72,29 @@ void main() {
 
     test('rejects an unknown kind', () {
       expect(
-          GamePoi.tryParse(
-              {'id': 'node/1', 'kind': 'bogus', 'lat': 1.0, 'lon': 2.0}),
-          isNull);
+        GamePoi.tryParse({
+          'id': 'node/1',
+          'kind': 'bogus',
+          'lat': 1.0,
+          'lon': 2.0,
+        }),
+        isNull,
+      );
     });
 
     test('rejects entries missing required fields', () {
-      expect(GamePoi.tryParse({'kind': 'reveal', 'lat': 1.0, 'lon': 2.0}),
-          isNull);
-      expect(GamePoi.tryParse({'id': 'node/1', 'lat': 1.0, 'lon': 2.0}),
-          isNull);
-      expect(GamePoi.tryParse({'id': 'node/1', 'kind': 'reveal', 'lon': 2.0}),
-          isNull);
+      expect(
+        GamePoi.tryParse({'kind': 'reveal', 'lat': 1.0, 'lon': 2.0}),
+        isNull,
+      );
+      expect(
+        GamePoi.tryParse({'id': 'node/1', 'lat': 1.0, 'lon': 2.0}),
+        isNull,
+      );
+      expect(
+        GamePoi.tryParse({'id': 'node/1', 'kind': 'reveal', 'lon': 2.0}),
+        isNull,
+      );
     });
 
     test('rejects non-map input', () {
@@ -99,15 +112,16 @@ void main() {
       expect(store.count, 3);
     });
 
-    test('a plain (non-gzipped) file fails gzip decode -> PoiStore.empty',
-        () async {
-      final dir = await Directory.systemTemp.createTemp('pois');
-      final file =
-          await writeFixture(dir, name: 'pois.json', gzipped: false);
-      final store = await PoiStore.load(file);
-      expect(store.count, 0);
-      expect(identical(store, PoiStore.empty), isTrue);
-    });
+    test(
+      'a plain (non-gzipped) file fails gzip decode -> PoiStore.empty',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('pois');
+        final file = await writeFixture(dir, name: 'pois.json', gzipped: false);
+        final store = await PoiStore.load(file);
+        expect(store.count, 0);
+        expect(identical(store, PoiStore.empty), isTrue);
+      },
+    );
 
     test('a missing file resolves to PoiStore.empty', () async {
       final dir = await Directory.systemTemp.createTemp('pois');
@@ -125,14 +139,16 @@ void main() {
       expect(store.count, 0);
     });
 
-    test('gzip of a JSON object (not a list) resolves to PoiStore.empty',
-        () async {
-      final dir = await Directory.systemTemp.createTemp('pois');
-      final file = File('${dir.path}/object.json.gz');
-      await file.writeAsBytes(gzip.encode(utf8.encode(jsonEncode({'a': 1}))));
-      final store = await PoiStore.load(file);
-      expect(store.count, 0);
-    });
+    test(
+      'gzip of a JSON object (not a list) resolves to PoiStore.empty',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('pois');
+        final file = File('${dir.path}/object.json.gz');
+        await file.writeAsBytes(gzip.encode(utf8.encode(jsonEncode({'a': 1}))));
+        final store = await PoiStore.load(file);
+        expect(store.count, 0);
+      },
+    );
 
     test('skips malformed entries but keeps the valid ones', () async {
       final dir = await Directory.systemTemp.createTemp('pois');

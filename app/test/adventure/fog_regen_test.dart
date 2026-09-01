@@ -12,31 +12,33 @@ void main() {
     FogViewport viewport = geneva,
     int lastRevealedVersion = 0,
     int revealedVersion = 0,
-  }) =>
-      shouldRegenFog(
-        lastGen: lastGen,
-        now: now,
-        lastViewport: lastViewport,
-        viewport: viewport,
-        lastRevealedVersion: lastRevealedVersion,
-        revealedVersion: revealedVersion,
-      );
+  }) => shouldRegenFog(
+    lastGen: lastGen,
+    now: now,
+    lastViewport: lastViewport,
+    viewport: viewport,
+    lastRevealedVersion: lastRevealedVersion,
+    revealedVersion: revealedVersion,
+  );
 
   test('never generated yet: always regenerates', () {
     expect(decide(lastGen: null, now: t0, lastViewport: null), isTrue);
   });
 
-  test('within the 2s throttle: never regenerates, even if everything else changed', () {
-    final result = decide(
-      lastGen: t0,
-      now: t0.add(const Duration(milliseconds: 500)),
-      lastViewport: geneva,
-      viewport: const FogViewport((47.0, 7.0), (47.01, 7.01)), // far away
-      lastRevealedVersion: 0,
-      revealedVersion: 99,
-    );
-    expect(result, isFalse);
-  });
+  test(
+    'within the 2s throttle: never regenerates, even if everything else changed',
+    () {
+      final result = decide(
+        lastGen: t0,
+        now: t0.add(const Duration(milliseconds: 500)),
+        lastViewport: geneva,
+        viewport: const FogViewport((47.0, 7.0), (47.01, 7.01)), // far away
+        lastRevealedVersion: 0,
+        revealedVersion: 99,
+      );
+      expect(result, isFalse);
+    },
+  );
 
   test('exactly at the throttle boundary counts as "elapsed"', () {
     final result = decide(
@@ -73,17 +75,20 @@ void main() {
     expect(result, isTrue);
   });
 
-  test('throttle elapsed, viewport moved past the ~1-cell threshold: regenerates', () {
-    // ~150m north is well past one 150m cell.
-    final moved = FogViewport((46.2014, 6.14), (46.2114, 6.15));
-    final result = decide(
-      lastGen: t0,
-      now: t0.add(const Duration(seconds: 3)),
-      lastViewport: geneva,
-      viewport: moved,
-    );
-    expect(result, isTrue);
-  });
+  test(
+    'throttle elapsed, viewport moved past the ~1-cell threshold: regenerates',
+    () {
+      // ~150m north is well past one 150m cell.
+      final moved = FogViewport((46.2014, 6.14), (46.2114, 6.15));
+      final result = decide(
+        lastGen: t0,
+        now: t0.add(const Duration(seconds: 3)),
+        lastViewport: geneva,
+        viewport: moved,
+      );
+      expect(result, isTrue);
+    },
+  );
 
   test('throttle elapsed, viewport moved only a few meters: no regen', () {
     // ~5m north — well under the 150m cell threshold.
@@ -112,9 +117,13 @@ void main() {
   });
 
   test('FogViewport equality/hashCode by value', () {
-    expect(const FogViewport((1, 2), (3, 4)),
-        const FogViewport((1, 2), (3, 4)));
-    expect(const FogViewport((1, 2), (3, 4)).hashCode,
-        const FogViewport((1, 2), (3, 4)).hashCode);
+    expect(
+      const FogViewport((1, 2), (3, 4)),
+      const FogViewport((1, 2), (3, 4)),
+    );
+    expect(
+      const FogViewport((1, 2), (3, 4)).hashCode,
+      const FogViewport((1, 2), (3, 4)).hashCode,
+    );
   });
 }

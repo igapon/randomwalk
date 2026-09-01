@@ -48,20 +48,20 @@ class GameEvent {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'ts': ts.toIso8601String(),
-        'type': type,
-        'payload': payload,
-      };
+    'id': id,
+    'ts': ts.toIso8601String(),
+    'type': type,
+    'payload': payload,
+  };
 
   factory GameEvent.fromJson(Map<String, dynamic> json) => GameEvent(
-        id: json['id'] as String,
-        ts: DateTime.parse(json['ts'] as String),
-        type: json['type'] as String,
-        payload: json['payload'] == null
-            ? const {}
-            : Map<String, dynamic>.from(json['payload'] as Map),
-      );
+    id: json['id'] as String,
+    ts: DateTime.parse(json['ts'] as String),
+    type: json['type'] as String,
+    payload: json['payload'] == null
+        ? const {}
+        : Map<String, dynamic>.from(json['payload'] as Map),
+  );
 }
 
 /// Append-only JSONL journal of [GameEvent]s, the foundation for both the
@@ -97,11 +97,7 @@ class GameJournal {
   Future<void> append(GameEvent event) async {
     await dir.create(recursive: true);
     final line = '${jsonEncode(event.toJson())}\n';
-    await File(_path).writeAsString(
-      line,
-      mode: FileMode.append,
-      flush: true,
-    );
+    await File(_path).writeAsString(line, mode: FileMode.append, flush: true);
   }
 
   /// Appends every event in [events] as a single write+flush (one line per
@@ -115,11 +111,9 @@ class GameJournal {
     for (final event in events) {
       buffer.writeln(jsonEncode(event.toJson()));
     }
-    await File(_path).writeAsString(
-      buffer.toString(),
-      mode: FileMode.append,
-      flush: true,
-    );
+    await File(
+      _path,
+    ).writeAsString(buffer.toString(), mode: FileMode.append, flush: true);
   }
 
   /// Reads every event from the journal, in file (append) order.

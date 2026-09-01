@@ -290,10 +290,7 @@ String formatDestinationLabel((double, double) point) {
 bool shouldShowPlanDestinationChip({
   required PlanMode mode,
   required bool hasDestination,
-}) =>
-    mode != PlanMode.itinerary &&
-    mode != PlanMode.explore &&
-    hasDestination;
+}) => mode != PlanMode.itinerary && mode != PlanMode.explore && hasDestination;
 
 // ---- Fullscreen candidate selection (task 8) --------------------------------
 

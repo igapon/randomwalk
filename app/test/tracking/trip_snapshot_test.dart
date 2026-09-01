@@ -10,22 +10,22 @@ TripSnapshot _recording({
   int steps = 1600,
   bool routeBound = true,
   RoutingProfile profile = RoutingProfile.walk,
-}) =>
-    TripSnapshot(
-      status: TripStatus.recording,
-      distanceKm: distanceKm,
-      steps: steps,
-      startedAt: DateTime.utc(2026, 8, 30, 10, 0, 0),
-      updatedAt: DateTime.utc(2026, 8, 30, 10, 32, 0),
-      profile: profile,
-      routeBound: routeBound,
-    );
+}) => TripSnapshot(
+  status: TripStatus.recording,
+  distanceKm: distanceKm,
+  steps: steps,
+  startedAt: DateTime.utc(2026, 8, 30, 10, 0, 0),
+  updatedAt: DateTime.utc(2026, 8, 30, 10, 32, 0),
+  profile: profile,
+  routeBound: routeBound,
+);
 
 void main() {
   group('serialization', () {
     test('round-trips every field through JSON', () {
-      final restored =
-          TripSnapshot.fromJson(jsonDecode(jsonEncode(_recording().toJson())));
+      final restored = TripSnapshot.fromJson(
+        jsonDecode(jsonEncode(_recording().toJson())),
+      );
 
       expect(restored.status, TripStatus.recording);
       expect(restored.distanceKm, closeTo(1.2, 1e-9));
@@ -46,7 +46,9 @@ void main() {
         profile: RoutingProfile.bike,
         routeBound: false,
       );
-      final restored = TripSnapshot.fromJson(jsonDecode(jsonEncode(local.toJson())));
+      final restored = TripSnapshot.fromJson(
+        jsonDecode(jsonEncode(local.toJson())),
+      );
       expect(restored.startedAt.isAtSameMomentAs(local.startedAt), isTrue);
       expect(restored.updatedAt.isAtSameMomentAs(local.updatedAt), isTrue);
     });
@@ -54,12 +56,15 @@ void main() {
     test('carries the service-side GPS silence flag', () {
       final silent = _recording().copyWith(gpsSilent: true);
       expect(
-        TripSnapshot.fromJson(jsonDecode(jsonEncode(silent.toJson()))).gpsSilent,
+        TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(silent.toJson())),
+        ).gpsSilent,
         isTrue,
       );
       expect(
-        TripSnapshot.fromJson(jsonDecode(jsonEncode(_recording().toJson())))
-            .gpsSilent,
+        TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(_recording().toJson())),
+        ).gpsSilent,
         isFalse,
       );
     });
@@ -86,8 +91,9 @@ void main() {
           replanning: true,
         ),
       );
-      final restored =
-          TripSnapshot.fromJson(jsonDecode(jsonEncode(navigating.toJson())));
+      final restored = TripSnapshot.fromJson(
+        jsonDecode(jsonEncode(navigating.toJson())),
+      );
 
       expect(restored.navInstruction, 'Tournez à gauche sur la rue de Bourg');
       expect(restored.navDistanceToManeuverM, closeTo(120, 1e-9));
@@ -101,8 +107,9 @@ void main() {
     });
 
     test('a free trip carries no navigation fields at all', () {
-      final restored =
-          TripSnapshot.fromJson(jsonDecode(jsonEncode(_recording().toJson())));
+      final restored = TripSnapshot.fromJson(
+        jsonDecode(jsonEncode(_recording().toJson())),
+      );
 
       expect(restored.navInstruction, isNull);
       expect(restored.navDistanceToManeuverM, isNull);
@@ -115,23 +122,24 @@ void main() {
       expect(restored.navReplanning, isFalse);
     });
 
-    test('a document written before navigation existed reads as not navigating',
-        () {
-      final legacy = _recording().toJson()
-        ..remove('navOffRoute')
-        ..remove('navArrived')
-        ..remove('navReplanCount');
-      final restored = TripSnapshot.fromJson(legacy);
-
-      expect(restored.navOffRoute, isFalse);
-      expect(restored.navArrived, isFalse);
-      expect(restored.navReplanCount, 0);
-      expect(restored.navInstruction, isNull);
-      expect(restored.distanceKm, closeTo(1.2, 1e-9));
-    });
-
     test(
-        'a document written before navReplanning existed (final review item '
+      'a document written before navigation existed reads as not navigating',
+      () {
+        final legacy = _recording().toJson()
+          ..remove('navOffRoute')
+          ..remove('navArrived')
+          ..remove('navReplanCount');
+        final restored = TripSnapshot.fromJson(legacy);
+
+        expect(restored.navOffRoute, isFalse);
+        expect(restored.navArrived, isFalse);
+        expect(restored.navReplanCount, 0);
+        expect(restored.navInstruction, isNull);
+        expect(restored.distanceKm, closeTo(1.2, 1e-9));
+      },
+    );
+
+    test('a document written before navReplanning existed (final review item '
         '5) reads as not replanning', () {
       final legacy = _recording().toJson()..remove('navReplanning');
       expect(TripSnapshot.fromJson(legacy).navReplanning, isFalse);
@@ -159,10 +167,10 @@ void main() {
       });
 
       test('round-trips a visit through JSON, subkind and name included', () {
-        final withVisit =
-            _recording().copyWith(pendingVisits: [visit]);
-        final restored =
-            TripSnapshot.fromJson(jsonDecode(jsonEncode(withVisit.toJson())));
+        final withVisit = _recording().copyWith(pendingVisits: [visit]);
+        final restored = TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(withVisit.toJson())),
+        );
 
         expect(restored.pendingVisits, [visit]);
       });
@@ -180,17 +188,20 @@ void main() {
         expect(json.containsKey('name'), isFalse);
 
         final restored = PendingVisit.tryParse(
-            jsonDecode(jsonEncode(json)) as Map<String, dynamic>)!;
+          jsonDecode(jsonEncode(json)) as Map<String, dynamic>,
+        )!;
         expect(restored.subkind, isNull);
         expect(restored.name, isNull);
         expect(restored, bare);
       });
 
-      test('a snapshot written before pendingVisits existed reads as empty',
-          () {
-        final legacy = _recording().toJson()..remove('pendingVisits');
-        expect(TripSnapshot.fromJson(legacy).pendingVisits, isEmpty);
-      });
+      test(
+        'a snapshot written before pendingVisits existed reads as empty',
+        () {
+          final legacy = _recording().toJson()..remove('pendingVisits');
+          expect(TripSnapshot.fromJson(legacy).pendingVisits, isEmpty);
+        },
+      );
 
       test('a malformed entry in the list is skipped, not thrown', () {
         final json = _recording().toJson();
@@ -214,13 +225,17 @@ void main() {
     });
 
     test('elapsed is measured from startedAt', () {
-      expect(_recording().elapsedAt(DateTime.utc(2026, 8, 30, 10, 32, 0)),
-          const Duration(minutes: 32));
+      expect(
+        _recording().elapsedAt(DateTime.utc(2026, 8, 30, 10, 32, 0)),
+        const Duration(minutes: 32),
+      );
     });
 
     test('elapsed never goes negative if the clock jumped backwards', () {
-      expect(_recording().elapsedAt(DateTime.utc(2026, 8, 30, 9, 0, 0)),
-          Duration.zero);
+      expect(
+        _recording().elapsedAt(DateTime.utc(2026, 8, 30, 9, 0, 0)),
+        Duration.zero,
+      );
     });
   });
 
@@ -239,9 +254,13 @@ void main() {
 
     test('a bike trip is never flagged for lack of steps', () {
       expect(
-          _recording(distanceKm: 8, steps: 0, profile: RoutingProfile.bike)
-              .needsReview,
-          isFalse);
+        _recording(
+          distanceKm: 8,
+          steps: 0,
+          profile: RoutingProfile.bike,
+        ).needsReview,
+        isFalse,
+      );
     });
   });
 
@@ -297,8 +316,11 @@ void main() {
     setUp(() {
       store = _RecordingStore();
       now = DateTime.utc(2026, 8, 30, 10, 0, 0);
-      writer = ThrottledSnapshotWriter(store,
-          interval: const Duration(seconds: 2), clock: () => now);
+      writer = ThrottledSnapshotWriter(
+        store,
+        interval: const Duration(seconds: 2),
+        clock: () => now,
+      );
     });
 
     test('the first submit is written straight through', () async {

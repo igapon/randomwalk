@@ -10,10 +10,7 @@ class FogViewport {
 
   const FogViewport(this.sw, this.ne);
 
-  (double, double) get center => (
-        (sw.$1 + ne.$1) / 2,
-        (sw.$2 + ne.$2) / 2,
-      );
+  (double, double) get center => ((sw.$1 + ne.$1) / 2, (sw.$2 + ne.$2) / 2);
 
   @override
   bool operator ==(Object other) =>

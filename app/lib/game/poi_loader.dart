@@ -59,7 +59,9 @@ final poisStoreProvider = FutureProvider<PoiStore>((ref) async {
   return ref.watch(_poiStoreByPathProvider(file.path).future);
 });
 
-final _poiStoreByPathProvider =
-    FutureProvider.family<PoiStore, String>((ref, path) {
+final _poiStoreByPathProvider = FutureProvider.family<PoiStore, String>((
+  ref,
+  path,
+) {
   return loadPoiStoreOffUiIsolate(File(path));
 });

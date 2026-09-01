@@ -11,14 +11,15 @@ import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
 import 'geocoding.dart';
 
-typedef EnsureCoverage
-    = Future<
-        ({
-          String datasetVersion,
-          String tileDirPath,
-          int failed,
-          bool versionMismatch
-        })>
+typedef EnsureCoverage =
+    Future<
+      ({
+        String datasetVersion,
+        String tileDirPath,
+        int failed,
+        bool versionMismatch,
+      })
+    >
     Function(double lat, double lon);
 
 /// Pure orchestration, unit-testable: coverage -> (re)init -> route.
@@ -53,19 +54,27 @@ class RoutePlanner {
   }
 }
 
-final routingEngineProvider =
-    Provider<RoutingEngine>((ref) => ChannelRoutingEngine());
+final routingEngineProvider = Provider<RoutingEngine>(
+  (ref) => ChannelRoutingEngine(),
+);
 
-final coverageRepositoryProvider = FutureProvider<CoverageRepository>((ref) async {
+final coverageRepositoryProvider = FutureProvider<CoverageRepository>((
+  ref,
+) async {
   final dir = await getApplicationSupportDirectory();
   // A raw `dart:io` `HttpClient` behind `IOClient`, not the package's plain
   // `http.Client()` — task-8 backlog item 2: this is the only layer that
   // exposes a genuine connect-phase timeout (`connectionTimeout`), distinct
   // from the request-level `.timeout()` [CoverageRepository] wraps each
   // `get()` call in for the total budget. See `CoverageConfig.connectTimeout`.
-  final client = IOClient(HttpClient()..connectionTimeout = CoverageConfig.connectTimeout);
+  final client = IOClient(
+    HttpClient()..connectionTimeout = CoverageConfig.connectTimeout,
+  );
   ref.onDispose(client.close);
-  return CoverageRepository(root: Directory('${dir.path}/tiles'), client: client);
+  return CoverageRepository(
+    root: Directory('${dir.path}/tiles'),
+    client: client,
+  );
 });
 
 final geocodingServiceProvider = Provider<GeocodingService>((ref) {
@@ -104,17 +113,21 @@ final routePlannerProvider = FutureProvider<RoutePlanner>((ref) async {
   final coverage = await ref.watch(coverageRepositoryProvider.future);
   final sink = ref.watch(progressSinkProvider);
   return RoutePlanner(
-      engine: ref.watch(routingEngineProvider),
-      ensureCoverage: (lat, lon) async {
-        final res = await coverage.ensureCoverage(lat, lon,
-            onProgress: sink.onProgress);
-        return (
-          datasetVersion: res.datasetVersion,
-          tileDirPath: res.tileDirPath,
-          failed: res.failed,
-          versionMismatch: res.versionMismatch,
-        );
-      });
+    engine: ref.watch(routingEngineProvider),
+    ensureCoverage: (lat, lon) async {
+      final res = await coverage.ensureCoverage(
+        lat,
+        lon,
+        onProgress: sink.onProgress,
+      );
+      return (
+        datasetVersion: res.datasetVersion,
+        tileDirPath: res.tileDirPath,
+        failed: res.failed,
+        versionMismatch: res.versionMismatch,
+      );
+    },
+  );
 });
 
 /// Pure orchestration for loop/duration planning (task 6), the same
@@ -137,8 +150,10 @@ class LoopPlanOrchestrator {
 
   LoopPlanOrchestrator({required this.engine, required this.ensureCoverage});
 
-  Future<LoopPlanResult> plan(LoopRequest request,
-      {math.Random Function(int seed)? rng}) async {
+  Future<LoopPlanResult> plan(
+    LoopRequest request, {
+    math.Random Function(int seed)? rng,
+  }) async {
     final (lat, lon) = request.start;
     final cov = await ensureCoverage(lat, lon);
     lastCoverageFailed = cov.failed;
@@ -153,7 +168,11 @@ class LoopPlanOrchestrator {
       router: (locations) async {
         try {
           return await engine.routeMulti(
-              MultiPointRouteRequest(locations: locations, profile: request.profile));
+            MultiPointRouteRequest(
+              locations: locations,
+              profile: request.profile,
+            ),
+          );
           // A geometry the engine cannot route (too far off-network, outside
           // covered territory, etc.) is exactly what LoopRouter's contract
           // calls "not routable" — a null candidate for the bisection to
@@ -171,15 +190,19 @@ final loopPlannerProvider = FutureProvider<LoopPlanOrchestrator>((ref) async {
   final coverage = await ref.watch(coverageRepositoryProvider.future);
   final sink = ref.watch(progressSinkProvider);
   return LoopPlanOrchestrator(
-      engine: ref.watch(routingEngineProvider),
-      ensureCoverage: (lat, lon) async {
-        final res = await coverage.ensureCoverage(lat, lon,
-            onProgress: sink.onProgress);
-        return (
-          datasetVersion: res.datasetVersion,
-          tileDirPath: res.tileDirPath,
-          failed: res.failed,
-          versionMismatch: res.versionMismatch,
-        );
-      });
+    engine: ref.watch(routingEngineProvider),
+    ensureCoverage: (lat, lon) async {
+      final res = await coverage.ensureCoverage(
+        lat,
+        lon,
+        onProgress: sink.onProgress,
+      );
+      return (
+        datasetVersion: res.datasetVersion,
+        tileDirPath: res.tileDirPath,
+        failed: res.failed,
+        versionMismatch: res.versionMismatch,
+      );
+    },
+  );
 });

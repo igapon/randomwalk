@@ -9,8 +9,7 @@ void main() {
       expect(sampler.points, [(46.52, 6.63)]);
     });
 
-    test('a point closer than minStepM to the last kept point is dropped',
-        () {
+    test('a point closer than minStepM to the last kept point is dropped', () {
       final sampler = TrackSampler(minStepM: 25);
       sampler.add(46.52, 6.63);
       // ~1 m east at this latitude — well under the 25 m threshold.
@@ -41,8 +40,7 @@ void main() {
   });
 
   group('bounded size', () {
-    test('never exceeds maxPoints even when fed far more points than that',
-        () {
+    test('never exceeds maxPoints even when fed far more points than that', () {
       final sampler = TrackSampler(minStepM: 1, maxPoints: 10);
       // Each step is ~11 m north — always accepted (> 1 m minStepM).
       var lat = 46.5;

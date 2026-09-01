@@ -9,7 +9,8 @@ double _bearingBetween(double lat1, double lon1, double lat2, double lon2) {
   final phi2 = lat2 * math.pi / 180;
   final dLambda = (lon2 - lon1) * math.pi / 180;
   final y = math.sin(dLambda) * math.cos(phi2);
-  final x = math.cos(phi1) * math.sin(phi2) -
+  final x =
+      math.cos(phi1) * math.sin(phi2) -
       math.sin(phi1) * math.cos(phi2) * math.cos(dLambda);
   return (math.atan2(y, x) * 180 / math.pi + 360) % 360;
 }
@@ -28,8 +29,7 @@ void main() {
       expect(lat, greaterThan(startLat));
     });
 
-    test('round-trips against metersBetween going east 1000 m at 46 lat',
-        () {
+    test('round-trips against metersBetween going east 1000 m at 46 lat', () {
       final (lat, lon) = destinationPoint(startLat, startLon, 90, 1000);
       final d = metersBetween(startLat, startLon, lat, lon);
       expect(d, closeTo(1000, 1));
@@ -87,9 +87,19 @@ void main() {
 
     test('startBearingDeg rotates the whole set', () {
       final a = circleWaypoints(
-          lat: startLat, lon: startLon, radiusM: 400, count: 4, startBearingDeg: 0);
+        lat: startLat,
+        lon: startLon,
+        radiusM: 400,
+        count: 4,
+        startBearingDeg: 0,
+      );
       final b = circleWaypoints(
-          lat: startLat, lon: startLon, radiusM: 400, count: 4, startBearingDeg: 45);
+        lat: startLat,
+        lon: startLon,
+        radiusM: 400,
+        count: 4,
+        startBearingDeg: 45,
+      );
       final bearingA0 = _bearingBetween(startLat, startLon, a[0].$1, a[0].$2);
       final bearingB0 = _bearingBetween(startLat, startLon, b[0].$1, b[0].$2);
       // Normalize to (-180, 180] so this is robust to bearingA0 landing on
@@ -168,8 +178,7 @@ void main() {
       }
     });
 
-    test('total path length a->points->b grows monotonically with detourM',
-        () {
+    test('total path length a->points->b grows monotonically with detourM', () {
       double totalPathLength(double detourM) {
         final pts = ellipseWaypoints(
           a: a,
@@ -194,14 +203,16 @@ void main() {
       const detours = [200.0, 500.0, 1000.0, 2000.0];
       final lengths = detours.map(totalPathLength).toList();
       for (var i = 1; i < lengths.length; i++) {
-        expect(lengths[i], greaterThan(lengths[i - 1]),
-            reason:
-                'path length at detour=${detours[i]} should exceed detour=${detours[i - 1]}');
+        expect(
+          lengths[i],
+          greaterThan(lengths[i - 1]),
+          reason:
+              'path length at detour=${detours[i]} should exceed detour=${detours[i - 1]}',
+        );
       }
     });
 
-    test('waypoint distances from the foci are plausible (not degenerate)',
-        () {
+    test('waypoint distances from the foci are plausible (not degenerate)', () {
       final pts = ellipseWaypoints(
         a: a,
         b: b,

@@ -26,39 +26,49 @@ void main() {
     expect(await store.contains('123'), isFalse);
   });
 
-  test('upsertAll on new way ids inserts all of them and reports the count',
-      () async {
-    final newly = await store.upsertAll(['1', '2', '3'], ts);
-    expect(newly, 3);
-    expect(await store.totalCount, 3);
-    expect(await store.contains('1'), isTrue);
-    expect(await store.contains('2'), isTrue);
-    expect(await store.contains('3'), isTrue);
-    expect(await store.contains('4'), isFalse);
-  });
+  test(
+    'upsertAll on new way ids inserts all of them and reports the count',
+    () async {
+      final newly = await store.upsertAll(['1', '2', '3'], ts);
+      expect(newly, 3);
+      expect(await store.totalCount, 3);
+      expect(await store.contains('1'), isTrue);
+      expect(await store.contains('2'), isTrue);
+      expect(await store.contains('3'), isTrue);
+      expect(await store.contains('4'), isFalse);
+    },
+  );
 
-  test('re-upserting an already-covered way id reports it as not new',
-      () async {
-    await store.upsertAll(['1'], ts);
-    final newly = await store.upsertAll(['1'], ts.add(const Duration(days: 1)));
-    expect(newly, 0);
-    expect(await store.totalCount, 1);
-  });
+  test(
+    're-upserting an already-covered way id reports it as not new',
+    () async {
+      await store.upsertAll(['1'], ts);
+      final newly = await store.upsertAll([
+        '1',
+      ], ts.add(const Duration(days: 1)));
+      expect(newly, 0);
+      expect(await store.totalCount, 1);
+    },
+  );
 
-  test('a batch mixing new and already-covered ids only counts the new ones',
-      () async {
-    await store.upsertAll(['1', '2'], ts);
-    final newly = await store.upsertAll(['2', '3', '4'], ts);
-    expect(newly, 2);
-    expect(await store.totalCount, 4);
-  });
+  test(
+    'a batch mixing new and already-covered ids only counts the new ones',
+    () async {
+      await store.upsertAll(['1', '2'], ts);
+      final newly = await store.upsertAll(['2', '3', '4'], ts);
+      expect(newly, 2);
+      expect(await store.totalCount, 4);
+    },
+  );
 
-  test('duplicate way ids within one batch count as new at most once',
-      () async {
-    final newly = await store.upsertAll(['1', '1', '1'], ts);
-    expect(newly, 1);
-    expect(await store.totalCount, 1);
-  });
+  test(
+    'duplicate way ids within one batch count as new at most once',
+    () async {
+      final newly = await store.upsertAll(['1', '1', '1'], ts);
+      expect(newly, 1);
+      expect(await store.totalCount, 1);
+    },
+  );
 
   test('an empty batch is a no-op', () async {
     final newly = await store.upsertAll(<String>[], ts);

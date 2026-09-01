@@ -149,7 +149,8 @@ class TripPermissionCoordinator {
     // the device switch first, then the app permission.
     if (!await _service.isLocationServiceEnabled()) {
       return const TripPermissions(
-          outcome: TripPermissionOutcome.locationServiceOff);
+        outcome: TripPermissionOutcome.locationServiceOff,
+      );
     }
     var fine = await _service.fineLocationStatus();
     if (fine != PermissionState.granted) {
@@ -157,7 +158,8 @@ class TripPermissionCoordinator {
     }
     if (fine != PermissionState.granted) {
       return const TripPermissions(
-          outcome: TripPermissionOutcome.locationDenied);
+        outcome: TripPermissionOutcome.locationDenied,
+      );
     }
 
     // 3. Background location. Requested only after foreground is granted —
@@ -165,12 +167,14 @@ class TripPermissionCoordinator {
     final background = await _resolveBackgroundLocation();
     if (background == _BackgroundOutcome.sentToSettings) {
       return const TripPermissions(
-          outcome: TripPermissionOutcome.openedSettings);
+        outcome: TripPermissionOutcome.openedSettings,
+      );
     }
 
     // 4. Steps. Never blocking, and below API 29 the sensor is readable
     // with no runtime permission at all.
-    final stepsAvailable = sdkInt < 29 ||
+    final stepsAvailable =
+        sdkInt < 29 ||
         await _askOnce(
               _kAskedActivityRecognition,
               _service.activityRecognitionStatus,
@@ -193,8 +197,8 @@ class TripPermissionCoordinator {
   /// disappear without having to restart the trip.
   Future<TrackingMode> currentTrackingMode() async =>
       await _service.backgroundLocationStatus() == PermissionState.granted
-          ? TrackingMode.background
-          : TrackingMode.foregroundOnly;
+      ? TrackingMode.background
+      : TrackingMode.foregroundOnly;
 
   Future<_BackgroundOutcome> _resolveBackgroundLocation() async {
     if (await _service.backgroundLocationStatus() == PermissionState.granted) {
@@ -242,7 +246,7 @@ class PluginPermissionService implements TripPermissionService {
   int? _sdkInt;
 
   PluginPermissionService([DeviceChannel? device])
-      : _device = device ?? const DeviceChannel();
+    : _device = device ?? const DeviceChannel();
 
   static PermissionState _map(ph.PermissionStatus status) {
     if (status.isGranted || status.isLimited || status.isProvisional) {

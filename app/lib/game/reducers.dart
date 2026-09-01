@@ -149,8 +149,9 @@ class GameState {
       totalKm: totalKm ?? this.totalKm,
       cellsRevealed: cellsRevealed ?? this.cellsRevealed,
       loopsCompleted: loopsCompleted ?? this.loopsCompleted,
-      activeDays:
-          activeDays != null ? Set.unmodifiable(activeDays) : this.activeDays,
+      activeDays: activeDays != null
+          ? Set.unmodifiable(activeDays)
+          : this.activeDays,
       revealedCellKeys: revealedCellKeys != null
           ? Set.unmodifiable(revealedCellKeys)
           : this.revealedCellKeys,
@@ -181,25 +182,27 @@ class GameState {
 
   @override
   int get hashCode => Object.hash(
-        coins,
-        energy,
-        xp,
-        level,
-        streakDays,
-        lastActivityDay,
-        landmarksVisited,
-        totalKm,
-        cellsRevealed,
-        loopsCompleted,
-        Object.hashAllUnordered(badges),
-        Object.hashAllUnordered(visitedPoiIds),
-        Object.hashAllUnordered(activeDays),
-        Object.hashAllUnordered(revealedCellKeys),
-        Object.hashAllUnordered(
-            lastVisitByPoi.entries.map((e) => Object.hash(e.key, e.value))),
-        Object.hashAllUnordered(
-            visitCountByPoi.entries.map((e) => Object.hash(e.key, e.value))),
-      );
+    coins,
+    energy,
+    xp,
+    level,
+    streakDays,
+    lastActivityDay,
+    landmarksVisited,
+    totalKm,
+    cellsRevealed,
+    loopsCompleted,
+    Object.hashAllUnordered(badges),
+    Object.hashAllUnordered(visitedPoiIds),
+    Object.hashAllUnordered(activeDays),
+    Object.hashAllUnordered(revealedCellKeys),
+    Object.hashAllUnordered(
+      lastVisitByPoi.entries.map((e) => Object.hash(e.key, e.value)),
+    ),
+    Object.hashAllUnordered(
+      visitCountByPoi.entries.map((e) => Object.hash(e.key, e.value)),
+    ),
+  );
 }
 
 bool _setEquals<T>(Set<T> a, Set<T> b) =>
@@ -318,9 +321,7 @@ GameState _reduceOne(GameState state, GameEvent event) {
       return state.copyWith(coins: math.max(0, state.coins - amount));
     case GameEventTypes.energyChanged:
       final delta = (event.payload['delta'] as num).toDouble();
-      return state.copyWith(
-        energy: (state.energy + delta).clamp(0.0, 100.0),
-      );
+      return state.copyWith(energy: (state.energy + delta).clamp(0.0, 100.0));
     case GameEventTypes.xpEarned:
       return _reduceXpEarned(state, event);
     case GameEventTypes.badgeUnlocked:
@@ -354,10 +355,12 @@ GameState _reduceLandmarkVisited(GameState state, GameEvent event) {
   // and regardless of any cooldown below.
   final firstVisit = !state.visitedPoiIds.contains(poiId);
   state = state.copyWith(
-    visitedPoiIds:
-        firstVisit ? {...state.visitedPoiIds, poiId} : state.visitedPoiIds,
-    landmarksVisited:
-        firstVisit ? state.landmarksVisited + 1 : state.landmarksVisited,
+    visitedPoiIds: firstVisit
+        ? {...state.visitedPoiIds, poiId}
+        : state.visitedPoiIds,
+    landmarksVisited: firstVisit
+        ? state.landmarksVisited + 1
+        : state.landmarksVisited,
   );
 
   switch (kind) {
@@ -427,11 +430,11 @@ GameState _applyCoinsVisit(
 /// ([_applyEnergyVisit]) can treat it as "no reward" and, per the schema
 /// contract, leave the cooldown untouched.
 int _energyAmountFor(String subkind) => switch (subkind) {
-      'restaurant' => 40,
-      'cafe' => 25,
-      'fast_food' => 25,
-      _ => 0,
-    };
+  'restaurant' => 40,
+  'cafe' => 25,
+  'fast_food' => 25,
+  _ => 0,
+};
 
 GameState _applyEnergyVisit(
   GameState state,
@@ -524,7 +527,10 @@ int _consecutiveRunLength(Set<String> activeDays, String endDay) {
 DateTime _parseBareDate(String s) {
   final parts = s.split('-');
   return DateTime.utc(
-      int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    int.parse(parts[0]),
+    int.parse(parts[1]),
+    int.parse(parts[2]),
+  );
 }
 
 String _formatBareDate(DateTime d) =>

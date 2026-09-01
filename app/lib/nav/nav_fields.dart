@@ -84,12 +84,13 @@ String _headline(NavFields f) {
   // their destination does not need to be told to go back to the line.
   if (f.arrived) return 'Arrivé à destination';
   if (f.degraded) return 'Itinéraire perdu — revenez sur le tracé';
-  final instruction =
-      (f.instruction == null || f.instruction!.isEmpty)
-          ? "Suivez l'itinéraire"
-          : '↰ ${f.instruction}';
+  final instruction = (f.instruction == null || f.instruction!.isEmpty)
+      ? "Suivez l'itinéraire"
+      : '↰ ${f.instruction}';
   final distance = f.distanceToManeuverM;
-  return distance == null ? instruction : '$instruction · ${formatDistance(distance)}';
+  return distance == null
+      ? instruction
+      : '$instruction · ${formatDistance(distance)}';
 }
 
 String? _remainingLine(NavFields f) {

@@ -12,8 +12,7 @@ void main() {
     expect(g.isCurrent(t2), isTrue);
   });
 
-  test(
-      'models the debounced-search race: a slow call that resolves after '
+  test('models the debounced-search race: a slow call that resolves after '
       'a newer one is dropped, even though it finishes last', () async {
     final g = LatestOnly();
     final applied = <String>[];

@@ -59,14 +59,14 @@ class PendingVisit {
   });
 
   Map<String, dynamic> toJson() => {
-        'poiId': poiId,
-        'kind': kind,
-        if (subkind != null) 'subkind': subkind,
-        if (name != null) 'name': name,
-        'lat': lat,
-        'lon': lon,
-        'ts': ts.toUtc().toIso8601String(),
-      };
+    'poiId': poiId,
+    'kind': kind,
+    if (subkind != null) 'subkind': subkind,
+    if (name != null) 'name': name,
+    'lat': lat,
+    'lon': lon,
+    'ts': ts.toUtc().toIso8601String(),
+  };
 
   /// Parses one entry, or `null` for a malformed one — a single bad entry
   /// must never take the rest of the snapshot down (see
@@ -257,16 +257,15 @@ class TripSnapshot {
     required bool routeBound,
     double distanceKm = 0,
     int steps = 0,
-  }) =>
-      TripSnapshot(
-        status: TripStatus.recording,
-        distanceKm: distanceKm,
-        steps: steps,
-        startedAt: startedAt,
-        updatedAt: startedAt,
-        profile: profile,
-        routeBound: routeBound,
-      );
+  }) => TripSnapshot(
+    status: TripStatus.recording,
+    distanceKm: distanceKm,
+    steps: steps,
+    startedAt: startedAt,
+    updatedAt: startedAt,
+    profile: profile,
+    routeBound: routeBound,
+  );
 
   Duration elapsedAt(DateTime now) {
     final d = now.difference(startedAt);
@@ -278,11 +277,8 @@ class TripSnapshot {
   /// Locally-computed "à vérifier" flag (brief §5). Server-side use is M5;
   /// for now it exists so the session UI can say so and the value is
   /// carried in the persisted snapshot.
-  bool get needsReview => isImplausibleWalk(
-        profile: profile,
-        distanceKm: distanceKm,
-        steps: steps,
-      );
+  bool get needsReview =>
+      isImplausibleWalk(profile: profile, distanceKm: distanceKm, steps: steps);
 
   /// [nav] replaces *all* the navigation fields at once. They are produced
   /// as one value by one component and mean nothing individually — a
@@ -296,85 +292,89 @@ class TripSnapshot {
     bool? gpsSilent,
     NavFields? nav,
     List<PendingVisit>? pendingVisits,
-  }) =>
-      TripSnapshot(
-        status: status ?? this.status,
-        distanceKm: distanceKm ?? this.distanceKm,
-        steps: steps ?? this.steps,
-        startedAt: startedAt,
-        updatedAt: updatedAt ?? this.updatedAt,
-        profile: profile,
-        routeBound: routeBound,
-        gpsSilent: gpsSilent ?? this.gpsSilent,
-        pendingVisits: pendingVisits ?? this.pendingVisits,
-        navInstruction: nav == null ? navInstruction : nav.instruction,
-        navDistanceToManeuverM:
-            nav == null ? navDistanceToManeuverM : nav.distanceToManeuverM,
-        navRemainingKm: nav == null ? navRemainingKm : nav.remainingKm,
-        navEtaSeconds: nav == null ? navEtaSeconds : nav.etaSeconds,
-        navOffRoute: nav?.offRoute ?? navOffRoute,
-        navArrived: nav?.arrived ?? navArrived,
-        navReplanCount: nav?.replanCount ?? navReplanCount,
-        navRouteShapeEnc: nav == null ? navRouteShapeEnc : nav.routeShapeEnc,
-        navReplanning: nav?.replanning ?? navReplanning,
-      );
+  }) => TripSnapshot(
+    status: status ?? this.status,
+    distanceKm: distanceKm ?? this.distanceKm,
+    steps: steps ?? this.steps,
+    startedAt: startedAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    profile: profile,
+    routeBound: routeBound,
+    gpsSilent: gpsSilent ?? this.gpsSilent,
+    pendingVisits: pendingVisits ?? this.pendingVisits,
+    navInstruction: nav == null ? navInstruction : nav.instruction,
+    navDistanceToManeuverM: nav == null
+        ? navDistanceToManeuverM
+        : nav.distanceToManeuverM,
+    navRemainingKm: nav == null ? navRemainingKm : nav.remainingKm,
+    navEtaSeconds: nav == null ? navEtaSeconds : nav.etaSeconds,
+    navOffRoute: nav?.offRoute ?? navOffRoute,
+    navArrived: nav?.arrived ?? navArrived,
+    navReplanCount: nav?.replanCount ?? navReplanCount,
+    navRouteShapeEnc: nav == null ? navRouteShapeEnc : nav.routeShapeEnc,
+    navReplanning: nav?.replanning ?? navReplanning,
+  );
 
   Map<String, dynamic> toJson() => {
-        'status': status.name,
-        'distanceKm': distanceKm,
-        'steps': steps,
-        'startedAt': startedAt.toUtc().toIso8601String(),
-        'updatedAt': updatedAt.toUtc().toIso8601String(),
-        'profile': profile.name,
-        'routeBound': routeBound,
-        'gpsSilent': gpsSilent,
-        // Omitted entirely rather than written as nulls: this document is
-        // rewritten every couple of seconds for the whole of a trip, and a
-        // free trip has no navigation to describe.
-        if (navInstruction != null) 'navInstruction': navInstruction,
-        if (navDistanceToManeuverM != null)
-          'navDistanceToManeuverM': navDistanceToManeuverM,
-        if (navRemainingKm != null) 'navRemainingKm': navRemainingKm,
-        if (navEtaSeconds != null) 'navEtaSeconds': navEtaSeconds,
-        if (navOffRoute) 'navOffRoute': navOffRoute,
-        if (navArrived) 'navArrived': navArrived,
-        if (navReplanCount != 0) 'navReplanCount': navReplanCount,
-        if (navRouteShapeEnc != null) 'navRouteShapeEnc': navRouteShapeEnc,
-        if (navReplanning) 'navReplanning': navReplanning,
-        if (pendingVisits.isNotEmpty)
-          'pendingVisits': pendingVisits.map((v) => v.toJson()).toList(),
-      };
+    'status': status.name,
+    'distanceKm': distanceKm,
+    'steps': steps,
+    'startedAt': startedAt.toUtc().toIso8601String(),
+    'updatedAt': updatedAt.toUtc().toIso8601String(),
+    'profile': profile.name,
+    'routeBound': routeBound,
+    'gpsSilent': gpsSilent,
+    // Omitted entirely rather than written as nulls: this document is
+    // rewritten every couple of seconds for the whole of a trip, and a
+    // free trip has no navigation to describe.
+    if (navInstruction != null) 'navInstruction': navInstruction,
+    if (navDistanceToManeuverM != null)
+      'navDistanceToManeuverM': navDistanceToManeuverM,
+    if (navRemainingKm != null) 'navRemainingKm': navRemainingKm,
+    if (navEtaSeconds != null) 'navEtaSeconds': navEtaSeconds,
+    if (navOffRoute) 'navOffRoute': navOffRoute,
+    if (navArrived) 'navArrived': navArrived,
+    if (navReplanCount != 0) 'navReplanCount': navReplanCount,
+    if (navRouteShapeEnc != null) 'navRouteShapeEnc': navRouteShapeEnc,
+    if (navReplanning) 'navReplanning': navReplanning,
+    if (pendingVisits.isNotEmpty)
+      'pendingVisits': pendingVisits.map((v) => v.toJson()).toList(),
+  };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
-        status: TripStatus.values.firstWhere((s) => s.name == j['status'],
-            orElse: () => TripStatus.idle),
-        distanceKm: (j['distanceKm'] as num).toDouble(),
-        steps: (j['steps'] as num).toInt(),
-        startedAt: DateTime.parse(j['startedAt'] as String),
-        updatedAt: DateTime.parse(j['updatedAt'] as String),
-        profile: RoutingProfile.values.firstWhere((p) => p.name == j['profile'],
-            orElse: () => RoutingProfile.walk),
-        routeBound: j['routeBound'] as bool? ?? false,
-        gpsSilent: j['gpsSilent'] as bool? ?? false,
-        navInstruction: j['navInstruction'] as String?,
-        navDistanceToManeuverM:
-            (j['navDistanceToManeuverM'] as num?)?.toDouble(),
-        navRemainingKm: (j['navRemainingKm'] as num?)?.toDouble(),
-        navEtaSeconds: (j['navEtaSeconds'] as num?)?.toInt(),
-        navOffRoute: j['navOffRoute'] as bool? ?? false,
-        navArrived: j['navArrived'] as bool? ?? false,
-        navReplanCount: (j['navReplanCount'] as num?)?.toInt() ?? 0,
-        navRouteShapeEnc: j['navRouteShapeEnc'] as String?,
-        // Backward-compat default: a snapshot written before this field
-        // existed has no key for it at all, and must read as "not
-        // replanning" rather than throw or coerce a null to true.
-        navReplanning: j['navReplanning'] as bool? ?? false,
-        pendingVisits: (j['pendingVisits'] as List?)
-                ?.map(PendingVisit.tryParse)
-                .whereType<PendingVisit>()
-                .toList() ??
-            const [],
-      );
+    status: TripStatus.values.firstWhere(
+      (s) => s.name == j['status'],
+      orElse: () => TripStatus.idle,
+    ),
+    distanceKm: (j['distanceKm'] as num).toDouble(),
+    steps: (j['steps'] as num).toInt(),
+    startedAt: DateTime.parse(j['startedAt'] as String),
+    updatedAt: DateTime.parse(j['updatedAt'] as String),
+    profile: RoutingProfile.values.firstWhere(
+      (p) => p.name == j['profile'],
+      orElse: () => RoutingProfile.walk,
+    ),
+    routeBound: j['routeBound'] as bool? ?? false,
+    gpsSilent: j['gpsSilent'] as bool? ?? false,
+    navInstruction: j['navInstruction'] as String?,
+    navDistanceToManeuverM: (j['navDistanceToManeuverM'] as num?)?.toDouble(),
+    navRemainingKm: (j['navRemainingKm'] as num?)?.toDouble(),
+    navEtaSeconds: (j['navEtaSeconds'] as num?)?.toInt(),
+    navOffRoute: j['navOffRoute'] as bool? ?? false,
+    navArrived: j['navArrived'] as bool? ?? false,
+    navReplanCount: (j['navReplanCount'] as num?)?.toInt() ?? 0,
+    navRouteShapeEnc: j['navRouteShapeEnc'] as String?,
+    // Backward-compat default: a snapshot written before this field
+    // existed has no key for it at all, and must read as "not
+    // replanning" rather than throw or coerce a null to true.
+    navReplanning: j['navReplanning'] as bool? ?? false,
+    pendingVisits:
+        (j['pendingVisits'] as List?)
+            ?.map(PendingVisit.tryParse)
+            .whereType<PendingVisit>()
+            .toList() ??
+        const [],
+  );
 }
 
 /// Persistence seam for [TripSnapshot], written by the tracker and read by
@@ -423,16 +423,16 @@ class FileTripSnapshotStore implements TripSnapshotStore {
 
   @override
   Future<void> write(TripSnapshot snapshot) => _serialize(() async {
-        await file.parent.create(recursive: true);
-        final tmp = File('${file.path}$tmpSuffix');
-        await tmp.writeAsString(jsonEncode(snapshot.toJson()), flush: true);
-        await tmp.rename(file.path);
-      });
+    await file.parent.create(recursive: true);
+    final tmp = File('${file.path}$tmpSuffix');
+    await tmp.writeAsString(jsonEncode(snapshot.toJson()), flush: true);
+    await tmp.rename(file.path);
+  });
 
   @override
   Future<void> clear() => _serialize(() async {
-        if (await file.exists()) await file.delete();
-      });
+    if (await file.exists()) await file.delete();
+  });
 
   Future<void> _serialize(Future<void> Function() op) {
     final next = _pending.then((_) => op());

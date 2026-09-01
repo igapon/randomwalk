@@ -45,35 +45,55 @@ void main() {
       var now = DateTime.utc(2026, 1, 1, 10, 0, 0);
       final limiter = AdaptiveGpsRateLimiter(clock: () => now);
 
-      expect(limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12), isTrue);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12),
+        isTrue,
+      );
       limiter.recordChange();
 
       now = now.add(const Duration(seconds: 59));
-      expect(limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3), isFalse);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3),
+        isFalse,
+      );
     });
 
     test('allows a change again once the cooldown elapses', () {
       var now = DateTime.utc(2026, 1, 1, 10, 0, 0);
       final limiter = AdaptiveGpsRateLimiter(clock: () => now);
 
-      expect(limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12), isTrue);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12),
+        isTrue,
+      );
       limiter.recordChange();
 
       now = now.add(const Duration(seconds: 60));
-      expect(limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3), isTrue);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3),
+        isTrue,
+      );
     });
 
-    test('a would-be change that is never recorded does not spend the budget',
-        () {
-      var now = DateTime.utc(2026, 1, 1, 10, 0, 0);
-      final limiter = AdaptiveGpsRateLimiter(clock: () => now);
+    test(
+      'a would-be change that is never recorded does not spend the budget',
+      () {
+        var now = DateTime.utc(2026, 1, 1, 10, 0, 0);
+        final limiter = AdaptiveGpsRateLimiter(clock: () => now);
 
-      expect(limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12), isTrue);
-      // Deliberately not calling recordChange().
+        expect(
+          limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12),
+          isTrue,
+        );
+        // Deliberately not calling recordChange().
 
-      now = now.add(const Duration(seconds: 1));
-      expect(limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12), isTrue);
-    });
+        now = now.add(const Duration(seconds: 1));
+        expect(
+          limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12),
+          isTrue,
+        );
+      },
+    );
 
     test('respects a custom minInterval', () {
       var now = DateTime.utc(2026, 1, 1, 10, 0, 0);
@@ -82,14 +102,23 @@ void main() {
         clock: () => now,
       );
 
-      expect(limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12), isTrue);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 3, desiredFilter: 12),
+        isTrue,
+      );
       limiter.recordChange();
 
       now = now.add(const Duration(seconds: 4));
-      expect(limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3), isFalse);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3),
+        isFalse,
+      );
 
       now = now.add(const Duration(seconds: 1));
-      expect(limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3), isTrue);
+      expect(
+        limiter.shouldResubscribe(currentFilter: 12, desiredFilter: 3),
+        isTrue,
+      );
     });
   });
 }

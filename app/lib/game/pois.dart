@@ -81,7 +81,8 @@ class GamePoi {
   int get hashCode => Object.hash(id, kind, subkind, lat, lon, name);
 
   @override
-  String toString() => 'GamePoi($id, $kind${subkind != null ? '/$subkind' : ''})';
+  String toString() =>
+      'GamePoi($id, $kind${subkind != null ? '/$subkind' : ''})';
 }
 
 /// In-memory index of game POIs, bucketed by the ~150 m exploration grid

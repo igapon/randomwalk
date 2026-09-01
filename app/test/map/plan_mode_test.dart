@@ -37,39 +37,55 @@ void main() {
 
   group('clampDurationTarget', () {
     test('snaps to the nearest 15-minute step', () {
-      expect(clampDurationTarget(const Duration(minutes: 50)),
-          const Duration(minutes: 45));
-      expect(clampDurationTarget(const Duration(minutes: 52)),
-          const Duration(minutes: 45));
-      expect(clampDurationTarget(const Duration(minutes: 53)),
-          const Duration(hours: 1));
+      expect(
+        clampDurationTarget(const Duration(minutes: 50)),
+        const Duration(minutes: 45),
+      );
+      expect(
+        clampDurationTarget(const Duration(minutes: 52)),
+        const Duration(minutes: 45),
+      );
+      expect(
+        clampDurationTarget(const Duration(minutes: 53)),
+        const Duration(hours: 1),
+      );
     });
 
     test('clamps below 15 minutes up to the minimum', () {
       expect(clampDurationTarget(Duration.zero), const Duration(minutes: 15));
-      expect(clampDurationTarget(const Duration(minutes: 5)),
-          const Duration(minutes: 15));
+      expect(
+        clampDurationTarget(const Duration(minutes: 5)),
+        const Duration(minutes: 15),
+      );
     });
 
     test('clamps above 4 hours down to the maximum', () {
-      expect(clampDurationTarget(const Duration(hours: 10)),
-          const Duration(hours: 4));
+      expect(
+        clampDurationTarget(const Duration(hours: 10)),
+        const Duration(hours: 4),
+      );
     });
   });
 
   group('durationToTargetKm', () {
     test('multiplies hours by speed', () {
       expect(durationToTargetKm(const Duration(hours: 1), 4.5), 4.5);
-      expect(durationToTargetKm(const Duration(minutes: 30), 4.5),
-          closeTo(2.25, 1e-9));
-      expect(durationToTargetKm(const Duration(minutes: 15), 4.5),
-          closeTo(1.125, 1e-9));
+      expect(
+        durationToTargetKm(const Duration(minutes: 30), 4.5),
+        closeTo(2.25, 1e-9),
+      );
+      expect(
+        durationToTargetKm(const Duration(minutes: 15), 4.5),
+        closeTo(1.125, 1e-9),
+      );
     });
 
-    test('is always positive for a positive speed and the minimum duration',
-        () {
-      expect(durationToTargetKm(kDurationTargetMin, 2.0), greaterThan(0));
-    });
+    test(
+      'is always positive for a positive speed and the minimum duration',
+      () {
+        expect(durationToTargetKm(kDurationTargetMin, 2.0), greaterThan(0));
+      },
+    );
 
     group('clamped to the Distance slider bounds (final review item 4)', () {
       test('a fast cyclist over 4 hours is capped at the maximum', () {
@@ -77,15 +93,19 @@ void main() {
         // its whole router budget bisecting toward and never reach, and one
         // no « Distance » slider position can even express.
         expect(durationToTargetKm(kDurationTargetMax, 25), kLoopTargetMaxKm);
-        expect(durationToTargetKm(const Duration(hours: 2), 20),
-            kLoopTargetMaxKm);
+        expect(
+          durationToTargetKm(const Duration(hours: 2), 20),
+          kLoopTargetMaxKm,
+        );
       });
 
-      test('a slow walker over the minimum duration is raised to the minimum',
-          () {
-        // 15 min at 3 km/h is 0.75 km, below the slider's own floor.
-        expect(durationToTargetKm(kDurationTargetMin, 3), kLoopTargetMinKm);
-      });
+      test(
+        'a slow walker over the minimum duration is raised to the minimum',
+        () {
+          // 15 min at 3 km/h is 0.75 km, below the slider's own floor.
+          expect(durationToTargetKm(kDurationTargetMin, 3), kLoopTargetMinKm);
+        },
+      );
 
       test('an in-range conversion is untouched', () {
         expect(durationToTargetKm(const Duration(hours: 1), 4.5), 4.5);
@@ -115,21 +135,31 @@ void main() {
       // Otherwise the label reads as an ordinary pace conversion and the
       // walker has no way to tell why lengthening the duration stopped
       // changing the distance.
-      expect(formatConversionLabel(kLoopTargetMaxKm),
-          '≈ 30,0 km (maximum) à votre rythme');
-      expect(formatConversionLabel(kLoopTargetMinKm),
-          '≈ 1,0 km (minimum) à votre rythme');
+      expect(
+        formatConversionLabel(kLoopTargetMaxKm),
+        '≈ 30,0 km (maximum) à votre rythme',
+      );
+      expect(
+        formatConversionLabel(kLoopTargetMinKm),
+        '≈ 1,0 km (minimum) à votre rythme',
+      );
     });
 
     test('reflects the clamp the conversion actually applied', () {
-      expect(formatConversionLabel(durationToTargetKm(kDurationTargetMax, 25)),
-          contains('(maximum)'));
-      expect(formatConversionLabel(durationToTargetKm(kDurationTargetMin, 3)),
-          contains('(minimum)'));
       expect(
-          formatConversionLabel(
-              durationToTargetKm(const Duration(hours: 1), 4.5)),
-          '≈ 4,5 km à votre rythme');
+        formatConversionLabel(durationToTargetKm(kDurationTargetMax, 25)),
+        contains('(maximum)'),
+      );
+      expect(
+        formatConversionLabel(durationToTargetKm(kDurationTargetMin, 3)),
+        contains('(minimum)'),
+      );
+      expect(
+        formatConversionLabel(
+          durationToTargetKm(const Duration(hours: 1), 4.5),
+        ),
+        '≈ 4,5 km à votre rythme',
+      );
     });
   });
 
@@ -182,8 +212,7 @@ void main() {
       expect(request.profile, RoutingProfile.walk);
     });
 
-    test(
-        'loop mode with a destination builds a fixed-target A->B request '
+    test('loop mode with a destination builds a fixed-target A->B request '
         '(task-8 brief point 3: "il faut que pour A-B on puisse sélectionner '
         'une distance") with loopTargetKm as the target', () {
       final request = buildLoopRequest(
@@ -221,8 +250,7 @@ void main() {
       expect(request.end, isNull);
     });
 
-    test(
-        'duration mode with a destination builds a fixed-duration A->B '
+    test('duration mode with a destination builds a fixed-duration A->B '
         'request', () {
       final request = buildLoopRequest(
         mode: PlanMode.duration,
@@ -366,39 +394,51 @@ void main() {
   });
 
   group('shouldClearDestinationOnModeSwitch', () {
-    test('clears when leaving Itinéraire for Distance with no route on screen',
-        () {
-      expect(
-        shouldClearDestinationOnModeSwitch(
-            from: PlanMode.itinerary, to: PlanMode.loop, hasRoute: false),
-        isTrue,
-      );
-    });
+    test(
+      'clears when leaving Itinéraire for Distance with no route on screen',
+      () {
+        expect(
+          shouldClearDestinationOnModeSwitch(
+            from: PlanMode.itinerary,
+            to: PlanMode.loop,
+            hasRoute: false,
+          ),
+          isTrue,
+        );
+      },
+    );
 
-    test('clears when leaving Itinéraire for Durée with no route on screen',
-        () {
-      expect(
-        shouldClearDestinationOnModeSwitch(
+    test(
+      'clears when leaving Itinéraire for Durée with no route on screen',
+      () {
+        expect(
+          shouldClearDestinationOnModeSwitch(
             from: PlanMode.itinerary,
             to: PlanMode.duration,
-            hasRoute: false),
-        isTrue,
-      );
-    });
+            hasRoute: false,
+          ),
+          isTrue,
+        );
+      },
+    );
 
     test('never clears when a route is already on screen', () {
       // The result banner's own ✕ is the way to clear it in that case —
       // this must not race or duplicate that.
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.itinerary, to: PlanMode.loop, hasRoute: true),
+          from: PlanMode.itinerary,
+          to: PlanMode.loop,
+          hasRoute: true,
+        ),
         isFalse,
       );
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.itinerary,
-            to: PlanMode.duration,
-            hasRoute: true),
+          from: PlanMode.itinerary,
+          to: PlanMode.duration,
+          hasRoute: true,
+        ),
         isFalse,
       );
     });
@@ -411,22 +451,34 @@ void main() {
       // the next « Planifier »/long-press to plan against.
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.duration, to: PlanMode.itinerary, hasRoute: false),
+          from: PlanMode.duration,
+          to: PlanMode.itinerary,
+          hasRoute: false,
+        ),
         isTrue,
       );
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.loop, to: PlanMode.itinerary, hasRoute: false),
+          from: PlanMode.loop,
+          to: PlanMode.itinerary,
+          hasRoute: false,
+        ),
         isTrue,
       );
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.duration, to: PlanMode.loop, hasRoute: false),
+          from: PlanMode.duration,
+          to: PlanMode.loop,
+          hasRoute: false,
+        ),
         isTrue,
       );
       expect(
         shouldClearDestinationOnModeSwitch(
-            from: PlanMode.loop, to: PlanMode.duration, hasRoute: false),
+          from: PlanMode.loop,
+          to: PlanMode.duration,
+          hasRoute: false,
+        ),
         isTrue,
       );
     });
@@ -436,7 +488,10 @@ void main() {
         for (final to in PlanMode.values) {
           expect(
             shouldClearDestinationOnModeSwitch(
-                from: from, to: to, hasRoute: true),
+              from: from,
+              to: to,
+              hasRoute: true,
+            ),
             isFalse,
             reason: '$from -> $to',
           );
@@ -451,7 +506,10 @@ void main() {
       for (final mode in PlanMode.values) {
         expect(
           shouldClearDestinationOnModeSwitch(
-              from: mode, to: mode, hasRoute: false),
+            from: mode,
+            to: mode,
+            hasRoute: false,
+          ),
           isFalse,
         );
       }
@@ -461,8 +519,7 @@ void main() {
   group('formatDestinationLabel', () {
     test('four decimals, comma-separated', () {
       expect(formatDestinationLabel((46.52, 6.63)), '46.5200, 6.6300');
-      expect(formatDestinationLabel((46.520001, 6.629999)),
-          '46.5200, 6.6300');
+      expect(formatDestinationLabel((46.520001, 6.629999)), '46.5200, 6.6300');
     });
   });
 
@@ -498,15 +555,16 @@ void main() {
 
   group('candidateOnTarget / gapBadgeLabel', () {
     LoopCandidate candidateWithGap(double gapRatio) => LoopCandidate(
-          route: const RouteResult(
-              shape: [(0, 0), (0, 1)],
-              distanceKm: 1,
-              duration: Duration.zero,
-              maneuvers: []),
-          gapRatio: gapRatio,
-          repeatedRatio: 0,
-          score: 0,
-        );
+      route: const RouteResult(
+        shape: [(0, 0), (0, 1)],
+        distanceKm: 1,
+        duration: Duration.zero,
+        maneuvers: [],
+      ),
+      gapRatio: gapRatio,
+      repeatedRatio: 0,
+      score: 0,
+    );
 
     test('within tolerance: on target, no badge', () {
       final candidate = candidateWithGap(0.05);
@@ -537,7 +595,9 @@ void main() {
     test('hidden for a single direct-route toDestination candidate', () {
       expect(
         shouldHideOtherProposals(
-            candidateCount: 1, kind: PlanKind.toDestination),
+          candidateCount: 1,
+          kind: PlanKind.toDestination,
+        ),
         isTrue,
       );
     });
@@ -545,24 +605,26 @@ void main() {
     test('shown for more than one toDestination candidate', () {
       expect(
         shouldHideOtherProposals(
-            candidateCount: 2, kind: PlanKind.toDestination),
+          candidateCount: 2,
+          kind: PlanKind.toDestination,
+        ),
         isFalse,
       );
     });
 
-    test('shown for a single loop candidate — loops always vary with seed',
-        () {
+    test('shown for a single loop candidate — loops always vary with seed', () {
       expect(
         shouldHideOtherProposals(candidateCount: 1, kind: PlanKind.loop),
         isFalse,
       );
     });
 
-    test('shown for zero candidates (defensive — never actually reached)',
-        () {
+    test('shown for zero candidates (defensive — never actually reached)', () {
       expect(
         shouldHideOtherProposals(
-            candidateCount: 0, kind: PlanKind.toDestination),
+          candidateCount: 0,
+          kind: PlanKind.toDestination,
+        ),
         isFalse,
       );
     });
@@ -572,7 +634,9 @@ void main() {
     test('shown in Distance mode with a pinned destination', () {
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.loop, hasDestination: true),
+          mode: PlanMode.loop,
+          hasDestination: true,
+        ),
         isTrue,
       );
     });
@@ -580,7 +644,9 @@ void main() {
     test('shown in Durée mode with a pinned destination', () {
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.duration, hasDestination: true),
+          mode: PlanMode.duration,
+          hasDestination: true,
+        ),
         isTrue,
       );
     });
@@ -588,12 +654,16 @@ void main() {
     test('hidden with no pinned destination, in either mode', () {
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.loop, hasDestination: false),
+          mode: PlanMode.loop,
+          hasDestination: false,
+        ),
         isFalse,
       );
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.duration, hasDestination: false),
+          mode: PlanMode.duration,
+          hasDestination: false,
+        ),
         isFalse,
       );
     });
@@ -601,7 +671,9 @@ void main() {
     test('never shown in Itinéraire — the result banner owns that ✕', () {
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.itinerary, hasDestination: true),
+          mode: PlanMode.itinerary,
+          hasDestination: true,
+        ),
         isFalse,
       );
     });
@@ -610,33 +682,41 @@ void main() {
         'Explorer never honours a pin (see buildLoopRequest)', () {
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.explore, hasDestination: true),
+          mode: PlanMode.explore,
+          hasDestination: true,
+        ),
         isFalse,
       );
       expect(
         shouldShowPlanDestinationChip(
-            mode: PlanMode.explore, hasDestination: false),
+          mode: PlanMode.explore,
+          hasDestination: false,
+        ),
         isFalse,
       );
     });
   });
 
-  group('shouldShowPlanningTopOverlay (task-8 point 1: fullscreen selection)',
-      () {
-    test('shown with no candidates', () {
-      expect(shouldShowPlanningTopOverlay(hasCandidates: false), isTrue);
-    });
+  group(
+    'shouldShowPlanningTopOverlay (task-8 point 1: fullscreen selection)',
+    () {
+      test('shown with no candidates', () {
+        expect(shouldShowPlanningTopOverlay(hasCandidates: false), isTrue);
+      });
 
-    test('hidden the instant candidates exist', () {
-      expect(shouldShowPlanningTopOverlay(hasCandidates: true), isFalse);
-    });
-  });
+      test('hidden the instant candidates exist', () {
+        expect(shouldShowPlanningTopOverlay(hasCandidates: true), isFalse);
+      });
+    },
+  );
 
   group('shouldClearCandidatesForRecording (fix-round-1, point 1)', () {
     test('clears stale candidates the instant a recording starts', () {
       expect(
         shouldClearCandidatesForRecording(
-            isRecording: true, hasCandidates: true),
+          isRecording: true,
+          hasCandidates: true,
+        ),
         isTrue,
       );
     });
@@ -644,7 +724,9 @@ void main() {
     test('no candidates to clear — nothing to do even while recording', () {
       expect(
         shouldClearCandidatesForRecording(
-            isRecording: true, hasCandidates: false),
+          isRecording: true,
+          hasCandidates: false,
+        ),
         isFalse,
       );
     });
@@ -652,7 +734,9 @@ void main() {
     test('candidates with no recording are left alone', () {
       expect(
         shouldClearCandidatesForRecording(
-            isRecording: false, hasCandidates: true),
+          isRecording: false,
+          hasCandidates: true,
+        ),
         isFalse,
       );
     });
@@ -692,7 +776,9 @@ void main() {
     test('cancels an in-flight proposal the instant a recording starts', () {
       expect(
         shouldCancelCandidatePlanningForRecording(
-            isRecording: true, candidatePlanning: true),
+          isRecording: true,
+          candidatePlanning: true,
+        ),
         isTrue,
       );
     });
@@ -700,7 +786,9 @@ void main() {
     test('nothing planning — nothing to cancel even while recording', () {
       expect(
         shouldCancelCandidatePlanningForRecording(
-            isRecording: true, candidatePlanning: false),
+          isRecording: true,
+          candidatePlanning: false,
+        ),
         isFalse,
       );
     });
@@ -708,7 +796,9 @@ void main() {
     test('a planning request with no recording is left alone', () {
       expect(
         shouldCancelCandidatePlanningForRecording(
-            isRecording: false, candidatePlanning: true),
+          isRecording: false,
+          candidatePlanning: true,
+        ),
         isFalse,
       );
     });
@@ -719,7 +809,10 @@ void main() {
     test('intercepted with candidates shown, no recording', () {
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: true, candidatePlanning: false, isRecording: false),
+          hasCandidates: true,
+          candidatePlanning: false,
+          isRecording: false,
+        ),
         isTrue,
       );
     });
@@ -727,28 +820,39 @@ void main() {
     test('intercepted with a proposal still in flight, no recording', () {
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: false, candidatePlanning: true, isRecording: false),
+          hasCandidates: false,
+          candidatePlanning: true,
+          isRecording: false,
+        ),
         isTrue,
       );
     });
 
-    test(
-        'freed the instant a recording starts, even with candidates and/or '
+    test('freed the instant a recording starts, even with candidates and/or '
         'planning still true this frame — the re-review gap: canPop must '
         'not lag the post-frame cleanup by a frame', () {
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: true, candidatePlanning: false, isRecording: true),
+          hasCandidates: true,
+          candidatePlanning: false,
+          isRecording: true,
+        ),
         isFalse,
       );
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: false, candidatePlanning: true, isRecording: true),
+          hasCandidates: false,
+          candidatePlanning: true,
+          isRecording: true,
+        ),
         isFalse,
       );
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: true, candidatePlanning: true, isRecording: true),
+          hasCandidates: true,
+          candidatePlanning: true,
+          isRecording: true,
+        ),
         isFalse,
       );
     });
@@ -756,16 +860,18 @@ void main() {
     test('not intercepted with nothing to back out of', () {
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: false,
-            candidatePlanning: false,
-            isRecording: false),
+          hasCandidates: false,
+          candidatePlanning: false,
+          isRecording: false,
+        ),
         isFalse,
       );
       expect(
         shouldInterceptBackForCandidates(
-            hasCandidates: false,
-            candidatePlanning: false,
-            isRecording: true),
+          hasCandidates: false,
+          candidatePlanning: false,
+          isRecording: true,
+        ),
         isFalse,
       );
     });
@@ -773,8 +879,7 @@ void main() {
 
   group('loopTargetFloorForDestination (fix-round-1, point 3: far-pin '
       'distance floor)', () {
-    test('current target already covers the direct distance — untouched',
-        () {
+    test('current target already covers the direct distance — untouched', () {
       expect(
         loopTargetFloorForDestination(directKm: 3.0, currentTargetKm: 5.0),
         5.0,
@@ -822,7 +927,9 @@ void main() {
       );
       expect(
         loopTargetFloorForDestination(
-            directKm: kLoopTargetMaxKm + 0.01, currentTargetKm: 5.0),
+          directKm: kLoopTargetMaxKm + 0.01,
+          currentTargetKm: 5.0,
+        ),
         isNull,
       );
     });
@@ -830,7 +937,9 @@ void main() {
     test('exactly at the slider maximum is still expressible', () {
       expect(
         loopTargetFloorForDestination(
-            directKm: kLoopTargetMaxKm, currentTargetKm: 1.0),
+          directKm: kLoopTargetMaxKm,
+          currentTargetKm: 1.0,
+        ),
         kLoopTargetMaxKm,
       );
     });
@@ -839,9 +948,10 @@ void main() {
         'non-null', () {
       for (final direct in [0.01, 1.0, 5.5, 12.3, 29.99, 30.0]) {
         for (final current in [kLoopTargetMinKm, 5.0, kLoopTargetMaxKm]) {
-          final floor =
-              loopTargetFloorForDestination(
-                  directKm: direct, currentTargetKm: current);
+          final floor = loopTargetFloorForDestination(
+            directKm: direct,
+            currentTargetKm: current,
+          );
           expect(floor, isNotNull);
           expect(floor!, greaterThanOrEqualTo(kLoopTargetMinKm));
           expect(floor, lessThanOrEqualTo(kLoopTargetMaxKm));
@@ -854,16 +964,18 @@ void main() {
     test('Distance mode: "Distance · X,X km ▸"', () {
       expect(
         planPanelCollapsedLabel(
-            mode: PlanMode.loop,
-            loopTargetKm: 5.0,
-            durationTarget: kDurationTargetDefault),
+          mode: PlanMode.loop,
+          loopTargetKm: 5.0,
+          durationTarget: kDurationTargetDefault,
+        ),
         'Distance · 5,0 km ▸',
       );
       expect(
         planPanelCollapsedLabel(
-            mode: PlanMode.loop,
-            loopTargetKm: 12.5,
-            durationTarget: kDurationTargetDefault),
+          mode: PlanMode.loop,
+          loopTargetKm: 12.5,
+          durationTarget: kDurationTargetDefault,
+        ),
         'Distance · 12,5 km ▸',
       );
     });
@@ -871,9 +983,10 @@ void main() {
     test('Durée mode with hours and minutes: "Durée · H h MM ▸"', () {
       expect(
         planPanelCollapsedLabel(
-            mode: PlanMode.duration,
-            loopTargetKm: 5.0,
-            durationTarget: const Duration(hours: 1, minutes: 30)),
+          mode: PlanMode.duration,
+          loopTargetKm: 5.0,
+          durationTarget: const Duration(hours: 1, minutes: 30),
+        ),
         'Durée · 1 h 30 ▸',
       );
     });
@@ -881,9 +994,10 @@ void main() {
     test('Durée mode on an exact hour omits the minutes', () {
       expect(
         planPanelCollapsedLabel(
-            mode: PlanMode.duration,
-            loopTargetKm: 5.0,
-            durationTarget: const Duration(hours: 2)),
+          mode: PlanMode.duration,
+          loopTargetKm: 5.0,
+          durationTarget: const Duration(hours: 2),
+        ),
         'Durée · 2 h ▸',
       );
     });
@@ -891,9 +1005,10 @@ void main() {
     test('Durée mode under an hour: "Durée · MM min ▸"', () {
       expect(
         planPanelCollapsedLabel(
-            mode: PlanMode.duration,
-            loopTargetKm: 5.0,
-            durationTarget: const Duration(minutes: 45)),
+          mode: PlanMode.duration,
+          loopTargetKm: 5.0,
+          durationTarget: const Duration(minutes: 45),
+        ),
         'Durée · 45 min ▸',
       );
     });
@@ -902,9 +1017,10 @@ void main() {
         'as Distance, distinct prefix)', () {
       expect(
         planPanelCollapsedLabel(
-            mode: PlanMode.explore,
-            loopTargetKm: 5.0,
-            durationTarget: kDurationTargetDefault),
+          mode: PlanMode.explore,
+          loopTargetKm: 5.0,
+          durationTarget: kDurationTargetDefault,
+        ),
         'Explorer · 5,0 km ▸',
       );
     });
@@ -929,8 +1045,10 @@ void main() {
         'cards', () {
       final expectedMinutes =
           (estimatedDuration(route.distanceKm, 6.0).inSeconds / 60).round();
-      expect(formatRouteResultLabel(route, 6.0),
-          '4,5 km · ~$expectedMinutes min');
+      expect(
+        formatRouteResultLabel(route, 6.0),
+        '4,5 km · ~$expectedMinutes min',
+      );
     });
 
     test('falls back to Valhalla\'s own estimate while the pace history is '

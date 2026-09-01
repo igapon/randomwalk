@@ -58,7 +58,10 @@ class SpeedHistoryStore {
   /// plausibly produce — either way, silently ignored: a rejected session
   /// must never throw or otherwise interrupt the trip it came from.
   Future<void> recordSession(
-      RoutingProfile profile, double sessionKm, Duration elapsed) async {
+    RoutingProfile profile,
+    double sessionKm,
+    Duration elapsed,
+  ) async {
     if (sessionKm <= _kMinSessionKm || elapsed <= _kMinSessionDuration) {
       return;
     }
@@ -81,6 +84,6 @@ class SpeedHistoryStore {
 
   static bool _isPlausible(RoutingProfile profile, double speedKmh) =>
       profile == RoutingProfile.walk
-          ? speedKmh >= _kWalkMinKmh && speedKmh <= _kWalkMaxKmh
-          : speedKmh >= _kBikeMinKmh && speedKmh <= _kBikeMaxKmh;
+      ? speedKmh >= _kWalkMinKmh && speedKmh <= _kWalkMaxKmh
+      : speedKmh >= _kBikeMinKmh && speedKmh <= _kBikeMaxKmh;
 }

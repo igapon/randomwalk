@@ -46,10 +46,12 @@ Future<void> main() async {
   // an idle map first.
   await trip.restore();
 
-  runApp(ProviderScope(
-    overrides: [tripControllerProvider.overrideWith((ref) => trip)],
-    child: const RandomWalkApp(),
-  ));
+  runApp(
+    ProviderScope(
+      overrides: [tripControllerProvider.overrideWith((ref) => trip)],
+      child: const RandomWalkApp(),
+    ),
+  );
 }
 
 Future<TripController> _buildTripController() async {
@@ -65,7 +67,9 @@ Future<TripController> _buildTripController() async {
   // chance `resolveTileDir` grows a network path later — it would need its
   // own client if it ever does.
   final coverage = CoverageRepository(
-      root: Directory('${dir.path}/tiles'), client: http.Client()..close());
+    root: Directory('${dir.path}/tiles'),
+    client: http.Client()..close(),
+  );
   final permissions = TripPermissionCoordinator(
     PluginPermissionService(),
     showBackgroundRationale: () async {
@@ -116,7 +120,8 @@ Future<TripController> _buildTripController() async {
 
   return TripController(
     tracker: ForegroundServiceTripTracker(
-        File('${dir.path}/trip_snapshot.json')),
+      File('${dir.path}/trip_snapshot.json'),
+    ),
     routeStore: FileActiveRouteStore(File('${dir.path}/active_route.json')),
     totalStore: TotalDistanceStore(),
     ensurePermissions: permissions.ensureForTrip,
@@ -152,7 +157,8 @@ Future<TripController> _buildTripController() async {
 /// (nothing here assumes the actor it built still exists by the time it
 /// returns) is what keeps that safe rather than merely convenient.
 Future<RoutingEngine?> _buildExplorationEngine(
-    CoverageRepository coverage) async {
+  CoverageRepository coverage,
+) async {
   final tileDirPath = await coverage.cachedTileDirPath();
   if (tileDirPath == null) return null;
   final engine = ChannelRoutingEngine();
@@ -168,13 +174,13 @@ class RandomWalkApp extends StatelessWidget {
   const RandomWalkApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'RandomWalk',
-        navigatorKey: appNavigatorKey,
-        theme: AppTheme.light,
-        darkTheme: AppTheme.dark,
-        themeMode: ThemeMode.system,
-        home: const HomeShell(),
-      );
+    title: 'RandomWalk',
+    navigatorKey: appNavigatorKey,
+    theme: AppTheme.light,
+    darkTheme: AppTheme.dark,
+    themeMode: ThemeMode.system,
+    home: const HomeShell(),
+  );
 }
 
 class HomeShell extends ConsumerStatefulWidget {
@@ -243,9 +249,13 @@ class _HomeShellState extends ConsumerState<HomeShell>
       await ref.read(leaderboardRepositoryProvider).submit(identity, totalKm);
     } catch (_) {
       if (mounted) {
-        messenger.showSnackBar(const SnackBar(
-            content:
-                Text('Score non synchronisé — nouvelle tentative plus tard.')));
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Score non synchronisé — nouvelle tentative plus tard.',
+            ),
+          ),
+        );
       }
     }
   }
@@ -266,8 +276,11 @@ class _HomeShellState extends ConsumerState<HomeShell>
 
   Future<void> _onSessionError(String? errorMessage) async {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Signal GPS perdu — session enregistrée.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Signal GPS perdu — session enregistrée.'),
+        ),
+      );
     }
   }
 
@@ -282,22 +295,26 @@ class _HomeShellState extends ConsumerState<HomeShell>
           IconButton(
             icon: const Icon(Icons.settings),
             tooltip: 'Réglages',
-            onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SettingsScreen())),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
           ),
         ],
       ),
       body: Column(
         children: [
           if (trip.isInterrupted) const InterruptedTripBanner(),
-          if (trip.isRecording && trip.trackingMode == TrackingMode.foregroundOnly)
+          if (trip.isRecording &&
+              trip.trackingMode == TrackingMode.foregroundOnly)
             const ForegroundOnlyBanner(),
           if (trip.isRecording && trip.gpsSilent) const GpsSilentBanner(),
           // IndexedStack, not `screens[_tab]`: every screen stays mounted
           // across tab switches, so the map keeps its native surface (and
           // everything drawn on it) instead of being rebuilt from scratch
           // each time the user glances at the session tab.
-          Expanded(child: IndexedStack(index: _tab, children: screens)),
+          Expanded(
+            child: IndexedStack(index: _tab, children: screens),
+          ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -305,8 +322,14 @@ class _HomeShellState extends ConsumerState<HomeShell>
         onDestinationSelected: _onDestinationSelected,
         destinations: const [
           NavigationDestination(icon: Icon(Icons.map), label: 'Carte'),
-          NavigationDestination(icon: Icon(Icons.directions_walk), label: 'Session'),
-          NavigationDestination(icon: Icon(Icons.emoji_events), label: 'Classement'),
+          NavigationDestination(
+            icon: Icon(Icons.directions_walk),
+            label: 'Session',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.emoji_events),
+            label: 'Classement',
+          ),
           NavigationDestination(icon: Icon(Icons.diamond), label: 'Aventure'),
         ],
       ),
@@ -325,8 +348,7 @@ class InterruptedTripBanner extends ConsumerStatefulWidget {
       _InterruptedTripBannerState();
 }
 
-class _InterruptedTripBannerState
-    extends ConsumerState<InterruptedTripBanner> {
+class _InterruptedTripBannerState extends ConsumerState<InterruptedTripBanner> {
   bool _busy = false;
 
   Future<void> _run(Future<void> Function(TripController trip) action) async {
@@ -348,7 +370,11 @@ class _InterruptedTripBannerState
       color: theme.colorScheme.secondaryContainer,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
-            AppSpacing.md, AppSpacing.sm, AppSpacing.sm, AppSpacing.sm),
+          AppSpacing.md,
+          AppSpacing.sm,
+          AppSpacing.sm,
+          AppSpacing.sm,
+        ),
         child: Row(
           children: [
             Expanded(
@@ -362,12 +388,16 @@ class _InterruptedTripBannerState
               ),
             ),
             TextButton(
-              onPressed: _busy ? null : () => _run((t) => t.finishInterrupted()),
+              onPressed: _busy
+                  ? null
+                  : () => _run((t) => t.finishInterrupted()),
               child: const Text('Terminer'),
             ),
             const SizedBox(width: AppSpacing.xs),
             FilledButton(
-              onPressed: _busy ? null : () => _run((t) => t.resumeInterrupted()),
+              onPressed: _busy
+                  ? null
+                  : () => _run((t) => t.resumeInterrupted()),
               child: const Text('Reprendre'),
             ),
           ],
@@ -394,14 +424,18 @@ class GpsSilentBanner extends StatelessWidget {
         onTap: () => PluginPermissionService().openSettings(),
         child: Padding(
           padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.sm,
+          ),
           child: Row(
             children: [
               const Icon(Icons.gps_off, size: 18),
               const SizedBox(width: AppSpacing.sm),
               Expanded(
-                child: Text(kGpsSilentMessage,
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  kGpsSilentMessage,
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
             ],
           ),
@@ -426,7 +460,9 @@ class ForegroundOnlyBanner extends ConsumerWidget {
         onTap: () => PluginPermissionService().openSettings(),
         child: Padding(
           padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.sm,
+          ),
           child: Row(
             children: [
               const Icon(Icons.info_outline, size: 18),

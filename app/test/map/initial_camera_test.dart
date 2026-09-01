@@ -22,8 +22,7 @@ void main() {
       expect(center.longitude, closeTo(7.4474, 1e-9));
     });
 
-    test('falls back to Geneva when there is no last-known position',
-        () async {
+    test('falls back to Geneva when there is no last-known position', () async {
       final center = await resolveInitialCameraCenter(
         () async => null,
         wait: neverWaits,
@@ -33,27 +32,31 @@ void main() {
       expect(center.longitude, closeTo(6.1432, 1e-9));
     });
 
-    test('falls back to Geneva — not Lausanne — on a platform failure',
-        () async {
-      final center = await resolveInitialCameraCenter(
-        () async => throw StateError('no permission yet'),
-        wait: neverWaits,
-      );
-      expect(center, same(kDefaultCameraCenter));
-    });
+    test(
+      'falls back to Geneva — not Lausanne — on a platform failure',
+      () async {
+        final center = await resolveInitialCameraCenter(
+          () async => throw StateError('no permission yet'),
+          wait: neverWaits,
+        );
+        expect(center, same(kDefaultCameraCenter));
+      },
+    );
 
-    test('falls back to Geneva rather than hanging forever on a wedged call',
-        () async {
-      // A never-completing position lookup — the wedged-platform-channel
-      // scenario the timeout exists for. Only the (real, default) delay
-      // side of the race can ever resolve here, so this is deterministic
-      // regardless of Timer/microtask ordering; a short override just
-      // keeps the test fast.
-      final center = await resolveInitialCameraCenter(
-        () => Completer<(double, double)?>().future,
-        timeout: const Duration(milliseconds: 20),
-      );
-      expect(center, same(kDefaultCameraCenter));
-    });
+    test(
+      'falls back to Geneva rather than hanging forever on a wedged call',
+      () async {
+        // A never-completing position lookup — the wedged-platform-channel
+        // scenario the timeout exists for. Only the (real, default) delay
+        // side of the race can ever resolve here, so this is deterministic
+        // regardless of Timer/microtask ordering; a short override just
+        // keeps the test fast.
+        final center = await resolveInitialCameraCenter(
+          () => Completer<(double, double)?>().future,
+          timeout: const Duration(milliseconds: 20),
+        );
+        expect(center, same(kDefaultCameraCenter));
+      },
+    );
   });
 }

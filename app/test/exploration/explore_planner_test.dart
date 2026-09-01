@@ -38,9 +38,13 @@ void main() {
           // ±15°, so two draws from the *same* sector could never end up
           // more than 30° apart — anything past that proves distinct base
           // sectors were chosen.
-          expect(_angularDistance(bearings[i], bearings[j]), greaterThan(30),
-              reason: 'bearings $i and $j look like the same sector jittered '
-                  'twice: $bearings');
+          expect(
+            _angularDistance(bearings[i], bearings[j]),
+            greaterThan(30),
+            reason:
+                'bearings $i and $j look like the same sector jittered '
+                'twice: $bearings',
+          );
         }
       }
     });
@@ -107,7 +111,11 @@ void main() {
       for (var bearingDeg = 0; bearingDeg <= 180; bearingDeg += 5) {
         for (var distM = 25.0; distM <= radiusM; distM += 25.0) {
           final (lat, lon) = destinationPoint(
-              start.$1, start.$2, bearingDeg.toDouble(), distM);
+            start.$1,
+            start.$2,
+            bearingDeg.toDouble(),
+            distM,
+          );
           revealed.add(cellIdFor(lat, lon).key);
         }
       }
@@ -124,9 +132,13 @@ void main() {
       for (final b in bearings) {
         final distToEast = _angularDistance(b, 90);
         final distToWest = _angularDistance(b, 270);
-        expect(distToWest, lessThan(distToEast),
-            reason: 'bearing $b should favour the unrevealed (west) side, '
-                'not the fully-revealed east side');
+        expect(
+          distToWest,
+          lessThan(distToEast),
+          reason:
+              'bearing $b should favour the unrevealed (west) side, '
+              'not the fully-revealed east side',
+        );
       }
     });
 
@@ -136,7 +148,11 @@ void main() {
       for (var bearingDeg = 0; bearingDeg < 360; bearingDeg += 5) {
         for (var distM = 25.0; distM <= radiusM; distM += 25.0) {
           final (lat, lon) = destinationPoint(
-              start.$1, start.$2, bearingDeg.toDouble(), distM);
+            start.$1,
+            start.$2,
+            bearingDeg.toDouble(),
+            distM,
+          );
           revealed.add(cellIdFor(lat, lon).key);
         }
       }

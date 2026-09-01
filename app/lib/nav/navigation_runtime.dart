@@ -69,10 +69,10 @@ class NavigationRuntime {
     required Future<RouteResult?> Function(double lat, double lon) replan,
     DateTime Function()? now,
     this.isLoop = false,
-  })  : _follower = follower,
-        _requestRoute = replan,
-        _now = now ?? DateTime.now,
-        _routeShapeEnc = encodePolyline6(follower.route.shape);
+  }) : _follower = follower,
+       _requestRoute = replan,
+       _now = now ?? DateTime.now,
+       _routeShapeEnc = encodePolyline6(follower.route.shape);
 
   /// The route being followed right now — the planned one until the first
   /// successful replan, each replacement after that.
@@ -107,7 +107,11 @@ class NavigationRuntime {
   /// description of production: the service serializes fixes and simply
   /// drops the ones that arrive mid-replan (see `TripTaskHandler._onNavFix`).
   Future<NavFields> onFix(
-      double lat, double lon, double speedMps, DateTime time) async {
+    double lat,
+    double lon,
+    double speedMps,
+    DateTime time,
+  ) async {
     var update = _follower.update(lat, lon, time);
     var replanning = false;
 
@@ -193,15 +197,15 @@ class NavigationRuntime {
   }
 
   NavFields _fieldsFrom(NavUpdate u, {bool replanning = false}) => NavFields(
-        instruction: u.instruction,
-        distanceToManeuverM: u.distanceToManeuverM,
-        remainingKm: u.remainingKm,
-        etaSeconds: u.eta?.inSeconds,
-        offRoute: u.offRoute,
-        arrived: u.arrived,
-        replanCount: _replanCount,
-        routeShapeEnc: _routeShapeEnc,
-        degraded: _degraded,
-        replanning: replanning,
-      );
+    instruction: u.instruction,
+    distanceToManeuverM: u.distanceToManeuverM,
+    remainingKm: u.remainingKm,
+    etaSeconds: u.eta?.inSeconds,
+    offRoute: u.offRoute,
+    arrived: u.arrived,
+    replanCount: _replanCount,
+    routeShapeEnc: _routeShapeEnc,
+    degraded: _degraded,
+    replanning: replanning,
+  );
 }

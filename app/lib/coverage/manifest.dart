@@ -14,7 +14,8 @@ class DatasetVersionMismatch implements Exception {
   final String foundVersion;
   const DatasetVersionMismatch(this.foundVersion);
   @override
-  String toString() => 'DatasetVersionMismatch: manifest valhalla_version '
+  String toString() =>
+      'DatasetVersionMismatch: manifest valhalla_version '
       '"$foundVersion" != expected "$kExpectedValhallaVersion"';
 }
 
@@ -22,11 +23,16 @@ class TileAsset {
   final String asset;
   final int bytes;
   final String sha256;
-  const TileAsset({required this.asset, required this.bytes, required this.sha256});
+  const TileAsset({
+    required this.asset,
+    required this.bytes,
+    required this.sha256,
+  });
   factory TileAsset.fromJson(Map<String, dynamic> j) => TileAsset(
-      asset: j['asset'] as String,
-      bytes: j['bytes'] as int,
-      sha256: j['sha256'] as String);
+    asset: j['asset'] as String,
+    bytes: j['bytes'] as int,
+    sha256: j['sha256'] as String,
+  );
 }
 
 class TileManifest {
@@ -42,18 +48,20 @@ class TileManifest {
   /// as it always has.
   final TileAsset? pois;
 
-  const TileManifest(
-      {required this.datasetVersion,
-      required this.valhallaVersion,
-      required this.tiles,
-      this.pois});
+  const TileManifest({
+    required this.datasetVersion,
+    required this.valhallaVersion,
+    required this.tiles,
+    this.pois,
+  });
   factory TileManifest.fromJson(Map<String, dynamic> j) => TileManifest(
-        datasetVersion: j['dataset_version'] as String,
-        valhallaVersion: j['valhalla_version'] as String,
-        tiles: (j['tiles'] as Map<String, dynamic>).map(
-            (k, v) => MapEntry(k, TileAsset.fromJson(v as Map<String, dynamic>))),
-        pois: j['pois'] == null
-            ? null
-            : TileAsset.fromJson(j['pois'] as Map<String, dynamic>),
-      );
+    datasetVersion: j['dataset_version'] as String,
+    valhallaVersion: j['valhalla_version'] as String,
+    tiles: (j['tiles'] as Map<String, dynamic>).map(
+      (k, v) => MapEntry(k, TileAsset.fromJson(v as Map<String, dynamic>)),
+    ),
+    pois: j['pois'] == null
+        ? null
+        : TileAsset.fromJson(j['pois'] as Map<String, dynamic>),
+  );
 }

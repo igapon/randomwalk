@@ -27,9 +27,12 @@ void main() {
     expect(await store.ttsEnabled(), isTrue);
   });
 
-  test('a later read sees the persisted value, not a memoized default', () async {
-    await AlertSettingsStore().setTtsEnabled(false);
-    final reread = AlertSettingsStore();
-    expect(await reread.ttsEnabled(), isFalse);
-  });
+  test(
+    'a later read sees the persisted value, not a memoized default',
+    () async {
+      await AlertSettingsStore().setTtsEnabled(false);
+      final reread = AlertSettingsStore();
+      expect(await reread.ttsEnabled(), isFalse);
+    },
+  );
 }

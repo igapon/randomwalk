@@ -4,35 +4,35 @@ enum RoutingProfile { walk, bike }
 
 /// Shared Valhalla JSON builder for costing and direction options.
 Map<String, dynamic> _buildValhallaOptions(RoutingProfile profile) => {
-      'costing': profile == RoutingProfile.bike ? 'bicycle' : 'pedestrian',
-      'directions_options': {'units': 'kilometers', 'language': 'fr-FR'},
-    };
+  'costing': profile == RoutingProfile.bike ? 'bicycle' : 'pedestrian',
+  'directions_options': {'units': 'kilometers', 'language': 'fr-FR'},
+};
 
 class RouteRequest {
   final double fromLat, fromLon, toLat, toLon;
   final RoutingProfile profile;
-  const RouteRequest(
-      {required this.fromLat,
-      required this.fromLon,
-      required this.toLat,
-      required this.toLon,
-      required this.profile});
+  const RouteRequest({
+    required this.fromLat,
+    required this.fromLon,
+    required this.toLat,
+    required this.toLon,
+    required this.profile,
+  });
 
   String toValhallaJson() => jsonEncode({
-        'locations': [
-          {'lat': fromLat, 'lon': fromLon, 'type': 'break'},
-          {'lat': toLat, 'lon': toLon, 'type': 'break'},
-        ],
-        ..._buildValhallaOptions(profile),
-      });
+    'locations': [
+      {'lat': fromLat, 'lon': fromLon, 'type': 'break'},
+      {'lat': toLat, 'lon': toLon, 'type': 'break'},
+    ],
+    ..._buildValhallaOptions(profile),
+  });
 }
 
 class MultiPointRouteRequest {
   final List<(double, double)> locations;
   final RoutingProfile profile;
 
-  MultiPointRouteRequest(
-      {required this.locations, required this.profile}) {
+  MultiPointRouteRequest({required this.locations, required this.profile}) {
     if (locations.length < 2) {
       throw ArgumentError('at least 2 locations required');
     }
@@ -45,11 +45,7 @@ class MultiPointRouteRequest {
       final isFirst = i == 0;
       final isLast = i == locations.length - 1;
       final type = (isFirst || isLast) ? 'break' : 'through';
-      locObjects.add({
-        'lat': lat,
-        'lon': lon,
-        'type': type,
-      });
+      locObjects.add({'lat': lat, 'lon': lon, 'type': type});
     }
 
     return jsonEncode({
@@ -63,22 +59,23 @@ class Maneuver {
   final String instruction;
   final double lengthKm;
   final int beginShapeIndex;
-  const Maneuver(
-      {required this.instruction,
-      required this.lengthKm,
-      required this.beginShapeIndex});
+  const Maneuver({
+    required this.instruction,
+    required this.lengthKm,
+    required this.beginShapeIndex,
+  });
 
   Map<String, dynamic> toJson() => {
-        'instruction': instruction,
-        'lengthKm': lengthKm,
-        'beginShapeIndex': beginShapeIndex,
-      };
+    'instruction': instruction,
+    'lengthKm': lengthKm,
+    'beginShapeIndex': beginShapeIndex,
+  };
 
   factory Maneuver.fromJson(Map<String, dynamic> j) => Maneuver(
-        instruction: j['instruction'] as String,
-        lengthKm: (j['lengthKm'] as num).toDouble(),
-        beginShapeIndex: j['beginShapeIndex'] as int,
-      );
+    instruction: j['instruction'] as String,
+    lengthKm: (j['lengthKm'] as num).toDouble(),
+    beginShapeIndex: j['beginShapeIndex'] as int,
+  );
 }
 
 class RouteResult {
@@ -86,11 +83,12 @@ class RouteResult {
   final double distanceKm;
   final Duration duration;
   final List<Maneuver> maneuvers;
-  const RouteResult(
-      {required this.shape,
-      required this.distanceKm,
-      required this.duration,
-      required this.maneuvers});
+  const RouteResult({
+    required this.shape,
+    required this.distanceKm,
+    required this.duration,
+    required this.maneuvers,
+  });
 
   /// Round-trippable form used to persist the *planned* route across process
   /// death (see `ActiveRouteStore`). Deliberately not Valhalla's own shape:
@@ -99,21 +97,21 @@ class RouteResult {
   /// The polyline is re-encoded rather than stored as a list of pairs — the
   /// same 1e-6 encoding the engine already speaks, ~6x smaller on disk.
   Map<String, dynamic> toJson() => {
-        'shape': encodePolyline6(shape),
-        'distanceKm': distanceKm,
-        'durationSeconds': duration.inSeconds,
-        'maneuvers': [for (final m in maneuvers) m.toJson()],
-      };
+    'shape': encodePolyline6(shape),
+    'distanceKm': distanceKm,
+    'durationSeconds': duration.inSeconds,
+    'maneuvers': [for (final m in maneuvers) m.toJson()],
+  };
 
   factory RouteResult.fromJson(Map<String, dynamic> j) => RouteResult(
-        shape: decodePolyline6(j['shape'] as String),
-        distanceKm: (j['distanceKm'] as num).toDouble(),
-        duration: Duration(seconds: j['durationSeconds'] as int),
-        maneuvers: [
-          for (final m in (j['maneuvers'] as List<dynamic>))
-            Maneuver.fromJson(m as Map<String, dynamic>),
-        ],
-      );
+    shape: decodePolyline6(j['shape'] as String),
+    distanceKm: (j['distanceKm'] as num).toDouble(),
+    duration: Duration(seconds: j['durationSeconds'] as int),
+    maneuvers: [
+      for (final m in (j['maneuvers'] as List<dynamic>))
+        Maneuver.fromJson(m as Map<String, dynamic>),
+    ],
+  );
 
   factory RouteResult.fromValhallaJson(Map<String, dynamic> j) {
     final trip = j['trip'] as Map<String, dynamic>;
@@ -127,17 +125,21 @@ class RouteResult {
       shape.addAll(decodePolyline6(leg['shape'] as String));
       for (final mRaw in (leg['maneuvers'] as List<dynamic>? ?? [])) {
         final m = mRaw as Map<String, dynamic>;
-        maneuvers.add(Maneuver(
+        maneuvers.add(
+          Maneuver(
             instruction: m['instruction'] as String? ?? '',
             lengthKm: (m['length'] as num).toDouble(),
-            beginShapeIndex: offset + (m['begin_shape_index'] as int)));
+            beginShapeIndex: offset + (m['begin_shape_index'] as int),
+          ),
+        );
       }
     }
     return RouteResult(
-        shape: shape,
-        distanceKm: (summary['length'] as num).toDouble(),
-        duration: Duration(seconds: (summary['time'] as num).round()),
-        maneuvers: maneuvers);
+      shape: shape,
+      distanceKm: (summary['length'] as num).toDouble(),
+      duration: Duration(seconds: (summary['time'] as num).round()),
+      maneuvers: maneuvers,
+    );
   }
 }
 
@@ -154,6 +156,7 @@ List<(double, double)> decodePolyline6(String encoded) {
     }
     return (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
   }
+
   while (index < encoded.length) {
     lat += nextDelta();
     lon += nextDelta();
@@ -176,6 +179,7 @@ String encodePolyline6(List<(double, double)> pts) {
     }
     sb.writeCharCode(value + 63);
   }
+
   for (final (la, lo) in pts) {
     final ila = (la * 1e6).round(), ilo = (lo * 1e6).round();
     emit(ila - lastLat);

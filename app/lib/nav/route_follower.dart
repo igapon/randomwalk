@@ -120,13 +120,16 @@ class RouteFollower {
     this.offRouteGrace = const Duration(seconds: 10),
     this.arrivalRadiusM = 25,
     SpeedEstimator? speed,
-  })  : speed = speed ?? SpeedEstimator(),
-        _lastSnappedLat = route.shape.first.$1,
-        _lastSnappedLon = route.shape.first.$2 {
+  }) : speed = speed ?? SpeedEstimator(),
+       _lastSnappedLat = route.shape.first.$1,
+       _lastSnappedLon = route.shape.first.$2 {
     _geometry = RouteGeometry(route.shape);
     _maneuverAlongKm = [
       for (final m in route.maneuvers)
-        _geometry.cumulativeKm[m.beginShapeIndex.clamp(0, route.shape.length - 1)],
+        _geometry.cumulativeKm[m.beginShapeIndex.clamp(
+          0,
+          route.shape.length - 1,
+        )],
     ];
     _lastManeuverIndex = _maneuverIndexFor(0);
     _publishedManeuverIndex = _lastManeuverIndex;
@@ -218,7 +221,10 @@ class RouteFollower {
     // The internal, recomputed maneuverIndex may decrease (e.g. GPS wobble
     // dropping alongKm back below a maneuver we already passed), but the
     // index/instruction we publish never un-announces a maneuver.
-    _publishedManeuverIndex = math.max(_publishedManeuverIndex, _lastManeuverIndex);
+    _publishedManeuverIndex = math.max(
+      _publishedManeuverIndex,
+      _lastManeuverIndex,
+    );
 
     // Off-route timing is based on every fix's cross-track reading —
     // including aberrant ones, which are themselves evidence of being off
@@ -231,7 +237,8 @@ class RouteFollower {
       _offRoute = false;
     }
 
-    final isLastManeuver = route.maneuvers.isEmpty ||
+    final isLastManeuver =
+        route.maneuvers.isEmpty ||
         _publishedManeuverIndex == route.maneuvers.length - 1;
     final remainingKm = _geometry.totalKm - _lastAlongKm;
     final distanceToManeuverM = isLastManeuver

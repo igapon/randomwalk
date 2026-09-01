@@ -66,8 +66,7 @@ void main() {
       );
     });
 
-    test(
-        'the regression this exists for: a fresh/resumed trip with no '
+    test('the regression this exists for: a fresh/resumed trip with no '
         'replan of its own, but a previous replanned line still drawn, is '
         'restoreBase — not silently none', () {
       expect(

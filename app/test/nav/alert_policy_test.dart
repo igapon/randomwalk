@@ -12,19 +12,18 @@ NavUpdate update({
   double distanceToManeuverM = 300,
   bool offRoute = false,
   bool arrived = false,
-}) =>
-    NavUpdate(
-      snappedLat: 46.52,
-      snappedLon: 6.63,
-      alongKm: 0,
-      remainingKm: 1,
-      crossTrackM: 0,
-      maneuverIndex: maneuverIndex,
-      instruction: instruction,
-      distanceToManeuverM: distanceToManeuverM,
-      offRoute: offRoute,
-      arrived: arrived,
-    );
+}) => NavUpdate(
+  snappedLat: 46.52,
+  snappedLon: 6.63,
+  alongKm: 0,
+  remainingKm: 1,
+  crossTrackM: 0,
+  maneuverIndex: maneuverIndex,
+  instruction: instruction,
+  distanceToManeuverM: distanceToManeuverM,
+  offRoute: offRoute,
+  arrived: arrived,
+);
 
 void main() {
   group('AlertPolicy — maneuver-approach crossing', () {
@@ -69,24 +68,24 @@ void main() {
     test('re-arms once the maneuver index advances', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
       expect(
-          policy.shouldAlert(
-              update(maneuverIndex: 0, distanceToManeuverM: 70)),
-          isTrue);
+        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 70)),
+        isTrue,
+      );
       expect(
-          policy.shouldAlert(
-              update(maneuverIndex: 0, distanceToManeuverM: 10)),
-          isFalse);
+        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 10)),
+        isFalse,
+      );
 
       // New maneuver, still under its own threshold from the first fix seen
       // for it.
       expect(
-          policy.shouldAlert(
-              update(maneuverIndex: 1, distanceToManeuverM: 75)),
-          isTrue);
+        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 75)),
+        isTrue,
+      );
       expect(
-          policy.shouldAlert(
-              update(maneuverIndex: 1, distanceToManeuverM: 5)),
-          isFalse);
+        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 5)),
+        isFalse,
+      );
     });
   });
 
@@ -106,19 +105,23 @@ void main() {
       expect(policy.shouldAlert(update(offRoute: true)), isTrue);
     });
 
-    test('while off-route, a maneuver crossing underneath it does not also fire',
-        () {
-      final policy = AlertPolicy(profile: RoutingProfile.walk);
-      expect(
+    test(
+      'while off-route, a maneuver crossing underneath it does not also fire',
+      () {
+        final policy = AlertPolicy(profile: RoutingProfile.walk);
+        expect(
           policy.shouldAlert(update(offRoute: true, distanceToManeuverM: 40)),
-          isTrue);
-      // The off-route alert already fired for this excursion; a maneuver
-      // distance that would otherwise cross the threshold must not sneak a
-      // second alert in on top of it.
-      expect(
+          isTrue,
+        );
+        // The off-route alert already fired for this excursion; a maneuver
+        // distance that would otherwise cross the threshold must not sneak a
+        // second alert in on top of it.
+        expect(
           policy.shouldAlert(update(offRoute: true, distanceToManeuverM: 10)),
-          isFalse);
-    });
+          isFalse,
+        );
+      },
+    );
   });
 
   group('AlertPolicy — arrival', () {
@@ -136,53 +139,62 @@ void main() {
       // shows up (both odd once arrived, but not impossible), arrival has
       // already said everything there is to say.
       expect(
-          policy.shouldAlert(update(
-              arrived: true, offRoute: true, maneuverIndex: 1, distanceToManeuverM: 5)),
-          isFalse);
+        policy.shouldAlert(
+          update(
+            arrived: true,
+            offRoute: true,
+            maneuverIndex: 1,
+            distanceToManeuverM: 5,
+          ),
+        ),
+        isFalse,
+      );
     });
   });
 
   group('AlertPolicy — reset on replan', () {
     test(
-        'a fresh route renumbering maneuvers from 0 alerts again after reset',
-        () {
-      final policy = AlertPolicy(profile: RoutingProfile.walk);
-      // Alerted for maneuver 0 on the original route.
-      expect(
-          policy.shouldAlert(
-              update(maneuverIndex: 0, distanceToManeuverM: 70)),
-          isTrue);
+      'a fresh route renumbering maneuvers from 0 alerts again after reset',
+      () {
+        final policy = AlertPolicy(profile: RoutingProfile.walk);
+        // Alerted for maneuver 0 on the original route.
+        expect(
+          policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 70)),
+          isTrue,
+        );
 
-      // A replan swaps in a fresh RouteFollower, whose maneuver numbering
-      // starts at 0 again — without a reset this would read as "maneuver 0
-      // already alerted" and stay silent for the rest of the new route's
-      // first leg.
-      policy.reset();
+        // A replan swaps in a fresh RouteFollower, whose maneuver numbering
+        // starts at 0 again — without a reset this would read as "maneuver 0
+        // already alerted" and stay silent for the rest of the new route's
+        // first leg.
+        policy.reset();
 
-      expect(
-          policy.shouldAlert(
-              update(maneuverIndex: 0, distanceToManeuverM: 70)),
-          isTrue);
-    });
+        expect(
+          policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 70)),
+          isTrue,
+        );
+      },
+    );
 
-    test('reset does not disturb offRoute/arrived — they self-correct anyway',
-        () {
-      final policy = AlertPolicy(profile: RoutingProfile.walk);
-      expect(policy.shouldAlert(update(offRoute: true)), isTrue);
+    test(
+      'reset does not disturb offRoute/arrived — they self-correct anyway',
+      () {
+        final policy = AlertPolicy(profile: RoutingProfile.walk);
+        expect(policy.shouldAlert(update(offRoute: true)), isTrue);
 
-      policy.reset();
+        policy.reset();
 
-      // Still off-route on the very next fix: no repeat, exactly as if no
-      // replan (and no reset) had happened — offRoute latching is driven by
-      // the update itself, not by the maneuver-index bookkeeping reset
-      // clears.
-      expect(policy.shouldAlert(update(offRoute: true)), isFalse);
-    });
+        // Still off-route on the very next fix: no repeat, exactly as if no
+        // replan (and no reset) had happened — offRoute latching is driven by
+        // the update itself, not by the maneuver-index bookkeeping reset
+        // clears.
+        expect(policy.shouldAlert(update(offRoute: true)), isFalse);
+      },
+    );
   });
 
   group('AlertPolicy — replanning (final review item 5)', () {
-    test(
-        'a successful same-tick replan alerts even though offRoute itself '
+    test('a successful same-tick replan alerts even though offRoute itself '
         'already reads false', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
       // This is exactly the shape NavigationRuntime.onFix hands
@@ -190,27 +202,30 @@ void main() {
       // describes the *new*, on-route follower, so offRoute is false — only
       // `replanning` still says this tick left the route.
       expect(
-          policy.shouldAlert(update(offRoute: false), replanning: true),
-          isTrue);
+        policy.shouldAlert(update(offRoute: false), replanning: true),
+        isTrue,
+      );
     });
 
-    test('does not repeat while still replanning-flagged on the next tick',
-        () {
+    test('does not repeat while still replanning-flagged on the next tick', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
       expect(
-          policy.shouldAlert(update(offRoute: false), replanning: true),
-          isTrue);
+        policy.shouldAlert(update(offRoute: false), replanning: true),
+        isTrue,
+      );
       expect(
-          policy.shouldAlert(update(offRoute: false), replanning: true),
-          isFalse);
+        policy.shouldAlert(update(offRoute: false), replanning: true),
+        isFalse,
+      );
     });
 
     test('a genuinely off-route update alerts the same whether or not '
         'replanning is also passed', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
       expect(
-          policy.shouldAlert(update(offRoute: true), replanning: true),
-          isTrue);
+        policy.shouldAlert(update(offRoute: true), replanning: true),
+        isTrue,
+      );
     });
 
     test('defaults to false — callers that never pass it see the old '
@@ -221,22 +236,29 @@ void main() {
   });
 
   group('alertText — replanning', () {
-    test('reads as the off-route phrasing even though offRoute is false',
-        () {
-      expect(alertText(update(offRoute: false), replanning: true),
-          "Écart d'itinéraire — recalcul");
+    test('reads as the off-route phrasing even though offRoute is false', () {
+      expect(
+        alertText(update(offRoute: false), replanning: true),
+        "Écart d'itinéraire — recalcul",
+      );
     });
 
     test('arrival still outranks replanning', () {
       expect(
-          alertText(update(arrived: true, offRoute: false), replanning: true),
-          'Arrivé !');
+        alertText(update(arrived: true, offRoute: false), replanning: true),
+        'Arrivé !',
+      );
     });
 
     test('defaults to the plain offRoute-only phrasing', () {
-      expect(alertText(update(offRoute: true)), "Écart d'itinéraire — recalcul");
-      expect(alertText(update(offRoute: false, instruction: 'Tournez à droite')),
-          'Tournez à droite');
+      expect(
+        alertText(update(offRoute: true)),
+        "Écart d'itinéraire — recalcul",
+      );
+      expect(
+        alertText(update(offRoute: false, instruction: 'Tournez à droite')),
+        'Tournez à droite',
+      );
     });
   });
 
@@ -244,25 +266,35 @@ void main() {
     test('an off-route loop is asked to rejoin, never promised a recalcul', () {
       // A loop is never recalculated (see NavigationRuntime.isLoop), so the
       // « recalcul » phrasing would promise something that is not coming.
-      expect(alertText(update(offRoute: true), isLoop: true),
-          kNavRejoinLoopLabel);
+      expect(
+        alertText(update(offRoute: true), isLoop: true),
+        kNavRejoinLoopLabel,
+      );
       expect(kNavRejoinLoopLabel, "Écart d'itinéraire — rejoignez la boucle");
     });
 
     test('arrival still outranks it', () {
-      expect(alertText(update(arrived: true, offRoute: true), isLoop: true),
-          'Arrivé !');
+      expect(
+        alertText(update(arrived: true, offRoute: true), isLoop: true),
+        'Arrivé !',
+      );
     });
 
     test('an on-route loop reads its ordinary instruction', () {
       expect(
-          alertText(update(offRoute: false, instruction: 'Tournez à droite'),
-              isLoop: true),
-          'Tournez à droite');
+        alertText(
+          update(offRoute: false, instruction: 'Tournez à droite'),
+          isLoop: true,
+        ),
+        'Tournez à droite',
+      );
     });
 
     test('defaults to false — an A→B trip keeps the recalcul phrasing', () {
-      expect(alertText(update(offRoute: true)), "Écart d'itinéraire — recalcul");
+      expect(
+        alertText(update(offRoute: true)),
+        "Écart d'itinéraire — recalcul",
+      );
     });
   });
 }

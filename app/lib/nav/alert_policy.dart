@@ -49,9 +49,9 @@ class AlertPolicy {
   int? _alertedManeuverIndex;
 
   AlertPolicy({required this.profile})
-      : _thresholdM = profile == RoutingProfile.bike
-            ? kBikeAlertThresholdM
-            : kWalkAlertThresholdM;
+    : _thresholdM = profile == RoutingProfile.bike
+          ? kBikeAlertThresholdM
+          : kWalkAlertThresholdM;
 
   /// Whether [u] is worth alerting the walker for. Stateful — call once per
   /// fix, in order; calling it twice for the same fix double-latches nothing

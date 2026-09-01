@@ -28,7 +28,10 @@ class TrackSampler {
   final int maxPoints;
   final List<(double, double)> _points = [];
 
-  TrackSampler({this.minStepM = kTrackMinStepM, this.maxPoints = kTrackMaxPoints});
+  TrackSampler({
+    this.minStepM = kTrackMinStepM,
+    this.maxPoints = kTrackMaxPoints,
+  });
 
   /// Every point kept so far, in order.
   List<(double, double)> get points => List.unmodifiable(_points);

@@ -21,16 +21,18 @@ class LeaderboardEntry {
   final String pseudo;
   final double totalKm;
   final int rank;
-  const LeaderboardEntry(
-      {this.userId,
-      required this.pseudo,
-      required this.totalKm,
-      required this.rank});
+  const LeaderboardEntry({
+    this.userId,
+    required this.pseudo,
+    required this.totalKm,
+    required this.rank,
+  });
   factory LeaderboardEntry.fromJson(Map<String, dynamic> j) => LeaderboardEntry(
-      userId: j['user_id'] as String?,
-      pseudo: j['pseudo'] as String,
-      totalKm: (j['total_km'] as num).toDouble(),
-      rank: j['rank'] as int);
+    userId: j['user_id'] as String?,
+    pseudo: j['pseudo'] as String,
+    totalKm: (j['total_km'] as num).toDouble(),
+    rank: j['rank'] as int,
+  );
 }
 
 class LeaderboardData {
@@ -58,22 +60,30 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
 
   @override
   Future<SubmitResult> submit(PlayerIdentity id, double totalKm) async {
-    final resp = await client.post(Uri.parse('$base/v1/score'),
-        headers: {'content-type': 'application/json'},
-        body: jsonEncode(
-            {'user_id': id.userId, 'pseudo': id.pseudo, 'total_km': totalKm}));
+    final resp = await client.post(
+      Uri.parse('$base/v1/score'),
+      headers: {'content-type': 'application/json'},
+      body: jsonEncode({
+        'user_id': id.userId,
+        'pseudo': id.pseudo,
+        'total_km': totalKm,
+      }),
+    );
     if (resp.statusCode != 200) {
       throw LeaderboardException('submit: HTTP ${resp.statusCode}');
     }
     final j = jsonDecode(resp.body) as Map<String, dynamic>;
     return SubmitResult(
-        rank: j['rank'] as int, totalKm: (j['total_km'] as num).toDouble());
+      rank: j['rank'] as int,
+      totalKm: (j['total_km'] as num).toDouble(),
+    );
   }
 
   @override
   Future<LeaderboardData> fetch(String userId) async {
-    final resp =
-        await client.get(Uri.parse('$base/v1/leaderboard?user_id=$userId'));
+    final resp = await client.get(
+      Uri.parse('$base/v1/leaderboard?user_id=$userId'),
+    );
     if (resp.statusCode != 200) {
       throw LeaderboardException('fetch: HTTP ${resp.statusCode}');
     }
@@ -81,7 +91,7 @@ class HttpLeaderboardRepository implements LeaderboardRepository {
     return LeaderboardData(
       top: [
         for (final e in j['top'] as List<dynamic>)
-          LeaderboardEntry.fromJson(e as Map<String, dynamic>)
+          LeaderboardEntry.fromJson(e as Map<String, dynamic>),
       ],
       me: j['me'] == null
           ? null

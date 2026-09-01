@@ -34,8 +34,7 @@ class PrefsFinalisedTripMemory implements FinalisedTripMemory {
   @override
   Future<bool> wasFinalised(DateTime startedAt) async {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getStringList(_key) ?? const [])
-        .contains(_id(startedAt));
+    return (prefs.getStringList(_key) ?? const []).contains(_id(startedAt));
   }
 
   @override
@@ -53,6 +52,5 @@ class PrefsFinalisedTripMemory implements FinalisedTripMemory {
     );
   }
 
-  static String _id(DateTime startedAt) =>
-      startedAt.toUtc().toIso8601String();
+  static String _id(DateTime startedAt) => startedAt.toUtc().toIso8601String();
 }

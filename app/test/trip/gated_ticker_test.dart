@@ -5,7 +5,9 @@ void main() {
   test('does not tick while inactive', () async {
     var ticks = 0;
     final ticker = GatedTicker(
-        onTick: () => ticks++, interval: const Duration(milliseconds: 20));
+      onTick: () => ticks++,
+      interval: const Duration(milliseconds: 20),
+    );
 
     ticker.sync(false); // idle: never started
     await Future.delayed(const Duration(milliseconds: 80));
@@ -18,7 +20,9 @@ void main() {
   test('ticks periodically once active', () async {
     var ticks = 0;
     final ticker = GatedTicker(
-        onTick: () => ticks++, interval: const Duration(milliseconds: 20));
+      onTick: () => ticks++,
+      interval: const Duration(milliseconds: 20),
+    );
 
     ticker.sync(true);
     expect(ticker.isActive, true);
@@ -31,7 +35,9 @@ void main() {
   test('stops ticking once deactivated', () async {
     var ticks = 0;
     final ticker = GatedTicker(
-        onTick: () => ticks++, interval: const Duration(milliseconds: 20));
+      onTick: () => ticks++,
+      interval: const Duration(milliseconds: 20),
+    );
 
     ticker.sync(true);
     await Future.delayed(const Duration(milliseconds: 50));
@@ -44,26 +50,33 @@ void main() {
     ticker.dispose();
   });
 
-  test('sync(true) called repeatedly does not create duplicate timers', () async {
-    var ticks = 0;
-    final ticker = GatedTicker(
-        onTick: () => ticks++, interval: const Duration(milliseconds: 30));
+  test(
+    'sync(true) called repeatedly does not create duplicate timers',
+    () async {
+      var ticks = 0;
+      final ticker = GatedTicker(
+        onTick: () => ticks++,
+        interval: const Duration(milliseconds: 30),
+      );
 
-    ticker.sync(true);
-    ticker.sync(true); // idempotent — must not double the tick rate
-    ticker.sync(true);
-    await Future.delayed(const Duration(milliseconds: 100));
+      ticker.sync(true);
+      ticker.sync(true); // idempotent — must not double the tick rate
+      ticker.sync(true);
+      await Future.delayed(const Duration(milliseconds: 100));
 
-    // ~3 ticks expected at a 30ms interval over 100ms; a doubled timer
-    // would produce roughly twice that.
-    expect(ticks, lessThan(6));
-    ticker.dispose();
-  });
+      // ~3 ticks expected at a 30ms interval over 100ms; a doubled timer
+      // would produce roughly twice that.
+      expect(ticks, lessThan(6));
+      ticker.dispose();
+    },
+  );
 
   test('dispose stops a running ticker', () async {
     var ticks = 0;
     final ticker = GatedTicker(
-        onTick: () => ticks++, interval: const Duration(milliseconds: 20));
+      onTick: () => ticks++,
+      interval: const Duration(milliseconds: 20),
+    );
 
     ticker.sync(true);
     await Future.delayed(const Duration(milliseconds: 30));

@@ -22,8 +22,7 @@ class FakeTraceEngine implements RoutingEngine {
   Future<void> init(String tileDirPath) async {}
 
   @override
-  Future<RouteResult> route(RouteRequest request) =>
-      throw UnimplementedError();
+  Future<RouteResult> route(RouteRequest request) => throw UnimplementedError();
 
   @override
   Future<RouteResult> routeMulti(MultiPointRouteRequest request) =>
@@ -59,7 +58,11 @@ class ThrowingJournal extends GameJournal {
 /// rooted at [topLeft], skipping [exclude] — used to pre-fill "everything
 /// but one cell" of a quartier for the badge-threshold tests, regardless of
 /// where [exclude] happens to sit within the block.
-List<String> _quartierCellsExcluding(CellId topLeft, CellId exclude, int count) {
+List<String> _quartierCellsExcluding(
+  CellId topLeft,
+  CellId exclude,
+  int count,
+) {
   final keys = <String>[];
   for (var dx = 0; dx < 8 && keys.length < count; dx++) {
     for (var dy = 0; dy < 8 && keys.length < count; dy++) {
@@ -89,16 +92,15 @@ void main() {
     Future<RoutingEngine?> Function()? engineProvider,
     GameJournal? journalOverride,
     void Function()? onJournalChanged,
-  }) =>
-      ExplorationRecorder(
-        engineProvider: engineProvider ?? (() async => engine),
-        edgesStore: edgesStore,
-        journal: journalOverride ?? journal,
-        trackFile: trackFile,
-        onJournalChanged: onJournalChanged,
-        newId: () => 'evt-${idCounter++}',
-        clock: () => now,
-      );
+  }) => ExplorationRecorder(
+    engineProvider: engineProvider ?? (() async => engine),
+    edgesStore: edgesStore,
+    journal: journalOverride ?? journal,
+    trackFile: trackFile,
+    onJournalChanged: onJournalChanged,
+    newId: () => 'evt-${idCounter++}',
+    clock: () => now,
+  );
 
   Future<void> writeTrack(List<(double, double)> points) async {
     final buffer = StringBuffer();
@@ -110,7 +112,9 @@ void main() {
   }
 
   setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('exploration_recorder_test');
+    tempDir = await Directory.systemTemp.createTemp(
+      'exploration_recorder_test',
+    );
     trackFile = File('${tempDir.path}/active_track.jsonl');
     journal = GameJournal(Directory('${tempDir.path}/journal'));
     edgesStore = await EdgesStore.open(inMemoryDatabasePath);
@@ -125,61 +129,60 @@ void main() {
 
   group('event order (Task 1 contract)', () {
     test(
-        'edge_covered_batch, cell_revealed, xp_earned(km), xp_earned(cells), '
-        'xp_earned(loop), loop_completed, energy_changed — in that order',
-        () async {
-      // A short walk near a single cell's center: enough to reveal at least
-      // that one cell, never enough to cross any quartier's 25% threshold
-      // from an empty journal.
-      final target = const CellId(40, -20);
-      final (lat, lon) = _centerOf(target);
-      await writeTrack([(lat, lon), (lat + 0.0002, lon)]);
-      engine.reply = jsonEncode({
-        'edges': [
-          {'way_id': 111, 'length': 0.5},
-          {'way_id': 222, 'length': 0.7},
-        ],
-      });
-
-      final recorder = buildRecorder();
-      await recorder.process(
-          const FinishedTrip(km: 2.5, isLoop: true, navArrived: true));
-
-      final events = await journal.readAll();
-      final types = events.map((e) => e.type).toList();
-
-      expect(
-          types,
-          [
-            GameEventTypes.edgeCoveredBatch,
-            GameEventTypes.cellRevealed,
-            GameEventTypes.xpEarned, // km
-            GameEventTypes.xpEarned, // cells
-            GameEventTypes.xpEarned, // loop
-            GameEventTypes.loopCompleted,
-            GameEventTypes.energyChanged,
+      'edge_covered_batch, cell_revealed, xp_earned(km), xp_earned(cells), '
+      'xp_earned(loop), loop_completed, energy_changed — in that order',
+      () async {
+        // A short walk near a single cell's center: enough to reveal at least
+        // that one cell, never enough to cross any quartier's 25% threshold
+        // from an empty journal.
+        final target = const CellId(40, -20);
+        final (lat, lon) = _centerOf(target);
+        await writeTrack([(lat, lon), (lat + 0.0002, lon)]);
+        engine.reply = jsonEncode({
+          'edges': [
+            {'way_id': 111, 'length': 0.5},
+            {'way_id': 222, 'length': 0.7},
           ],
-          reason: 'events: $types');
+        });
 
-      expect(events[0].payload['km'], 2.5);
+        final recorder = buildRecorder();
+        await recorder.process(
+          const FinishedTrip(km: 2.5, isLoop: true, navArrived: true),
+        );
 
-      final cellEvent = events[1];
-      final cells = (cellEvent.payload['cells'] as List).cast<String>();
-      expect(cells, contains(target.key));
+        final events = await journal.readAll();
+        final types = events.map((e) => e.type).toList();
 
-      expect(events[2].payload['amount'], closeTo(25.0, 1e-9)); // 10 * 2.5
-      expect(events[2].payload['preMultiplied'], false);
+        expect(types, [
+          GameEventTypes.edgeCoveredBatch,
+          GameEventTypes.cellRevealed,
+          GameEventTypes.xpEarned, // km
+          GameEventTypes.xpEarned, // cells
+          GameEventTypes.xpEarned, // loop
+          GameEventTypes.loopCompleted,
+          GameEventTypes.energyChanged,
+        ], reason: 'events: $types');
 
-      expect(events[3].payload['amount'], closeTo(5.0 * cells.length, 1e-9));
-      expect(events[3].payload['preMultiplied'], false);
+        expect(events[0].payload['km'], 2.5);
 
-      expect(events[4].payload['amount'], 50);
-      expect(events[4].payload['preMultiplied'], false);
+        final cellEvent = events[1];
+        final cells = (cellEvent.payload['cells'] as List).cast<String>();
+        expect(cells, contains(target.key));
 
-      expect(events[5].payload, isEmpty);
+        expect(events[2].payload['amount'], closeTo(25.0, 1e-9)); // 10 * 2.5
+        expect(events[2].payload['preMultiplied'], false);
 
-      expect(events[6].payload['delta'], closeTo(-10.0, 1e-9)); // -4 * 2.5
-    });
+        expect(events[3].payload['amount'], closeTo(5.0 * cells.length, 1e-9));
+        expect(events[3].payload['preMultiplied'], false);
+
+        expect(events[4].payload['amount'], 50);
+        expect(events[4].payload['preMultiplied'], false);
+
+        expect(events[5].payload, isEmpty);
+
+        expect(events[6].payload['delta'], closeTo(-10.0, 1e-9)); // -4 * 2.5
+      },
+    );
 
     test('no badge_unlocked from an ordinary reveal starting from an empty '
         'journal', () async {
@@ -191,7 +194,10 @@ void main() {
       await recorder.process(const FinishedTrip(km: 1.0));
 
       final events = await journal.readAll();
-      expect(events.any((e) => e.type == GameEventTypes.badgeUnlocked), isFalse);
+      expect(
+        events.any((e) => e.type == GameEventTypes.badgeUnlocked),
+        isFalse,
+      );
     });
 
     test('a non-loop trip emits no loop-related events at all', () async {
@@ -208,20 +214,28 @@ void main() {
       });
     });
 
-    test('a loop that did not arrive emits no loop_completed and no loop XP',
-        () async {
-      await writeTrack(const []);
-      final recorder = buildRecorder();
-      await recorder.process(
-          const FinishedTrip(km: 1.0, isLoop: true, navArrived: false));
+    test(
+      'a loop that did not arrive emits no loop_completed and no loop XP',
+      () async {
+        await writeTrack(const []);
+        final recorder = buildRecorder();
+        await recorder.process(
+          const FinishedTrip(km: 1.0, isLoop: true, navArrived: false),
+        );
 
-      final events = await journal.readAll();
-      expect(events.any((e) => e.type == GameEventTypes.loopCompleted), isFalse);
-      // Only one xp_earned (km) since no cells were revealed (empty shape)
-      // and no loop bonus.
-      expect(
-          events.where((e) => e.type == GameEventTypes.xpEarned).length, 1);
-    });
+        final events = await journal.readAll();
+        expect(
+          events.any((e) => e.type == GameEventTypes.loopCompleted),
+          isFalse,
+        );
+        // Only one xp_earned (km) since no cells were revealed (empty shape)
+        // and no loop bonus.
+        expect(
+          events.where((e) => e.type == GameEventTypes.xpEarned).length,
+          1,
+        );
+      },
+    );
   });
 
   group('quartier_25 badge', () {
@@ -235,12 +249,14 @@ void main() {
       // 15/64 = 0.234, under the threshold.
       final prefilled = _quartierCellsExcluding(quartierTopLeft, target, 15);
       expect(prefilled.length, 15);
-      await journal.append(GameEvent(
-        id: 'seed',
-        ts: now,
-        type: GameEventTypes.cellRevealed,
-        payload: {'cells': prefilled},
-      ));
+      await journal.append(
+        GameEvent(
+          id: 'seed',
+          ts: now,
+          type: GameEventTypes.cellRevealed,
+          payload: {'cells': prefilled},
+        ),
+      );
 
       final (lat, lon) = _centerOf(target);
       await writeTrack([(lat, lon), (lat + 0.0002, lon)]);
@@ -259,79 +275,94 @@ void main() {
       expect(state.badges, contains(GameBadges.quartier25));
     });
 
-    test('never fires twice for the same quartier once already unlocked',
-        () async {
-      const quartierTopLeft = CellId(0, 0);
-      final target = const CellId(2, 3);
-      final prefilled = _quartierCellsExcluding(quartierTopLeft, target, 15);
-      await journal.append(GameEvent(
-          id: 'seed',
-          ts: now,
-          type: GameEventTypes.cellRevealed,
-          payload: {'cells': prefilled}));
-      final (lat, lon) = _centerOf(target);
-      await writeTrack([(lat, lon), (lat + 0.0002, lon)]);
-      await buildRecorder().process(const FinishedTrip(km: 0.5));
+    test(
+      'never fires twice for the same quartier once already unlocked',
+      () async {
+        const quartierTopLeft = CellId(0, 0);
+        final target = const CellId(2, 3);
+        final prefilled = _quartierCellsExcluding(quartierTopLeft, target, 15);
+        await journal.append(
+          GameEvent(
+            id: 'seed',
+            ts: now,
+            type: GameEventTypes.cellRevealed,
+            payload: {'cells': prefilled},
+          ),
+        );
+        final (lat, lon) = _centerOf(target);
+        await writeTrack([(lat, lon), (lat + 0.0002, lon)]);
+        await buildRecorder().process(const FinishedTrip(km: 0.5));
 
-      // A second trip touching a fresh cell in the SAME quartier must not
-      // unlock the badge again.
-      final other = const CellId(3, 3);
-      expect(quartierOf(other), (quartierTopLeft, 8));
-      final (lat2, lon2) = _centerOf(other);
-      await writeTrack([(lat2, lon2), (lat2 + 0.0002, lon2)]);
-      await buildRecorder().process(const FinishedTrip(km: 0.5));
+        // A second trip touching a fresh cell in the SAME quartier must not
+        // unlock the badge again.
+        final other = const CellId(3, 3);
+        expect(quartierOf(other), (quartierTopLeft, 8));
+        final (lat2, lon2) = _centerOf(other);
+        await writeTrack([(lat2, lon2), (lat2 + 0.0002, lon2)]);
+        await buildRecorder().process(const FinishedTrip(km: 0.5));
 
-      final events = await journal.readAll();
-      expect(
+        final events = await journal.readAll();
+        expect(
           events.where((e) => e.type == GameEventTypes.badgeUnlocked).length,
-          1);
-    });
+          1,
+        );
+      },
+    );
   });
 
   group('edge/way persistence', () {
-    test('a successful match stores the matched way ids in EdgesStore',
-        () async {
-      await writeTrack([(46.52, 6.63), (46.5202, 6.63)]);
-      engine.reply = jsonEncode({
-        'edges': [
-          {'way_id': 555, 'length': 0.1},
-          {'way_id': 556, 'length': 0.2},
-        ],
-      });
+    test(
+      'a successful match stores the matched way ids in EdgesStore',
+      () async {
+        await writeTrack([(46.52, 6.63), (46.5202, 6.63)]);
+        engine.reply = jsonEncode({
+          'edges': [
+            {'way_id': 555, 'length': 0.1},
+            {'way_id': 556, 'length': 0.2},
+          ],
+        });
 
-      await buildRecorder().process(const FinishedTrip(km: 0.3));
+        await buildRecorder().process(const FinishedTrip(km: 0.3));
 
-      expect(await edgesStore.contains('555'), isTrue);
-      expect(await edgesStore.contains('556'), isTrue);
-      expect(await edgesStore.totalCount, 2);
-    });
+        expect(await edgesStore.contains('555'), isTrue);
+        expect(await edgesStore.contains('556'), isTrue);
+        expect(await edgesStore.totalCount, 2);
+      },
+    );
   });
 
   group('game never blocks — best-effort failure handling', () {
-    test('no track file at all still emits km/energy events, no cell reveal',
-        () async {
-      // trackFile was never written.
-      final recorder = buildRecorder();
-      await recorder.process(const FinishedTrip(km: 2.0));
+    test(
+      'no track file at all still emits km/energy events, no cell reveal',
+      () async {
+        // trackFile was never written.
+        final recorder = buildRecorder();
+        await recorder.process(const FinishedTrip(km: 2.0));
 
-      final events = await journal.readAll();
-      expect(events.map((e) => e.type), [
-        GameEventTypes.edgeCoveredBatch,
-        GameEventTypes.xpEarned,
-        GameEventTypes.energyChanged,
-      ]);
-    });
+        final events = await journal.readAll();
+        expect(events.map((e) => e.type), [
+          GameEventTypes.edgeCoveredBatch,
+          GameEventTypes.xpEarned,
+          GameEventTypes.energyChanged,
+        ]);
+      },
+    );
 
-    test('a shape with fewer than 2 points skips reveal/matching entirely',
-        () async {
-      await writeTrack([(46.52, 6.63)]);
-      final recorder = buildRecorder();
-      await recorder.process(const FinishedTrip(km: 1.0));
+    test(
+      'a shape with fewer than 2 points skips reveal/matching entirely',
+      () async {
+        await writeTrack([(46.52, 6.63)]);
+        final recorder = buildRecorder();
+        await recorder.process(const FinishedTrip(km: 1.0));
 
-      expect(await edgesStore.totalCount, 0);
-      final events = await journal.readAll();
-      expect(events.any((e) => e.type == GameEventTypes.cellRevealed), isFalse);
-    });
+        expect(await edgesStore.totalCount, 0);
+        final events = await journal.readAll();
+        expect(
+          events.any((e) => e.type == GameEventTypes.cellRevealed),
+          isFalse,
+        );
+      },
+    );
 
     test('a null engineProvider (no tiles resolved) skips matching but still '
         'reveals cells from the raw shape', () async {
@@ -344,8 +375,9 @@ void main() {
 
       expect(await edgesStore.totalCount, 0);
       final events = await journal.readAll();
-      final cellEvent =
-          events.firstWhere((e) => e.type == GameEventTypes.cellRevealed);
+      final cellEvent = events.firstWhere(
+        (e) => e.type == GameEventTypes.cellRevealed,
+      );
       expect((cellEvent.payload['cells'] as List), contains(target.key));
     });
 
@@ -362,62 +394,86 @@ void main() {
       expect(await edgesStore.totalCount, 0);
       final events = await journal.readAll();
       expect(events.any((e) => e.type == GameEventTypes.cellRevealed), isTrue);
-      expect(events.any((e) => e.type == GameEventTypes.edgeCoveredBatch),
-          isTrue);
+      expect(
+        events.any((e) => e.type == GameEventTypes.edgeCoveredBatch),
+        isTrue,
+      );
     });
 
-    test('an engineProvider that itself throws never escapes process()',
-        () async {
-      final recorder = buildRecorder(
-          engineProvider: () async => throw StateError('boom'));
-      await writeTrack([(46.52, 6.63), (46.5202, 6.63)]);
+    test(
+      'an engineProvider that itself throws never escapes process()',
+      () async {
+        final recorder = buildRecorder(
+          engineProvider: () async => throw StateError('boom'),
+        );
+        await writeTrack([(46.52, 6.63), (46.5202, 6.63)]);
 
-      await expectLater(
-          recorder.process(const FinishedTrip(km: 1.0)), completes);
+        await expectLater(
+          recorder.process(const FinishedTrip(km: 1.0)),
+          completes,
+        );
 
-      final events = await journal.readAll();
-      expect(events.any((e) => e.type == GameEventTypes.edgeCoveredBatch),
-          isTrue);
-    });
+        final events = await journal.readAll();
+        expect(
+          events.any((e) => e.type == GameEventTypes.edgeCoveredBatch),
+          isTrue,
+        );
+      },
+    );
 
-    test('a journal that throws on appendAll never escapes process()',
-        () async {
-      final throwingJournal = ThrowingJournal(Directory('${tempDir.path}/j2'));
-      final recorder = buildRecorder(journalOverride: throwingJournal);
-      await writeTrack(const []);
+    test(
+      'a journal that throws on appendAll never escapes process()',
+      () async {
+        final throwingJournal = ThrowingJournal(
+          Directory('${tempDir.path}/j2'),
+        );
+        final recorder = buildRecorder(journalOverride: throwingJournal);
+        await writeTrack(const []);
 
-      await expectLater(
-          recorder.process(const FinishedTrip(km: 1.0)), completes);
-    });
+        await expectLater(
+          recorder.process(const FinishedTrip(km: 1.0)),
+          completes,
+        );
+      },
+    );
 
-    test('onJournalChanged fires once after a successful process() call',
-        () async {
-      var calls = 0;
-      await writeTrack(const []);
-      await buildRecorder(onJournalChanged: () => calls++)
-          .process(const FinishedTrip(km: 1.0));
-      expect(calls, 1);
-    });
+    test(
+      'onJournalChanged fires once after a successful process() call',
+      () async {
+        var calls = 0;
+        await writeTrack(const []);
+        await buildRecorder(
+          onJournalChanged: () => calls++,
+        ).process(const FinishedTrip(km: 1.0));
+        expect(calls, 1);
+      },
+    );
 
     test('a throwing onJournalChanged never escapes process()', () async {
       await writeTrack(const []);
       await expectLater(
-          buildRecorder(onJournalChanged: () => throw StateError('boom'))
-              .process(const FinishedTrip(km: 1.0)),
-          completes);
+        buildRecorder(
+          onJournalChanged: () => throw StateError('boom'),
+        ).process(const FinishedTrip(km: 1.0)),
+        completes,
+      );
     });
 
-    test('a journal that throws on appendAll never fires onJournalChanged',
-        () async {
-      final throwingJournal = ThrowingJournal(Directory('${tempDir.path}/j3'));
-      var calls = 0;
-      await writeTrack(const []);
-      await buildRecorder(
-              journalOverride: throwingJournal,
-              onJournalChanged: () => calls++)
-          .process(const FinishedTrip(km: 1.0));
-      expect(calls, 0);
-    });
+    test(
+      'a journal that throws on appendAll never fires onJournalChanged',
+      () async {
+        final throwingJournal = ThrowingJournal(
+          Directory('${tempDir.path}/j3'),
+        );
+        var calls = 0;
+        await writeTrack(const []);
+        await buildRecorder(
+          journalOverride: throwingJournal,
+          onJournalChanged: () => calls++,
+        ).process(const FinishedTrip(km: 1.0));
+        expect(calls, 0);
+      },
+    );
 
     test('the track file is deleted once read, win or lose', () async {
       await writeTrack([(46.52, 6.63), (46.5202, 6.63)]);
@@ -425,8 +481,7 @@ void main() {
       expect(await trackFile.exists(), isFalse);
     });
 
-    test(
-        'an oversized on-disk track file (more than kTrackMaxPoints lines) '
+    test('an oversized on-disk track file (more than kTrackMaxPoints lines) '
         'is capped before being handed to the map-matcher — fix round 1 '
         'finding 2 (recorder-side belt-and-suspenders)', () async {
       final points = <(double, double)>[
@@ -445,8 +500,7 @@ void main() {
   });
 
   group('gap handling (fix round 1: no straight line across a gap)', () {
-    test(
-        'a gap greater than 200 m between consecutive track points does not '
+    test('a gap greater than 200 m between consecutive track points does not '
         'reveal a straight-line corridor across it', () async {
       final a = _centerOf(const CellId(30, 0));
       final b = _centerOf(const CellId(30, 4)); // ~600 m north, gap > 200 m
@@ -456,8 +510,9 @@ void main() {
       await buildRecorder().process(const FinishedTrip(km: 0.6));
 
       final events = await journal.readAll();
-      final cellEvent =
-          events.firstWhere((e) => e.type == GameEventTypes.cellRevealed);
+      final cellEvent = events.firstWhere(
+        (e) => e.type == GameEventTypes.cellRevealed,
+      );
       final cells = (cellEvent.payload['cells'] as List).cast<String>();
       expect(cells, isNot(contains(midpoint.key)));
       // Sanity: each endpoint's own cell IS still revealed — splitting on
