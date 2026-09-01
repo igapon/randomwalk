@@ -7,6 +7,113 @@ import '../valhalla/models.dart';
 
 enum TripStatus { idle, recording }
 
+/// Cap on how many landmark visits `TripTaskHandler` remembers to keep
+/// republishing in [TripSnapshot.pendingVisits] — see that field's doc
+/// comment for the "ack" design this bounds, and `GameVisitConsumer`
+/// (`game/visit_consumer.dart`) for the matching UI-side cap.
+const kPendingVisitsMax = 20;
+
+/// One landmark visit the service's `VisitDetector` (`game/visits.dart`)
+/// found, carried on [TripSnapshot.pendingVisits] for the UI's
+/// `GameVisitConsumer` to turn into journal events + a discreet alert (M4
+/// exploration, Task 5).
+///
+/// Carries [lat]/[lon] (the landmark's own coordinates, not the fix that
+/// triggered the visit) because `GameVisitConsumer` needs them to compute a
+/// `reveal`-kind landmark's 400m disc reveal — the pendingVisits shape
+/// sketched by the M4 plan (`{poiId, kind, subkind?, name?, ts}`) omits
+/// them, but nothing else in the UI isolate has a cheap way to look a POI's
+/// position back up from just its id (that would need loading the whole
+/// POI store off the UI isolate just to answer one lookup), so the service
+/// — which already has the `GamePoi` in hand at detection time — includes
+/// them directly.
+class PendingVisit {
+  final String poiId;
+
+  /// `'reveal'` | `'coins'` | `'energy'` — see the M4 event contract
+  /// (task-1-report.md).
+  final String kind;
+
+  /// Set only for `kind == 'energy'` (`'restaurant'` | `'cafe'` |
+  /// `'fast_food'`) — required by the `landmark_visited` event contract iff
+  /// `kind` is `energy`, absent otherwise.
+  final String? subkind;
+  final String? name;
+  final double lat;
+  final double lon;
+
+  /// The fix time the dwell threshold was crossed at (`PoiVisit.ts`) — the
+  /// timestamp every event `GameVisitConsumer` emits for this visit carries
+  /// verbatim, which is what makes reprocessing the same [PendingVisit] more
+  /// than once idempotent (see that class's doc comment).
+  final DateTime ts;
+
+  const PendingVisit({
+    required this.poiId,
+    required this.kind,
+    this.subkind,
+    this.name,
+    required this.lat,
+    required this.lon,
+    required this.ts,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'poiId': poiId,
+        'kind': kind,
+        if (subkind != null) 'subkind': subkind,
+        if (name != null) 'name': name,
+        'lat': lat,
+        'lon': lon,
+        'ts': ts.toUtc().toIso8601String(),
+      };
+
+  /// Parses one entry, or `null` for a malformed one — a single bad entry
+  /// must never take the rest of the snapshot down (see
+  /// [TripSnapshot.fromJson]).
+  static PendingVisit? tryParse(Object? json) {
+    if (json is! Map) return null;
+    final poiId = json['poiId'];
+    final kind = json['kind'];
+    final lat = json['lat'];
+    final lon = json['lon'];
+    final ts = json['ts'];
+    if (poiId is! String || kind is! String) return null;
+    if (lat is! num || lon is! num || ts is! String) return null;
+    final DateTime parsedTs;
+    try {
+      parsedTs = DateTime.parse(ts);
+    } catch (_) {
+      return null;
+    }
+    final subkind = json['subkind'];
+    final name = json['name'];
+    return PendingVisit(
+      poiId: poiId,
+      kind: kind,
+      subkind: subkind is String ? subkind : null,
+      name: name is String ? name : null,
+      lat: lat.toDouble(),
+      lon: lon.toDouble(),
+      ts: parsedTs,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is PendingVisit &&
+      other.poiId == poiId &&
+      other.kind == kind &&
+      other.subkind == subkind &&
+      other.name == name &&
+      other.lat == lat &&
+      other.lon == lon &&
+      other.ts == ts;
+
+  @override
+  int get hashCode => Object.hash(poiId, kind, subkind, name, lat, lon, ts);
+}
+
 /// Below this a trip is too short to say anything about cadence: the
 /// hardware step counter (TYPE_STEP_COUNTER) only reports after a burst of
 /// steps, so the first ~100 m of any walk legitimately shows zero.
@@ -92,6 +199,35 @@ class TripSnapshot {
   /// happen and whose result exists nowhere else in this process.
   final String? navRouteShapeEnc;
 
+  /// Landmark visits detected so far this trip, not yet necessarily
+  /// processed — see [PendingVisit]'s doc comment for what it carries and
+  /// why, and the "ack design" note below for the delivery contract.
+  ///
+  /// Rides the snapshot for the same reason [gpsSilent]/the nav fields do:
+  /// it is state the service alone can produce, and a UI that (re)attaches
+  /// mid-trip must see everything detected so far, not just whatever
+  /// happens to fire after it started listening.
+  ///
+  /// **Ack design**: there is no round-trip "I've consumed this" message
+  /// back to the service. Instead, the service keeps at most the last
+  /// [kPendingVisitsMax] detections (bounded, oldest dropped first — see
+  /// `TripTaskHandler`), republishing the same rolling window on every
+  /// snapshot for the rest of the trip; the UI's `GameVisitConsumer`
+  /// deduplicates by the `(poiId, ts)` pair (bounded the same way), so
+  /// reprocessing the same snapshot repeatedly is a cheap no-op rather than
+  /// a duplicate journal write or a repeated alert. Correctness does not
+  /// actually depend on that dedup — every event `GameVisitConsumer` emits
+  /// for a visit carries that visit's own [PendingVisit.ts], never
+  /// "now", which independently makes replaying an identical visit a true
+  /// no-op against the reducers (see that class's doc comment) — the dedup
+  /// exists purely so a long trip is not re-appending/re-alerting on the
+  /// same old visit forever.
+  ///
+  /// Omitted from [toJson] when empty, like every other M4/nav addition
+  /// here — a snapshot written before this field existed, or a trip with no
+  /// landmarks nearby, parses back as `const []` rather than throwing.
+  final List<PendingVisit> pendingVisits;
+
   const TripSnapshot({
     required this.status,
     required this.distanceKm,
@@ -110,6 +246,7 @@ class TripSnapshot {
     this.navReplanCount = 0,
     this.navRouteShapeEnc,
     this.navReplanning = false,
+    this.pendingVisits = const [],
   });
 
   /// A trip that is about to start: zeroed, or — when resuming an
@@ -158,6 +295,7 @@ class TripSnapshot {
     DateTime? updatedAt,
     bool? gpsSilent,
     NavFields? nav,
+    List<PendingVisit>? pendingVisits,
   }) =>
       TripSnapshot(
         status: status ?? this.status,
@@ -168,6 +306,7 @@ class TripSnapshot {
         profile: profile,
         routeBound: routeBound,
         gpsSilent: gpsSilent ?? this.gpsSilent,
+        pendingVisits: pendingVisits ?? this.pendingVisits,
         navInstruction: nav == null ? navInstruction : nav.instruction,
         navDistanceToManeuverM:
             nav == null ? navDistanceToManeuverM : nav.distanceToManeuverM,
@@ -202,6 +341,8 @@ class TripSnapshot {
         if (navReplanCount != 0) 'navReplanCount': navReplanCount,
         if (navRouteShapeEnc != null) 'navRouteShapeEnc': navRouteShapeEnc,
         if (navReplanning) 'navReplanning': navReplanning,
+        if (pendingVisits.isNotEmpty)
+          'pendingVisits': pendingVisits.map((v) => v.toJson()).toList(),
       };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
@@ -228,6 +369,11 @@ class TripSnapshot {
         // existed has no key for it at all, and must read as "not
         // replanning" rather than throw or coerce a null to true.
         navReplanning: j['navReplanning'] as bool? ?? false,
+        pendingVisits: (j['pendingVisits'] as List?)
+                ?.map(PendingVisit.tryParse)
+                .whereType<PendingVisit>()
+                .toList() ??
+            const [],
       );
 }
 

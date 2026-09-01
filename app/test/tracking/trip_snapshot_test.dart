@@ -142,6 +142,77 @@ void main() {
       expect(TripSnapshot.fromJson(json).profile, RoutingProfile.walk);
     });
 
+    group('pendingVisits (M4 Task 5)', () {
+      final visit = PendingVisit(
+        poiId: 'osm/way/1',
+        kind: 'energy',
+        subkind: 'cafe',
+        name: 'Café du Coin',
+        lat: 46.5,
+        lon: 6.6,
+        ts: DateTime.utc(2026, 8, 31, 9, 15),
+      );
+
+      test('a trip with no landmarks nearby carries an empty list', () {
+        expect(_recording().pendingVisits, isEmpty);
+        expect(_recording().toJson().containsKey('pendingVisits'), isFalse);
+      });
+
+      test('round-trips a visit through JSON, subkind and name included', () {
+        final withVisit =
+            _recording().copyWith(pendingVisits: [visit]);
+        final restored =
+            TripSnapshot.fromJson(jsonDecode(jsonEncode(withVisit.toJson())));
+
+        expect(restored.pendingVisits, [visit]);
+      });
+
+      test('a reveal/coins visit with no subkind/name omits those keys', () {
+        final bare = PendingVisit(
+          poiId: 'osm/node/2',
+          kind: 'reveal',
+          lat: 46.51,
+          lon: 6.61,
+          ts: DateTime.utc(2026, 8, 31, 9, 20),
+        );
+        final json = bare.toJson();
+        expect(json.containsKey('subkind'), isFalse);
+        expect(json.containsKey('name'), isFalse);
+
+        final restored = PendingVisit.tryParse(
+            jsonDecode(jsonEncode(json)) as Map<String, dynamic>)!;
+        expect(restored.subkind, isNull);
+        expect(restored.name, isNull);
+        expect(restored, bare);
+      });
+
+      test('a snapshot written before pendingVisits existed reads as empty',
+          () {
+        final legacy = _recording().toJson()..remove('pendingVisits');
+        expect(TripSnapshot.fromJson(legacy).pendingVisits, isEmpty);
+      });
+
+      test('a malformed entry in the list is skipped, not thrown', () {
+        final json = _recording().toJson();
+        json['pendingVisits'] = [
+          visit.toJson(),
+          {'poiId': 'missing-fields-only'},
+        ];
+        final restored = TripSnapshot.fromJson(json);
+        expect(restored.pendingVisits, [visit]);
+      });
+
+      test('PendingVisit.tryParse rejects a non-map value', () {
+        expect(PendingVisit.tryParse('not a map'), isNull);
+        expect(PendingVisit.tryParse(null), isNull);
+      });
+
+      test('PendingVisit.tryParse rejects an unparseable ts', () {
+        final json = visit.toJson()..['ts'] = 'not-a-date';
+        expect(PendingVisit.tryParse(json), isNull);
+      });
+    });
+
     test('elapsed is measured from startedAt', () {
       expect(_recording().elapsedAt(DateTime.utc(2026, 8, 30, 10, 32, 0)),
           const Duration(minutes: 32));
