@@ -7,27 +7,48 @@ import '../support/fake_sync_backend.dart';
 
 void main() {
   group('submit', () {
-    test(
-      'upserts the profile and returns the rank found in topProfiles',
-      () async {
-        final backend = FakeSyncBackend();
-        final repo = SupabaseLeaderboardRepository(backend, limit: 10);
+    test('falls back to rows.length + 1 when the pseudo is not found in '
+        'topProfiles (fix round 1, Task 4 review I4: this was previously '
+        "mis-named as covering the real `mine.first.rank` branch, which it "
+        "doesn't — see the test below for that one)", () async {
+      final backend = FakeSyncBackend();
+      final repo = SupabaseLeaderboardRepository(backend, limit: 10);
 
-        // The fake backend doesn't wire upsertProfile into topProfiles
-        // (SyncBackend keeps those as independent calls), so this test
-        // drives the exact contract SupabaseLeaderboardRepository uses:
-        // it calls upsertProfile, then re-reads topProfiles.
-        final result = await repo.submit(
-          const PlayerIdentity(userId: 'anon-1', pseudo: 'iaro'),
-          12.5,
-        );
+      // The fake backend doesn't wire upsertProfile into topProfiles
+      // (SyncBackend keeps those as independent calls), so this test
+      // drives the exact contract SupabaseLeaderboardRepository uses:
+      // it calls upsertProfile, then re-reads topProfiles.
+      final result = await repo.submit(
+        const PlayerIdentity(userId: 'anon-1', pseudo: 'iaro'),
+        12.5,
+      );
 
-        expect(result.totalKm, 12.5);
-        // No rows seeded on topProfiles, so 'iaro' isn't found: falls back
-        // to rows.length + 1 == 1.
-        expect(result.rank, 1);
-      },
-    );
+      expect(result.totalKm, 12.5);
+      // No rows seeded on topProfiles, so 'iaro' isn't found: falls back
+      // to rows.length + 1 == 1.
+      expect(result.rank, 1);
+    });
+
+    test('returns the REAL rank found in topProfiles when the submitted '
+        'pseudo is present in the page (fix round 1, Task 4 review I4 — the '
+        "method's actual purpose, previously uncovered)", () async {
+      final backend = _CapturingBackend(
+        rows: const [
+          LeaderboardRow(pseudo: 'a', totalKm: 30, rank: 1),
+          LeaderboardRow(pseudo: 'iaro', totalKm: 20, rank: 2),
+          LeaderboardRow(pseudo: 'b', totalKm: 10, rank: 3),
+        ],
+      );
+      final repo = SupabaseLeaderboardRepository(backend, limit: 10);
+
+      final result = await repo.submit(
+        const PlayerIdentity(userId: 'anon-1', pseudo: 'iaro'),
+        20.0,
+      );
+
+      expect(result.rank, 2); // NOT rows.length + 1 (4) — the real rank
+      expect(result.totalKm, 20.0);
+    });
 
     test(
       'the anonymous drive.lmqc.fr userId is never sent to upsertProfile',
@@ -62,9 +83,17 @@ void main() {
   });
 }
 
-/// A [FakeSyncBackend] whose `topProfiles` returns fixed rows and which
-/// records what `upsertProfile` was called with.
+/// A [FakeSyncBackend] whose `topProfiles` returns a fixed, configurable
+/// page of [rows] and which records what `upsertProfile` was called with.
 class _CapturingBackend extends FakeSyncBackend {
+  _CapturingBackend({
+    this.rows = const [
+      LeaderboardRow(pseudo: 'a', totalKm: 20, rank: 1),
+      LeaderboardRow(pseudo: 'b', totalKm: 10, rank: 2),
+    ],
+  });
+
+  final List<LeaderboardRow> rows;
   String? upsertedPseudo;
   double? upsertedTotalKm;
 
@@ -78,8 +107,5 @@ class _CapturingBackend extends FakeSyncBackend {
   }
 
   @override
-  Future<List<LeaderboardRow>> topProfiles({required int limit}) async => [
-    const LeaderboardRow(pseudo: 'a', totalKm: 20, rank: 1),
-    const LeaderboardRow(pseudo: 'b', totalKm: 10, rank: 2),
-  ];
+  Future<List<LeaderboardRow>> topProfiles({required int limit}) async => rows;
 }
