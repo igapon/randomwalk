@@ -8,9 +8,12 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../exploration/track_sampler.dart';
+import '../game/pois.dart';
+import '../game/visits.dart';
 import '../nav/alert_policy.dart';
 import '../nav/nav_fields.dart';
 import '../nav/navigation_runtime.dart';
+import '../nav/polyline_math.dart';
 import '../nav/route_follower.dart';
 import '../nav/tts.dart';
 import '../session/recorder.dart';
@@ -48,7 +51,14 @@ abstract class TripTracker {
   /// service run turn-by-turn guidance (and recalculate the route) on its
   /// own, with the app dead and the screen off. A free trip passes none and
   /// records exactly as it did before navigation existed.
-  Future<bool> start(TripSnapshot seed, {NavSeed? nav});
+  ///
+  /// [poisFilePath] (M4 Task 5) is unconditional, unlike [nav] — landmark
+  /// visits work in every trip, free or route-bound (the "free-session
+  /// identity" constraint applies to guidance, not to the game layer). Null
+  /// means no game POIs are available (never downloaded, or the caller has
+  /// no way to resolve one), in which case the service simply detects no
+  /// landmark visits this trip.
+  Future<bool> start(TripSnapshot seed, {NavSeed? nav, String? poisFilePath});
 
   /// Stops recording and returns the last snapshot the tracker produced.
   Future<TripSnapshot?> stop();
@@ -103,6 +113,10 @@ const _kServiceId = 4211;
 const _kSnapshotPathKey = 'randomwalk_snapshot_path';
 const _kSeedKey = 'randomwalk_seed_snapshot';
 const _kNavSeedKey = 'randomwalk_nav_seed';
+/// M4 Task 5: the `pois.json.gz` path for this trip, saved unconditionally
+/// (unlike [_kNavSeedKey]) on every [ForegroundServiceTripTracker.start] —
+/// see [TripTracker.start]'s doc comment.
+const _kPoisFilePathKey = 'randomwalk_pois_file_path';
 const _kGpsErrorKey = 'gpsError';
 const _kTtsEnabledKey = 'randomwalk_tts_enabled';
 const _kHapticsEnabledKey = 'randomwalk_haptics_enabled';
@@ -252,7 +266,8 @@ class ForegroundServiceTripTracker implements TripTracker {
   Future<void> clearSnapshot() => _store.clear();
 
   @override
-  Future<bool> start(TripSnapshot seed, {NavSeed? nav}) async {
+  Future<bool> start(TripSnapshot seed,
+      {NavSeed? nav, String? poisFilePath}) async {
     _configure();
     await attach();
 
@@ -287,6 +302,10 @@ class ForegroundServiceTripTracker implements TripTracker {
     // store outlives both the service and the process.
     await FlutterForegroundTask.saveData(
         key: _kNavSeedKey, value: nav == null ? '' : jsonEncode(nav.toJson()));
+    // M4 Task 5: unconditional (unlike the nav seed above) — every trip,
+    // free or route-bound, is eligible for landmark visits.
+    await FlutterForegroundTask.saveData(
+        key: _kPoisFilePathKey, value: poisFilePath ?? '');
     // Read fresh at every start (not just once, ever) so a setting flipped
     // between two trips is honoured by the second one even without
     // [updateAlertSettings] ever having been called on a running service.
@@ -555,11 +574,62 @@ class TripTaskHandler extends TaskHandler {
   /// path (`onDestroy`, an app being swiped away mid-write, ...).
   File? _trackFile;
 
+  /// M4 Task 5: this trip's game-landmark index, loaded once (see
+  /// [_initPoiStore]) from the path the UI resolved at [start] time. Null
+  /// until that load resolves (or forever, if it fails/there is nothing to
+  /// load) — [_maybeDetectVisit] simply detects no visits meanwhile, same
+  /// degradation as every other "game never blocks the tool" failure mode.
+  PoiStore? _poiStore;
+
+  /// The current disc query's center and the [VisitDetector] built from it
+  /// — re-queried (see [_maybeDetectVisit]) once the walker has moved
+  /// [_kPoiRequeryThresholdM] from [_poiQueryCenter], never on every fix.
+  (double, double)? _poiQueryCenter;
+  VisitDetector? _visitDetector;
+
+  /// Every `poiId` already detected this trip, carried across a
+  /// [_maybeDetectVisit] re-query (a fresh [VisitDetector] built for the new
+  /// disc excludes these) so a landmark near the boundary of two successive
+  /// query discs can never fire a second time in one trip — belt-and-braces
+  /// on top of [VisitDetector]'s own one-per-instance guarantee, which a
+  /// re-query would otherwise reset. Note this is an in-memory, per-service-
+  /// incarnation safety net, not the actual source of truth against
+  /// double-rewarding: the journal/reducers (replayed by the UI's
+  /// `GameVisitConsumer`) are — see that class's doc comment for why a
+  /// service restart re-detecting an already-journaled visit is still safe.
+  final Set<String> _visitedThisTrip = {};
+
+  /// Rolling window of the last [kPendingVisitsMax] visits detected this
+  /// trip — see [TripSnapshot.pendingVisits]'s "ack design" doc comment.
+  final List<PendingVisit> _pendingVisits = [];
+
+  /// 3km — Task 5 brief's "prefilter to a 3km disc around the start".
+  static const _poiDiscRadiusM = 3000.0;
+
+  /// 2km — Task 5 brief's "refresh ... when the walker moves >2km from the
+  /// last query center".
+  static const _poiRequeryThresholdM = 2000.0;
+
+  /// The in-flight (or already-completed) [_initPoiStore] call from the most
+  /// recent [onStart] — exposed only so a test can `await` it instead of
+  /// racing the fire-and-forget load with an arbitrary `Future.delayed`.
+  /// Production code never reads this.
+  @visibleForTesting
+  Future<void>? debugPoiStoreLoad;
+
   /// Whether the recorder actually started. Exposed for tests only — asserts
   /// that a hung TTS init ([speakerFactory]) never blocks [onStart] from
   /// getting the GPS subscription going.
   @visibleForTesting
   bool get debugIsRecording => _session?.isRecording ?? false;
+
+  /// The visits detected so far this trip (M4 Task 5), without needing to
+  /// wait for a publish/[ThrottledSnapshotWriter] flush to observe them —
+  /// [_snapshotAt] (hence [TripSnapshot.pendingVisits] on a published
+  /// snapshot) is a straight passthrough of this same list.
+  @visibleForTesting
+  List<PendingVisit> get debugPendingVisits =>
+      List.unmodifiable(_pendingVisits);
 
   /// Test-only entry point that feeds [sample] through the exact same fix
   /// pipeline ([_onFix]) a real GPS position would take — track sampling,
@@ -589,6 +659,15 @@ class TripTaskHandler extends TaskHandler {
     _steps = seed.steps;
     _writer = ThrottledSnapshotWriter(store);
     await _initTrackSampler(File(path), isRestart: resumePointResult.isRestart);
+
+    // M4 Task 5: fire-and-forget, never awaited — see [_initPoiStore]'s doc
+    // comment. Unconditional (every trip, free or route-bound, is eligible
+    // for landmark visits), unlike the nav seed just below.
+    final poisFilePath =
+        await FlutterForegroundTask.getData<String>(key: _kPoisFilePathKey);
+    final poiStoreLoad = _initPoiStore(poisFilePath);
+    debugPoiStoreLoad = poiStoreLoad;
+    unawaited(poiStoreLoad);
 
     // Note that an Android-restarted service (allowAutoRestart) rebuilds the
     // follower from the *planned* route, not from a route a previous
@@ -706,11 +785,88 @@ class TripTaskHandler extends TaskHandler {
   /// One accepted GPS fix — the single entry point [SessionController] calls
   /// for every trip, route-bound or free. Samples the trip's raw track for
   /// M4 exploration first (cheap, and needed regardless of guidance), then
-  /// defers to [_onNavFix] for turn-by-turn navigation, which no-ops on a
-  /// free trip (`_nav == null`) exactly as it always has.
+  /// runs landmark-visit detection (also M4, also every trip), then defers
+  /// to [_onNavFix] for turn-by-turn navigation, which no-ops on a free trip
+  /// (`_nav == null`) exactly as it always has.
   Future<void> _onFix(GpsSample sample) async {
     await _sampleTrack(sample);
+    _maybeDetectVisit(sample);
     await _onNavFix(sample);
+  }
+
+  /// M4 Task 5: loads this trip's game-landmark index. Fire-and-forget from
+  /// [onStart] — never awaited there — exactly like [_initSpeaker]: parsing
+  /// up to ~140k POIs out of a multi-megabyte gzip (see task-4-report.md)
+  /// must never delay `session.start()`, i.e. never delay the GPS
+  /// subscription actually opening. This runs inside the foreground-service
+  /// isolate, which is NOT the UI isolate to begin with (see
+  /// `ExplorationRecorder`'s own doc comment on the same point for
+  /// `EdgesStore`/map-matching) — so the `await PoiStore.load(...)` below
+  /// costs the UI thread nothing regardless of how long it takes; the only
+  /// reason to still not await it here is to keep this isolate's own event
+  /// loop free for `session.start()` to run immediately rather than queued
+  /// behind a parse. [_poiStore] simply stays null (no visits detected)
+  /// until this resolves, or forever on any failure — never a reason to
+  /// fail the trip.
+  Future<void> _initPoiStore(String? poisFilePath) async {
+    if (poisFilePath == null || poisFilePath.isEmpty) return;
+    try {
+      final store = await PoiStore.load(File(poisFilePath));
+      if (_stopped) return; // Trip already ended before this resolved.
+      _poiStore = store;
+    } catch (_) {
+      // Best-effort; see the doc comment above.
+    }
+  }
+
+  /// M4 Task 5: geofence+dwell landmark detection, run on every accepted fix
+  /// (see [_onFix]) alongside track sampling — riding the recording's one
+  /// GPS subscription rather than opening a second one, same rationale as
+  /// guidance itself (see [_onFix]'s own doc comment). Synchronous and
+  /// allocation-light on the common "nothing detected" path: no I/O here,
+  /// so nothing in this method can itself stall a fix.
+  ///
+  /// Re-queries [PoiStore.near] — never re-parses the store — for a fresh
+  /// [_poiDiscRadiusM] disc once the walker has moved more than
+  /// [_poiRequeryThresholdM] from the disc's own center, per the brief.
+  /// [VisitDetector] instances are cheap (just a list reference + a couple
+  /// of scalars) so rebuilding one on every re-query, rather than mutating
+  /// the POI list of a long-lived one, is the simplest correct option;
+  /// [_visitedThisTrip] is what stops a landmark near a disc boundary from
+  /// firing twice across that rebuild — see its own doc comment.
+  void _maybeDetectVisit(GpsSample sample) {
+    if (_stopped) return;
+    final store = _poiStore;
+    if (store == null || store.count == 0) return;
+
+    final center = _poiQueryCenter;
+    if (center == null ||
+        metersBetween(sample.lat, sample.lon, center.$1, center.$2) >
+            _poiRequeryThresholdM) {
+      final candidates = store
+          .near(sample.lat, sample.lon, _poiDiscRadiusM)
+          .where((p) => !_visitedThisTrip.contains(p.id))
+          .toList();
+      _visitDetector = VisitDetector(candidates);
+      _poiQueryCenter = (sample.lat, sample.lon);
+    }
+
+    final visit = _visitDetector?.onFix(sample.lat, sample.lon, sample.time);
+    if (visit == null) return;
+
+    _visitedThisTrip.add(visit.poi.id);
+    _pendingVisits.add(PendingVisit(
+      poiId: visit.poi.id,
+      kind: visit.poi.kind.name,
+      subkind: visit.poi.subkind,
+      name: visit.poi.name,
+      lat: visit.poi.lat,
+      lon: visit.poi.lon,
+      ts: visit.ts,
+    ));
+    while (_pendingVisits.length > kPendingVisitsMax) {
+      _pendingVisits.removeAt(0);
+    }
   }
 
   /// M4 exploration (best-effort): appends [sample] to the trip's on-disk
@@ -1094,6 +1250,7 @@ class TripTaskHandler extends TaskHandler {
       updatedAt: now,
       gpsSilent: _isGpsSilentAt(now),
       nav: _navFields,
+      pendingVisits: List.unmodifiable(_pendingVisits),
     );
   }
 }

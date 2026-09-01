@@ -517,6 +517,214 @@ void main() {
     });
   });
 
+  group('TripTaskHandler — M4 Task 5 landmark visit detection', () {
+    late Directory tempDir;
+
+    setUpAll(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_visits_onstart_test');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+    });
+
+    const churchLat = 46.5200, churchLon = 6.6300;
+    const bankLat = 46.5210, bankLon = 6.6310;
+
+    Future<String> writePoisFixture(List<Map<String, Object?>> pois) async {
+      final path = '${tempDir.path}/pois.json.gz';
+      final bytes = utf8.encode(jsonEncode(pois));
+      await File(path).writeAsBytes(gzip.encode(bytes));
+      return path;
+    }
+
+    Future<TripTaskHandler> startedHandler({
+      required String snapshotPath,
+      String? poisFilePath,
+    }) async {
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
+        '$_prefsPrefix' 'randomwalk_snapshot_path': snapshotPath,
+        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
+        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+        if (poisFilePath != null)
+          '$_prefsPrefix' 'randomwalk_pois_file_path': poisFilePath,
+      });
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9), TaskStarter.developer);
+      await handler.debugPoiStoreLoad;
+      return handler;
+    }
+
+    test('no poisFilePath at all: recording still works, no visits ever',
+        () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final handler =
+          await startedHandler(snapshotPath: snapshotPath, poisFilePath: null);
+      expect(handler.debugIsRecording, isTrue);
+
+      await handler.debugOnFix(GpsSample(
+        lat: churchLat,
+        lon: churchLon,
+        accuracyM: 5,
+        speedMps: 1.2,
+        time: DateTime.utc(2026, 8, 31, 9, 0, 10),
+      ));
+
+      expect(handler.debugPendingVisits, isEmpty);
+    });
+
+    test(
+        'a dwell of >=5s within 25m of a landmark publishes it via '
+        'pendingVisits on the snapshot', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final poisPath = await writePoisFixture([
+        {
+          'id': 'node/1',
+          'kind': 'reveal',
+          'lat': churchLat,
+          'lon': churchLon,
+          'name': 'Église Saint-Pierre',
+        },
+      ]);
+      final handler = await startedHandler(
+          snapshotPath: snapshotPath, poisFilePath: poisPath);
+
+      final t0 = DateTime.utc(2026, 8, 31, 9, 0, 0);
+      await handler.debugOnFix(GpsSample(
+          lat: churchLat,
+          lon: churchLon,
+          accuracyM: 5,
+          speedMps: 0,
+          time: t0));
+      await handler.debugOnFix(GpsSample(
+          lat: churchLat,
+          lon: churchLon,
+          accuracyM: 5,
+          speedMps: 0,
+          time: t0.add(const Duration(seconds: 5))));
+
+      expect(handler.debugPendingVisits, hasLength(1));
+      final visit = handler.debugPendingVisits.single;
+      expect(visit.poiId, 'node/1');
+      expect(visit.kind, 'reveal');
+      expect(visit.name, 'Église Saint-Pierre');
+      expect(visit.lat, churchLat);
+      expect(visit.lon, churchLon);
+      expect(visit.ts, t0.add(const Duration(seconds: 5)));
+
+      // The publish path (`_snapshotAt`/`_publish`, driven here by a repeat
+      // event exactly like the periodic tick would) surfaces the same visit
+      // on the persisted snapshot — not just on the debug accessor above.
+      handler.onRepeatEvent(t0.add(const Duration(seconds: 6)));
+      TripSnapshot? persisted;
+      for (var i = 0; i < 20 && persisted?.pendingVisits.isEmpty != false; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+      }
+      expect(persisted?.pendingVisits, hasLength(1));
+      expect(persisted!.pendingVisits.single.poiId, 'node/1');
+    });
+
+    test('a landmark far outside the 3km disc is never even a candidate',
+        () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final poisPath = await writePoisFixture([
+        {
+          // Comfortably beyond a 3km disc around the church.
+          'id': 'node/far',
+          'kind': 'reveal',
+          'lat': churchLat + 1.0,
+          'lon': churchLon,
+        },
+      ]);
+      final handler = await startedHandler(
+          snapshotPath: snapshotPath, poisFilePath: poisPath);
+
+      final t0 = DateTime.utc(2026, 8, 31, 9, 0, 0);
+      await handler.debugOnFix(GpsSample(
+          lat: churchLat, lon: churchLon, accuracyM: 5, speedMps: 0, time: t0));
+      await handler.debugOnFix(GpsSample(
+          lat: churchLat,
+          lon: churchLon,
+          accuracyM: 5,
+          speedMps: 0,
+          time: t0.add(const Duration(seconds: 30))));
+
+      expect(handler.debugPendingVisits, isEmpty);
+    });
+
+    test('pendingVisits is capped at kPendingVisitsMax, oldest dropped first',
+        () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      // kPendingVisitsMax + 3 distinct landmarks, each far enough apart
+      // (~15m spacing north) to have its own geofence, all within the same
+      // initial 3km disc around the church.
+      final pois = [
+        for (var i = 0; i < kPendingVisitsMax + 3; i++)
+          {
+            'id': 'node/$i',
+            'kind': 'reveal',
+            'lat': churchLat + i * 0.0003,
+            'lon': churchLon,
+          },
+      ];
+      final poisPath = await writePoisFixture(pois);
+      final handler = await startedHandler(
+          snapshotPath: snapshotPath, poisFilePath: poisPath);
+
+      var t = DateTime.utc(2026, 8, 31, 9, 0, 0);
+      for (var i = 0; i < pois.length; i++) {
+        final lat = churchLat + i * 0.0003;
+        await handler.debugOnFix(
+            GpsSample(lat: lat, lon: churchLon, accuracyM: 5, speedMps: 0, time: t));
+        t = t.add(const Duration(seconds: 5));
+        await handler.debugOnFix(
+            GpsSample(lat: lat, lon: churchLon, accuracyM: 5, speedMps: 0, time: t));
+        t = t.add(const Duration(seconds: 1));
+      }
+
+      expect(handler.debugPendingVisits, hasLength(kPendingVisitsMax));
+      // The oldest (node/0) must have been dropped; the newest survives.
+      final ids = handler.debugPendingVisits.map((v) => v.poiId).toList();
+      expect(ids, isNot(contains('node/0')));
+      expect(ids.last, 'node/${pois.length - 1}');
+    });
+
+    test('a landmark already visited via debugOnFix is never detected twice',
+        () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final poisPath = await writePoisFixture([
+        {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
+      ]);
+      final handler = await startedHandler(
+          snapshotPath: snapshotPath, poisFilePath: poisPath);
+
+      var t = DateTime.utc(2026, 8, 31, 9, 0, 0);
+      await handler.debugOnFix(
+          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+      t = t.add(const Duration(seconds: 5));
+      await handler.debugOnFix(
+          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+      // Keep dwelling at the same spot for a long time afterwards.
+      t = t.add(const Duration(minutes: 5));
+      await handler.debugOnFix(
+          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+
+      expect(handler.debugPendingVisits, hasLength(1));
+    });
+  });
+
   group('ForegroundServiceTripTracker.deleteTrackFile (fix round 1 finding 1)',
       () {
     late Directory tempDir;
