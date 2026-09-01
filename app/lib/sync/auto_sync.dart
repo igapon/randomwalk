@@ -22,11 +22,22 @@ import 'sync_engine.dart';
 /// that phase is unreachable when no backend is configured (see
 /// `AccountState`'s transition graph), so the guard below is enough on its
 /// own, with no separate `is UnconfiguredBackend` check needed.
+///
+/// **Fix round 1 (Task 4 review I2): the ENTIRE body is inside the
+/// `try`**, including the first `ref.read(accountStateProvider)` — every
+/// call site invokes this via `unawaited(...)` (`main.dart`, the account
+/// screen), so an exception escaping uncaught here becomes an unhandled
+/// async error rather than something any caller can catch. The most likely
+/// cause is the widget that owns [ref] having been disposed mid-`await`
+/// (a trip finishing right as the user backs out of the app, a fast
+/// sign-out during a manual sync) — `ref.read` throws once its
+/// `ProviderContainer` is gone, and this function's whole contract is
+/// "never throws", so that must be swallowed same as any other failure.
 Future<SyncReport?> runAutoSync(WidgetRef ref) async {
-  final account = ref.read(accountStateProvider);
-  if (account.phase != AccountPhase.signedIn) return null;
-
   try {
+    final account = ref.read(accountStateProvider);
+    if (account.phase != AccountPhase.signedIn) return null;
+
     final engine = await ref.read(syncEngineProvider.future);
     final report = await engine.sync();
     ref.read(lastSyncResultProvider.notifier).state = SyncResult.success(
@@ -35,10 +46,18 @@ Future<SyncReport?> runAutoSync(WidgetRef ref) async {
     );
     return report;
   } catch (e) {
-    ref.read(lastSyncResultProvider.notifier).state = SyncResult.failure(
-      _frenchMessage(e),
-      DateTime.now(),
-    );
+    // A second, INNER try: if `ref` itself is unusable (the dispose case
+    // above), even this failure-recording read would throw — nothing left
+    // to record it in, so that specific case is silently dropped rather
+    // than escaping as a second unhandled error.
+    try {
+      ref.read(lastSyncResultProvider.notifier).state = SyncResult.failure(
+        _frenchMessage(e),
+        DateTime.now(),
+      );
+    } catch (_) {
+      // Widget/ref gone — nothing left to surface this to.
+    }
     return null;
   }
 }
@@ -79,25 +98,53 @@ String _frenchMessage(Object error) {
 /// specific race Task 3 flagged, and this function fails soft either way
 /// (any exception, or still-null after the retry, just leaves
 /// [AccountState.phase] at `signedOut`).
+///
+/// **Fix round 1 (Task 4 review I2), two changes:**
+/// - The ENTIRE body is now inside one `try`/`catch` — same reasoning as
+///   [runAutoSync]'s own dartdoc: this is invoked via `unawaited(...)` from
+///   `HomeShell.initState()`, so a `ref.read` throwing because the widget
+///   disposed mid-`await` (the ~300ms retry window is exactly long enough
+///   for that) must not escape as an unhandled async error.
+/// - The [AccountPhase.signedOut] guard is re-checked with a FRESH
+///   `ref.read(accountStateProvider)` immediately before applying
+///   `.signedIn(...)`, not reused from the check at the top of this
+///   function. Between that first check and this point there are two
+///   `await`s (`currentUser()` and the retry) during which something else
+///   could have moved the phase along — most plausibly the user racing
+///   through the OTP flow on the account screen while this launch restore
+///   is still in flight. Applying `.signedIn(...)` from `signedIn` itself
+///   throws `StateError` (caught by the outer `try` either way, so not a
+///   crash) but from `otpSent` it would silently stomp a sign-in the user
+///   is actively in the middle of — re-checking avoids both.
 Future<void> restoreAccountAndAutoSync(WidgetRef ref) async {
-  final account = ref.read(accountStateProvider);
-  if (account.phase != AccountPhase.signedOut) return;
-
-  final backend = ref.read(syncBackendProvider);
-  AuthUser? user;
   try {
-    user = await backend.currentUser();
-    user ??= await _retryCurrentUserOnce(backend);
+    final account = ref.read(accountStateProvider);
+    if (account.phase != AccountPhase.signedOut) return;
+
+    final backend = ref.read(syncBackendProvider);
+    AuthUser? user;
+    try {
+      user = await backend.currentUser();
+      user ??= await _retryCurrentUserOnce(backend);
+    } catch (_) {
+      return; // Best-effort: stay signedOut, nothing to surface here.
+    }
+    if (user == null) return;
+
+    final current = ref.read(accountStateProvider);
+    if (current.phase != AccountPhase.signedOut) return;
+
+    ref.read(accountStateProvider.notifier).state = current.signedIn(
+      user.uid,
+      user.email,
+    );
+
+    await runAutoSync(ref);
   } catch (_) {
-    return; // Best-effort: stay signedOut, nothing to surface here.
+    // Best-effort, never throws — matches this function's own contract
+    // (see the class doc comment above). Covers a disposed `ref` mainly;
+    // `runAutoSync` above already guarantees it never throws on its own.
   }
-  if (user == null) return;
-
-  ref.read(accountStateProvider.notifier).state = ref
-      .read(accountStateProvider)
-      .signedIn(user.uid, user.email);
-
-  await runAutoSync(ref);
 }
 
 Future<AuthUser?> _retryCurrentUserOnce(SyncBackend backend) async {

@@ -258,5 +258,97 @@ void main() {
         expect(ref.read(lastSyncResultProvider), isNull);
       },
     );
+
+    testWidgets(
+      'fix round 1 (Task 4 review I2): re-checks the phase guard after the '
+      'currentUser() await, and does not stomp an OTP flow that advanced '
+      'to otpSent while this was in flight',
+      (tester) async {
+        late WidgetRef ref;
+        final backend = _MutatesPhaseDuringCurrentUser(
+          () => ref.read(accountStateProvider.notifier).state = ref
+              .read(accountStateProvider)
+              .otpRequested('someone-else@b.ch'),
+        )..currentUserAnswers = const [AuthUser(uid: 'u1', email: 'a@b.ch')];
+        ref = await pumpHarness(
+          tester,
+          backend: backend,
+          account: const AccountState.signedOut(),
+        );
+
+        await tester.runAsync(() => restoreAccountAndAutoSync(ref));
+
+        // Stayed on the in-progress OTP flow — not silently overwritten by
+        // the launch restore that raced it, and no StateError escaped
+        // either (applying signedIn() from otpSent for a DIFFERENT uid
+        // than the one mid-flow would otherwise have been a data-loss bug,
+        // not just a thrown exception).
+        final account = ref.read(accountStateProvider);
+        expect(account.phase, AccountPhase.otpSent);
+        expect(account.email, 'someone-else@b.ch');
+      },
+    );
+
+    testWidgets(
+      'fix round 1 (Task 4 review I2): a ref.read that throws because the '
+      'owning widget was disposed does not escape as an unhandled async '
+      'error — this function\'s own contract is that it never throws',
+      (tester) async {
+        final backend = FakeSyncBackend()
+          ..currentUserAnswers = const [AuthUser(uid: 'u1', email: 'a@b.ch')];
+        final ref = await pumpHarness(
+          tester,
+          backend: backend,
+          account: const AccountState.signedOut(),
+        );
+        // Unmount the harness — `ref.read` throws from here on.
+        await tester.pumpWidget(const SizedBox.shrink());
+
+        // Reaching this line at all (rather than the test framework
+        // reporting an unhandled exception from a stray, uncaught Future)
+        // is the regression signal fix round 1 addresses.
+        await tester.runAsync(
+          () => restoreAccountAndAutoSync(
+            ref,
+          ).timeout(const Duration(seconds: 1)),
+        );
+      },
+    );
   });
+
+  group('fix round 1 (Task 4 review I2): runAutoSync never throws even '
+      'when ref is unusable', () {
+    testWidgets('a disposed widget\'s ref does not make runAutoSync throw', (
+      tester,
+    ) async {
+      final backend = FakeSyncBackend();
+      final ref = await pumpHarness(
+        tester,
+        backend: backend,
+        account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      final report = await tester.runAsync(
+        () => runAutoSync(ref).timeout(const Duration(seconds: 1)),
+      );
+
+      expect(report, isNull);
+    });
+  });
+}
+
+/// Calls [onCall] synchronously before answering [currentUser] — lets a
+/// test simulate something else (the account screen's own OTP flow, in
+/// this file's I2 regression test) mutating `accountStateProvider` WHILE
+/// `restoreAccountAndAutoSync` is awaiting this very call.
+class _MutatesPhaseDuringCurrentUser extends FakeSyncBackend {
+  _MutatesPhaseDuringCurrentUser(this.onCall);
+  final void Function() onCall;
+
+  @override
+  Future<AuthUser?> currentUser() async {
+    onCall();
+    return super.currentUser();
+  }
 }
