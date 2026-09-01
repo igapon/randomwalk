@@ -96,16 +96,42 @@ class GameVisitConsumer {
   /// fire-and-forget caller (a second, independent guard on top of that
   /// caller's own `catchError`, same relationship `ExplorationRecorder.process`
   /// has to its own internals).
+  ///
+  /// Fix round 1 (Task 5 review, item 2): the journal is read — and reduced
+  /// to a starting [GameState] — exactly ONCE per call, not once per visit.
+  /// Each visit's own effect is then folded onto that running state via
+  /// [reduceOne] (a single left-fold step) rather than by re-reading and
+  /// fully re-replaying the whole journal again to see it: for a batch of
+  /// N already-undetected visits this is one `readAll`/one base `reduceAll`
+  /// plus N cheap single-event folds, instead of up to 2N full replays.
   Future<void> consume(List<PendingVisit> visits) async {
+    final toProcess = <PendingVisit>[];
     for (final visit in visits) {
       final key = '${visit.poiId}@${visit.ts.toIso8601String()}';
       if (_seen.contains(key)) continue;
       _remember(key);
+      toProcess.add(visit);
+    }
+    if (toProcess.isEmpty) return;
+
+    GameState state;
+    try {
+      state = reduceAll(await journal.readAll());
+    } catch (_) {
+      // Can't safely proceed without a known starting state; the next
+      // snapshot's republished visits (see the "ack design" doc comment on
+      // `TripSnapshot.pendingVisits`) will simply retry this batch later.
+      return;
+    }
+
+    for (final visit in toProcess) {
       try {
-        await _process(visit);
+        state = await _process(visit, state);
       } catch (_) {
         // A single bad visit must never stop the rest of this batch, or the
-        // trip it came from.
+        // trip it came from — `state` deliberately stays whatever it was
+        // before this visit, so a later visit in the same batch never folds
+        // onto a partially-applied one.
       }
     }
   }
@@ -118,16 +144,27 @@ class GameVisitConsumer {
     }
   }
 
-  Future<void> _process(PendingVisit visit) async {
-    final existing = await journal.readAll();
-    final before = reduceAll(existing);
+  /// Processes one [visit] against the already-known [before] state (the
+  /// running fold from [consume], not a fresh read of the journal) and
+  /// returns the resulting state for [consume] to carry into the next visit
+  /// in the same batch.
+  Future<GameState> _process(PendingVisit visit, GameState before) async {
     final toAppend = <GameEvent>[];
 
     final payload = <String, dynamic>{
       'poiId': visit.poiId,
       'kind': visit.kind,
-      if (visit.kind == 'energy' && visit.subkind != null)
-        'subkind': visit.subkind,
+      // Fix round 1 (Task 5 review, item 1): ALWAYS present for an
+      // energy-kind visit, even when `visit.subkind` is null — a malformed
+      // dataset entry (`GamePoi.subkind` is nullable by design) must not
+      // omit this key. The reducer tolerates an empty/unrecognized subkind
+      // (no reward, no cooldown write — see `reducers.dart`'s
+      // `_reduceLandmarkVisited`), but only if the event applies
+      // successfully in the first place; omitting the key here made the
+      // OLD reducer throw on an unconditional cast, which discarded the
+      // WHOLE event (including `visitedPoiIds`) and let every future visit
+      // to that same broken landmark mint another `xp_earned` forever.
+      if (visit.kind == 'energy') 'subkind': visit.subkind ?? '',
     };
     toAppend.add(_event(GameEventTypes.landmarkVisited, payload, visit.ts));
 
@@ -143,8 +180,12 @@ class GameVisitConsumer {
 
     await journal.appendAll(toAppend);
 
-    final after = reduceAll([...existing, ...toAppend]);
+    var after = before;
+    for (final event in toAppend) {
+      after = reduceOne(after, event);
+    }
     await _maybeAlert(visit, before: before, after: after);
+    return after;
   }
 
   /// Reveal-kind visits also reveal a [kLandmarkRevealRadiusM]-meter disc
@@ -155,12 +196,16 @@ class GameVisitConsumer {
   /// ground actually walked.
   void _appendReveal(
       List<GameEvent> toAppend, PendingVisit visit, GameState before) {
-    final revealedIds = <CellId>{
-      for (final key in before.revealedCellKeys)
-        if (CellId.parseKey(key) case final parsed?) parsed,
-    };
+    // Fix round 1 (Task 5 review, item 3): diff directly against the
+    // string keys `before.revealedCellKeys` already stores, instead of
+    // first parsing the WHOLE revealed-cell set into `CellId`s just to
+    // compute a difference — this runs on every reveal-kind visit
+    // (including cooldown-repeats that produce no new cells), so avoiding
+    // an O(all revealed cells) parse on the common path matters as a game
+    // gets played for a while.
     final disc = discCells(visit.lat, visit.lon, kLandmarkRevealRadiusM);
-    final newCells = disc.difference(revealedIds);
+    final newCells =
+        disc.where((c) => !before.revealedCellKeys.contains(c.key)).toSet();
     if (newCells.isEmpty) return;
 
     toAppend.add(_event(
@@ -169,6 +214,13 @@ class GameVisitConsumer {
         visit.ts));
 
     if (!before.badges.contains(GameBadges.quartier25)) {
+      // Only parse the full revealed-cell-key set into `CellId`s when a
+      // quartier-completion check might actually need it — the common case
+      // (badge already unlocked) never pays this cost at all.
+      final revealedIds = <CellId>{
+        for (final key in before.revealedCellKeys)
+          if (CellId.parseKey(key) case final parsed?) parsed,
+      };
       final revealedAfter = {...revealedIds, ...newCells};
       final crossed = newCells.any((c) =>
           quartierCompletion(c, revealedAfter) >= kQuartierBadgeThreshold);

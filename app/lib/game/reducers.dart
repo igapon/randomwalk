@@ -250,14 +250,31 @@ GameState reduceAll(Iterable<GameEvent> events) {
     if (!seenIds.add(event.id)) {
       continue; // Duplicate delivery of an already-applied event id: skip.
     }
-    try {
-      state = _reduceOne(state, event);
-    } catch (_) {
-      // Malformed payload for an otherwise-known type: skip, keep replaying.
-    }
-    state = _autoUnlockBadges(state);
+    state = reduceOne(state, event);
   }
   return state;
+}
+
+/// Applies a single [event] to [state] — exactly what one step of
+/// [reduceAll]'s left fold does (same per-type reducer via [_reduceOne],
+/// same malformed-payload tolerance, same after-every-event derived-badge
+/// re-evaluation via [_autoUnlockBadges]) — but without [reduceAll]'s own
+/// event-id dedup bookkeeping, which only matters across a whole journal
+/// replay and has no meaning for a single event.
+///
+/// Fix round 1 (Task 5 review): exposed for callers that build a short run
+/// of fresh events in memory (e.g. `GameVisitConsumer`, one visit's
+/// `landmark_visited`/`cell_revealed`/`xp_earned`) and want to fold them
+/// onto an already-known state to get the resulting state, without
+/// re-reading and fully re-replaying the whole journal just to see the
+/// effect of a handful of new events.
+GameState reduceOne(GameState state, GameEvent event) {
+  try {
+    state = _reduceOne(state, event);
+  } catch (_) {
+    // Malformed payload for an otherwise-known type: skip, keep replaying.
+  }
+  return _autoUnlockBadges(state);
 }
 
 /// Derived-badge evaluation, run after every event application. Each badge
@@ -347,7 +364,20 @@ GameState _reduceLandmarkVisited(GameState state, GameEvent event) {
     case 'coins':
       return _applyCoinsVisit(state, poiId, kind, event.ts);
     case 'energy':
-      final subkind = event.payload['subkind'] as String;
+      // Fix round 1 (Task 5 review): tolerate a missing/non-string subkind
+      // rather than throwing. A malformed dataset entry (`GamePoi.subkind`
+      // is nullable by design) could otherwise carry an energy-kind visit
+      // with no subkind at all; an unconditional cast here would throw,
+      // `reduceAll`'s catch would discard the WHOLE event — including the
+      // `visitedPoiIds` bookkeeping just above — and every future visit to
+      // that same broken landmark (any trip, forever) would keep evaluating
+      // `firstVisit` as true and minting another `xp_earned`. Falling back
+      // to `''` instead routes through the ordinary
+      // "unrecognized subkind = no reward, no cooldown write" path
+      // ([_energyAmountFor]/[_applyEnergyVisit]), so the event still applies
+      // successfully and `visitedPoiIds` gets recorded on the first real
+      // visit, exactly as it should.
+      final subkind = event.payload['subkind'] as String? ?? '';
       return _applyEnergyVisit(state, poiId, kind, event.ts, subkind);
     case 'reveal':
     default:

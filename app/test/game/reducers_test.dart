@@ -204,6 +204,57 @@ void main() {
       expect(s.energy, 45); // 20 + 25, not blocked
     });
 
+    test(
+        'a missing subkind key on an energy visit is tolerated (fix round 1, '
+        'Task 5 review): no reward, but the event still applies and records '
+        'visitedPoiIds — a throw here would silently drop the WHOLE event, '
+        'leaving firstVisit permanently true for every future visit to this '
+        'poiId', () {
+      final s = reduceAll([
+        ev(GameEventTypes.landmarkVisited, t0,
+            {'poiId': 'broken-poi', 'kind': 'energy'}), // no 'subkind' at all
+      ]);
+      expect(s.energy, 100); // no reward.
+      expect(s.visitedPoiIds, contains('broken-poi'));
+      expect(s.landmarksVisited, 1);
+    });
+
+    test(
+        'a null subkind value (not just a missing key) is tolerated the same '
+        'way', () {
+      final s = reduceAll([
+        ev(GameEventTypes.landmarkVisited, t0,
+            {'poiId': 'broken-poi', 'kind': 'energy', 'subkind': null}),
+      ]);
+      expect(s.energy, 100);
+      expect(s.visitedPoiIds, contains('broken-poi'));
+    });
+
+    test(
+        'once the missing-subkind event has applied, a later real visit to '
+        'the SAME poiId sees firstVisit == false — the exploit this closes: '
+        'a bad dataset entry used to let every future visit mint another '
+        'xp_earned forever', () {
+      final s = reduceAll([
+        ev(GameEventTypes.landmarkVisited, t0,
+            {'poiId': 'broken-poi', 'kind': 'energy'}),
+        ev(GameEventTypes.xpEarned, t0, {'amount': 25, 'preMultiplied': false}),
+        // A second "visit" to the same broken landmark on a later trip.
+        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(days: 1)),
+            {'poiId': 'broken-poi', 'kind': 'energy'}),
+        ev(GameEventTypes.xpEarned, t0.add(const Duration(days: 1)),
+            {'amount': 25, 'preMultiplied': false}),
+      ]);
+      // Only the first visit's xp_earned should have counted for real —
+      // the second landmark_visited must not have reset visitedPoiIds, so
+      // a real emitter (GameVisitConsumer) checking `visitedPoiIds` before
+      // emitting the second xp_earned would never have appended it. This
+      // reducer-level test can only prove the *first* half of that (the
+      // event applies and bookkeeping sticks); GameVisitConsumer's own
+      // tests prove the emitter side never appends the second xp_earned.
+      expect(s.landmarksVisited, 1); // not 2: still the same poiId.
+    });
+
     test('cooldown is tracked independently for coins vs energy on the same poiId', () {
       // A single OSM node can carry more than one game tag (e.g.
       // historic+bank). Two landmark_visited events sharing a poiId but
@@ -837,6 +888,39 @@ void main() {
         }),
       ]);
       expect(() => s.revealedCellKeys.add('9:9'), throwsUnsupportedError);
+    });
+  });
+
+  group('reduceOne (fix round 1, Task 5 review: single-step fold seam)', () {
+    test('folding events one at a time via reduceOne matches reduceAll', () {
+      final events = [
+        ev(GameEventTypes.landmarkVisited, t0, {'poiId': 'bank-1', 'kind': 'coins'}),
+        ev(GameEventTypes.xpEarned, t0, {'amount': 25, 'preMultiplied': false}),
+        ev(GameEventTypes.energyChanged, t0, {'delta': -4}),
+      ];
+      var folded = const GameState();
+      for (final e in events) {
+        folded = reduceOne(folded, e);
+      }
+      expect(folded, reduceAll(events));
+    });
+
+    test('reduceOne also tolerates a malformed payload, same as reduceAll',
+        () {
+      final state = reduceOne(
+          const GameState(),
+          ev(GameEventTypes.landmarkVisited, t0,
+              {'poiId': 'x', 'kind': 'energy'})); // no subkind
+      expect(state.visitedPoiIds, contains('x'));
+      expect(state.energy, 100);
+    });
+
+    test('reduceOne re-evaluates derived badges after the single event, '
+        'same as reduceAll does after each of its own', () {
+      final state = reduceOne(
+          const GameState(),
+          ev(GameEventTypes.edgeCoveredBatch, t0, {'km': 5.0}));
+      expect(state.badges, contains(GameBadges.firstTrip));
     });
   });
 }

@@ -250,6 +250,54 @@ void main() {
     });
   });
 
+  group('null subkind on a malformed energy POI (fix round 1, Task 5 review, '
+      'item 1)', () {
+    test('a null-subkind visit is recorded once, earns no energy, and still '
+        'earns the first-visit XP (the payload always carries a subkind '
+        'key, even if empty, so the reducer never has to throw)', () async {
+      await drainEnergyTo(-50);
+      final consumer = buildConsumer();
+      await consumer.consume([energy(subkind: null)]);
+
+      final events = await journal.readAll();
+      final visited =
+          events.firstWhere((e) => e.type == GameEventTypes.landmarkVisited);
+      // Always present, per the fix — never omitted just because the POI's
+      // own subkind was null.
+      expect(visited.payload, {
+        'poiId': 'node/cafe',
+        'kind': 'energy',
+        'subkind': '',
+      });
+
+      final state = reduceAll(events);
+      expect(state.energy, 50); // no reward.
+      expect(state.xp, 25); // first-visit XP still granted.
+      expect(state.visitedPoiIds, contains('node/cafe'));
+      expect(alerts.single, '⚑ Café Central — +25 XP');
+    });
+
+    test(
+        'the exploit this closes: a second "visit" to the same broken POI '
+        '(a later trip, so a different ts and NOT caught by the (poiId, ts) '
+        'dedup) earns no second XP — before the fix, the missing subkind '
+        'made the reducer discard the whole first event, so visitedPoiIds '
+        'never stuck and every later visit minted another +25 forever',
+        () async {
+      await drainEnergyTo(-50); // neutral x1.0 multiplier band, for clean xp math.
+      final consumer = buildConsumer();
+      await consumer.consume([energy(subkind: null, ts: t0)]);
+      await consumer.consume(
+          [energy(subkind: null, ts: t0.add(const Duration(days: 30)))]);
+
+      final state = reduceAll(await journal.readAll());
+      expect(state.xp, 25); // NOT 50 — only the first visit ever counted.
+      expect(state.energy, 50); // never touched: unknown subkind both times.
+      expect(
+          state.landmarksVisited, 1); // still one distinct place, not two.
+    });
+  });
+
   group('dedup by (poiId, ts)', () {
     test('the exact same PendingVisit processed twice appends only once',
         () async {
@@ -332,6 +380,47 @@ void main() {
 
       final state = reduceAll(await journal.readAll());
       expect(state.badges, contains(GameBadges.quartier25));
+    });
+  });
+
+  group('batch folding within one consume() call (fix round 1, item 2)', () {
+    test('two distinct-poi visits in ONE batch both apply correctly, '
+        'without needing a second journal read between them', () async {
+      // Drained enough that the second (energy) visit's own +25 cafe bump
+      // still lands under the x1.5 multiplier threshold (60) — same
+      // reasoning as the "first-visit energy landmark" group above.
+      await drainEnergyTo(-75);
+      final consumer = buildConsumer();
+      await consumer.consume([
+        coins(poiId: 'bank-a', ts: t0),
+        energy(poiId: 'cafe-b', ts: t0.add(const Duration(seconds: 1))),
+      ]);
+
+      final state = reduceAll(await journal.readAll());
+      expect(state.coins, 100);
+      expect(state.energy, 50); // 25 + 25 cafe.
+      expect(state.xp, 50); // two distinct first-visit XPs, x1.0 each.
+      expect(alerts, hasLength(2));
+    });
+
+    test('a cooldown-passing revisit to the SAME poiId, in the SAME batch as '
+        'its first visit, sees the first visit\'s own effect (state threads '
+        'through the batch, not just across separate consume() calls)',
+        () async {
+      final consumer = buildConsumer();
+      await consumer.consume([
+        coins(ts: t0),
+        coins(ts: t0.add(const Duration(hours: 25))), // cooldown passed.
+      ]);
+
+      final state = reduceAll(await journal.readAll());
+      expect(state.coins, 150); // 100 (first) + 50 (diminished second).
+      // Only the first visit's first-visit XP — the second sees
+      // visitedPoiIds already true from folding the first visit's own
+      // effect, entirely within this one batch.
+      final xpEvents =
+          (await journal.readAll()).where((e) => e.type == GameEventTypes.xpEarned);
+      expect(xpEvents.length, 1);
     });
   });
 

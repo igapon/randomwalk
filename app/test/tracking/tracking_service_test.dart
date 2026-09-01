@@ -723,6 +723,69 @@ void main() {
 
       expect(handler.debugPendingVisits, hasLength(1));
     });
+
+    test(
+        'a genuine restart seeds pendingVisits from the previous '
+        "incarnation's last persisted snapshot, rather than dropping them "
+        '(fix round 1, item 4) — and the seeded poiId is not re-detected '
+        'even if the walker is still dwelling there', () async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final priorVisit = PendingVisit(
+        poiId: 'node/1',
+        kind: 'coins',
+        lat: bankLat,
+        lon: bankLon,
+        ts: DateTime.utc(2026, 8, 31, 9, 0, 5),
+      );
+      final onDiskSnapshot = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.0,
+        steps: 10,
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        // After startedAt: a genuine restart, not a fresh trip seed (see
+        // isFreshTripSeed).
+        updatedAt: DateTime.utc(2026, 8, 31, 9, 5),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+        pendingVisits: [priorVisit],
+      );
+      await File(snapshotPath).writeAsString(jsonEncode(onDiskSnapshot.toJson()));
+
+      final poisPath = await writePoisFixture([
+        {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
+      ]);
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix' 'randomwalk_seed_snapshot': jsonEncode(seed.toJson()),
+        '$_prefsPrefix' 'randomwalk_snapshot_path': snapshotPath,
+        '$_prefsPrefix' 'randomwalk_tts_enabled': true,
+        '$_prefsPrefix' 'randomwalk_haptics_enabled': true,
+        '$_prefsPrefix' 'randomwalk_pois_file_path': poisPath,
+      });
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9, 10), TaskStarter.developer);
+      await handler.debugPoiStoreLoad;
+
+      // Seeded immediately, before any fix at all.
+      expect(handler.debugPendingVisits, hasLength(1));
+      expect(handler.debugPendingVisits.single.poiId, 'node/1');
+
+      // Still dwelling at the same spot post-restart must not re-detect it.
+      var t = DateTime.utc(2026, 8, 31, 9, 10, 0);
+      await handler.debugOnFix(
+          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+      t = t.add(const Duration(seconds: 5));
+      await handler.debugOnFix(
+          GpsSample(lat: bankLat, lon: bankLon, accuracyM: 5, speedMps: 0, time: t));
+
+      expect(handler.debugPendingVisits, hasLength(1));
+    });
   });
 
   group('ForegroundServiceTripTracker.deleteTrackFile (fix round 1 finding 1)',

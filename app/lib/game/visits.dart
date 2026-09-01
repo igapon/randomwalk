@@ -6,9 +6,21 @@ import 'pois.dart';
 /// a fix exactly 25.0 m away counts as in range.
 const kVisitRadiusM = 25.0;
 
-/// How long a walker must stay continuously within [kVisitRadiusM] of the
-/// same landmark before it counts as visited (brief: "dwell 5 s").
-/// Inclusive: a dwell of exactly 5.0 s completes the visit.
+/// How much time must elapse, between the fix that first entered
+/// [kVisitRadiusM] of a landmark and a later fix that is still within it,
+/// before the visit counts (brief: "dwell 5 s"). Inclusive: an elapsed time
+/// of exactly 5.0 s completes the visit.
+///
+/// Fix round 1 (Task 5 review, item 5): this is a bound on the elapsed time
+/// *between two accepted fixes*, not a continuous-presence guarantee —
+/// nothing here verifies the walker was actually within radius during the
+/// silence between two fixes that both happen to report being within it
+/// (a GPS interval, filtering, or a brief signal gap could separate them by
+/// several seconds). There is deliberately no maximum-gap cutoff here, unlike
+/// `ExplorationRecorder`'s `splitOnGaps` for corridor reveal: [onFix] only
+/// ever sees the fixes it is handed, and trusts two consecutive ones that
+/// both land within [kVisitRadiusM] as good enough evidence of "near this
+/// landmark" — the geofence itself is already the precision bound.
 const kVisitDwell = Duration(seconds: 5);
 
 /// One landmark visit, as detected by [VisitDetector.onFix].
@@ -30,13 +42,16 @@ class PoiVisit {
 /// constructing this — so a per-fix linear scan over [pois] stays cheap even
 /// though [PoiStore] itself is not queried again here.
 ///
-/// A landmark counts as visited once a GPS fix stream stays within
-/// [kVisitRadiusM] meters of it for at least [kVisitDwell] *continuously*:
-/// leaving the radius — even briefly, even to move toward a different,
-/// also-in-range landmark — resets the dwell clock. Each `poiId` fires
-/// [PoiVisit] at most once for the lifetime of one detector instance (one
-/// recording trip, in production); a later fix reaching the same place again
-/// is simply ignored for that id.
+/// A landmark counts as visited once a run of consecutive accepted fixes
+/// each report being within [kVisitRadiusM] meters of it, spanning at least
+/// [kVisitDwell] between the first such fix and a later one (see that
+/// constant's own doc comment for exactly what guarantee this is — and is
+/// not — making about the time in between): a fix that reports being
+/// outside the radius — even briefly, even one that is nearer a different,
+/// also-in-range landmark — resets the run. Each `poiId` fires [PoiVisit] at
+/// most once for the lifetime of one detector instance (one recording trip,
+/// in production); a later fix reaching the same place again is simply
+/// ignored for that id.
 ///
 /// When more than one candidate landmark is within range on the same fix,
 /// only the *nearest* accumulates dwell time ("nearest POI wins" — brief).

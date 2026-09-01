@@ -657,6 +657,23 @@ class TripTaskHandler extends TaskHandler {
     final seed = withoutNavigation(resumed);
     _seed = seed;
     _steps = seed.steps;
+    // Fix round 1 (Task 5 review, item 4): carries the previous incarnation's
+    // already-detected-but-maybe-never-consumed visits into this one, rather
+    // than starting `_pendingVisits`/`_visitedThisTrip` empty. `seed` is
+    // `resumed` with only the nav fields blanked (see [withoutNavigation]),
+    // so `seed.pendingVisits` is exactly what the pre-restart incarnation
+    // last persisted — on a genuine restart, without this, those visits
+    // would simply be dropped forever (an under-reward, not a double-reward:
+    // the walker would have to physically re-dwell at the same landmark for
+    // the new incarnation's own fresh `VisitDetector` to ever see it again).
+    // A no-op on a brand-new trip: `TripSnapshot.starting` never carries any
+    // pending visits, so this is safe to run unconditionally rather than
+    // gating it on `resumePointResult.isRestart`.
+    _pendingVisits.addAll(seed.pendingVisits);
+    _visitedThisTrip.addAll(seed.pendingVisits.map((v) => v.poiId));
+    while (_pendingVisits.length > kPendingVisitsMax) {
+      _pendingVisits.removeAt(0);
+    }
     _writer = ThrottledSnapshotWriter(store);
     await _initTrackSampler(File(path), isRestart: resumePointResult.isRestart);
 
