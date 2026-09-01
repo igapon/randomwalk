@@ -250,6 +250,18 @@ class TripSnapshot {
   /// landmarks nearby, parses back as `const []` rather than throwing.
   final List<PendingVisit> pendingVisits;
 
+  /// Low-power mode (M5 Task 2d, owner brief): the continuous GPS stream is
+  /// currently suspended because the walker has been sustainably still —
+  /// see `MotionPolicy`. Rides the snapshot for the same reason [gpsSilent]
+  /// does (a UI/notification that (re)attaches mid-pause has no transition
+  /// left to observe), and is read instead of — never alongside —
+  /// [gpsSilent] for exactly the case this exists to distinguish: an
+  /// intentional, battery-saving silence must never be mistaken for the
+  /// "GPS is broken" warning [gpsSilent] drives (see
+  /// `TripTaskHandler._isGpsSilentAt`, which is suppressed entirely while
+  /// this is true).
+  final bool lowPowerPaused;
+
   const TripSnapshot({
     required this.status,
     required this.distanceKm,
@@ -270,6 +282,7 @@ class TripSnapshot {
     this.navReplanning = false,
     this.navLeftArrivalRadius = false,
     this.pendingVisits = const [],
+    this.lowPowerPaused = false,
   });
 
   /// A trip that is about to start: zeroed, or — when resuming an
@@ -315,6 +328,7 @@ class TripSnapshot {
     bool? gpsSilent,
     NavFields? nav,
     List<PendingVisit>? pendingVisits,
+    bool? lowPowerPaused,
   }) => TripSnapshot(
     status: status ?? this.status,
     distanceKm: distanceKm ?? this.distanceKm,
@@ -325,6 +339,7 @@ class TripSnapshot {
     routeBound: routeBound,
     gpsSilent: gpsSilent ?? this.gpsSilent,
     pendingVisits: pendingVisits ?? this.pendingVisits,
+    lowPowerPaused: lowPowerPaused ?? this.lowPowerPaused,
     navInstruction: nav == null ? navInstruction : nav.instruction,
     navDistanceToManeuverM: nav == null
         ? navDistanceToManeuverM
@@ -364,6 +379,7 @@ class TripSnapshot {
     if (navLeftArrivalRadius) 'navLeftArrivalRadius': navLeftArrivalRadius,
     if (pendingVisits.isNotEmpty)
       'pendingVisits': pendingVisits.map((v) => v.toJson()).toList(),
+    if (lowPowerPaused) 'lowPowerPaused': lowPowerPaused,
   };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
@@ -403,6 +419,7 @@ class TripSnapshot {
             .whereType<PendingVisit>()
             .toList() ??
         const [],
+    lowPowerPaused: j['lowPowerPaused'] as bool? ?? false,
   );
 }
 

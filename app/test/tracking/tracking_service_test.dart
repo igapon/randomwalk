@@ -9,6 +9,7 @@ import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/nav/tts.dart';
 import 'package:randomwalk/session/recorder.dart' show GpsSample;
 import 'package:randomwalk/tracking/adaptive_gps.dart';
+import 'package:randomwalk/tracking/motion_channel.dart';
 import 'package:randomwalk/tracking/nav_seed.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
@@ -1156,4 +1157,301 @@ void main() {
       });
     },
   );
+
+  group('TripTaskHandler — low-power mode (M5 Task 2d)', () {
+    late Directory tempDir;
+
+    setUpAll(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_low_power_test');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+      TripTaskHandler.motionChannelFactory = MotionChannel.new;
+    });
+
+    Future<void> seedPrefs({
+      required bool routeBound,
+      NavSeed? navSeed,
+      DateTime? startedAt,
+    }) async {
+      final seed = TripSnapshot.starting(
+        startedAt: startedAt ?? DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: routeBound,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            '${tempDir.path}/snapshot.json',
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
+        if (navSeed != null)
+          '$_prefsPrefix'
+              'randomwalk_nav_seed': jsonEncode(
+            navSeed.toJson(),
+          ),
+      });
+    }
+
+    /// Polls [condition] rather than a single `pumpEventQueue()` — every
+    /// motion-policy action reaches its effect through at least one
+    /// `unawaited(...)` hop (`onRepeatEvent`/`onReceiveData` are `void`, by
+    /// design: production must never let low-power bookkeeping block the
+    /// framework's own callback), so a single microtask pump is not always
+    /// enough to observe the settled state.
+    Future<void> pollUntil(bool Function() condition) async {
+      for (var i = 0; i < 50 && !condition(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(condition(), isTrue);
+    }
+
+    test('fallback mode: sustained stillness pauses after 3 min, notification '
+        'switches, and a movement fix resumes immediately', () async {
+      await seedPrefs(routeBound: false);
+      final handler = TripTaskHandler();
+      final t0 = DateTime.utc(2026, 8, 31, 9);
+      await handler.onStart(t0, TaskStarter.developer);
+
+      // No native Activity Recognition on a host test (no method channel
+      // mocked for randomwalk/motion) — this is exercising the fallback
+      // path by construction, same as the emulator does in CI.
+      await handler.debugOnFix(
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+      );
+
+      handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+      await pollUntil(() => handler.debugLowPowerPaused);
+      expect(
+        handler.debugLastNotificationText,
+        kLowPowerPausedNotificationText,
+      );
+
+      // ~100 m away — well past the fallback movement threshold: the
+      // walker moved, so this reads as an immediate resume.
+      await handler.debugOnFix(
+        GpsSample(
+          lat: 46.5009,
+          lon: 6.6,
+          accuracyM: 5,
+          speedMps: 1.2,
+          time: t0.add(const Duration(minutes: 3, seconds: 5)),
+        ),
+      );
+      await pollUntil(() => !handler.debugLowPowerPaused);
+      expect(
+        handler.debugLastNotificationText,
+        isNot(kLowPowerPausedNotificationText),
+      );
+    });
+
+    test('a still spell shorter than 3 min never pauses — a red light must '
+        'never suspend', () async {
+      await seedPrefs(routeBound: false);
+      final handler = TripTaskHandler();
+      final t0 = DateTime.utc(2026, 8, 31, 9);
+      await handler.onStart(t0, TaskStarter.developer);
+
+      await handler.debugOnFix(
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+      );
+      // Moves away again after 90 s — well under the 3 min threshold.
+      await handler.debugOnFix(
+        GpsSample(
+          lat: 46.5009,
+          lon: 6.6,
+          accuracyM: 5,
+          speedMps: 1.2,
+          time: t0.add(const Duration(seconds: 90)),
+        ),
+      );
+
+      handler.onRepeatEvent(t0.add(const Duration(minutes: 5)));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(handler.debugLowPowerPaused, isFalse);
+    });
+
+    test('navGuided doubles the threshold to 6 minutes', () async {
+      final route = fakeRoute();
+      await seedPrefs(
+        routeBound: true,
+        navSeed: NavSeed(
+          route: route,
+          destLat: route.shape.last.$1,
+          destLon: route.shape.last.$2,
+          profile: RoutingProfile.walk,
+          tileDirPath: null,
+        ),
+      );
+      final handler = TripTaskHandler();
+      final t0 = DateTime.utc(2026, 8, 31, 9);
+      await handler.onStart(t0, TaskStarter.developer);
+
+      final start = route.shape.first;
+      await handler.debugOnFix(
+        GpsSample(
+          lat: start.$1,
+          lon: start.$2,
+          accuracyM: 5,
+          speedMps: 0,
+          time: t0,
+        ),
+      );
+
+      handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        handler.debugLowPowerPaused,
+        isFalse,
+        reason: 'the free-trip threshold must not apply while nav-guided',
+      );
+
+      handler.onRepeatEvent(t0.add(const Duration(minutes: 6)));
+      await pollUntil(() => handler.debugLowPowerPaused);
+    });
+
+    test('gpsSilent is suppressed while paused — an intentional pause is not '
+        'a GPS malfunction', () async {
+      await seedPrefs(routeBound: false);
+      final handler = TripTaskHandler();
+      final t0 = DateTime.utc(2026, 8, 31, 9);
+      await handler.onStart(t0, TaskStarter.developer);
+
+      await handler.debugOnFix(
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+      );
+      handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+      await pollUntil(() => handler.debugLowPowerPaused);
+
+      // Well past the ordinary 60 s GPS-silence threshold, with no fix at
+      // all in the meantime — exactly what a genuine GPS failure would
+      // also look like, which is the point of the assertion below.
+      handler.onRepeatEvent(t0.add(const Duration(minutes: 5)));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      TripSnapshot? persisted;
+      for (var i = 0; i < 20; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+        if (persisted?.lowPowerPaused == true) break;
+      }
+      expect(persisted?.lowPowerPaused, isTrue);
+      expect(persisted?.gpsSilent, isFalse);
+    });
+
+    test('one safety fix is attempted every 3 min while paused', () async {
+      await seedPrefs(routeBound: false);
+      final handler = TripTaskHandler();
+      final t0 = DateTime.utc(2026, 8, 31, 9);
+      await handler.onStart(t0, TaskStarter.developer);
+
+      await handler.debugOnFix(
+        GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+      );
+      final pauseAt = t0.add(const Duration(minutes: 3));
+      handler.onRepeatEvent(pauseAt);
+      await pollUntil(() => handler.debugLowPowerPaused);
+      expect(handler.debugSafetyFixCount, 0);
+
+      handler.onRepeatEvent(
+        pauseAt.add(const Duration(minutes: 3) - const Duration(seconds: 1)),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(handler.debugSafetyFixCount, 0);
+
+      handler.onRepeatEvent(pauseAt.add(const Duration(minutes: 3)));
+      await pollUntil(() => handler.debugSafetyFixCount == 1);
+    });
+
+    test(
+      'a step-counter delta resumes immediately, fallback-mode style',
+      () async {
+        await seedPrefs(routeBound: false);
+        final handler = TripTaskHandler();
+        final t0 = DateTime.utc(2026, 8, 31, 9);
+        await handler.onStart(t0, TaskStarter.developer);
+
+        await handler.debugOnFix(
+          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: t0),
+        );
+        handler.onRepeatEvent(t0.add(const Duration(minutes: 3)));
+        await pollUntil(() => handler.debugLowPowerPaused);
+
+        handler.onReceiveData({'steps': 42});
+        await pollUntil(() => !handler.debugLowPowerPaused);
+      },
+    );
+
+    test('native mode: a fake MotionSignalSource drives pause/resume through '
+        'the same channel real STILL enter/exit events would', () async {
+      final fake = FakeMotionSignalSource();
+      TripTaskHandler.motionChannelFactory = () => fake;
+
+      await seedPrefs(routeBound: false);
+      final handler = TripTaskHandler();
+      await handler.onStart(
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
+
+      await pollUntil(() => fake.started);
+      expect(fake.stopped, isFalse);
+
+      final justBefore = DateTime.now();
+      fake.emit(true); // STILL entered
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      handler.onRepeatEvent(
+        justBefore.add(const Duration(minutes: 3, seconds: 1)),
+      );
+      await pollUntil(() => handler.debugLowPowerPaused);
+
+      fake.emit(false); // STILL exited
+      await pollUntil(() => !handler.debugLowPowerPaused);
+    });
+  });
+}
+
+/// A fake [MotionSignalSource] — the native Activity Recognition Transition
+/// API has no way to be exercised from a host-run `flutter test` (see
+/// `MotionChannel`'s own doc comment), so `TripTaskHandler`'s low-power-mode
+/// tests swap this in via [TripTaskHandler.motionChannelFactory] to drive
+/// the native-available path directly.
+class FakeMotionSignalSource implements MotionSignalSource {
+  FakeMotionSignalSource({this.startResult = true});
+
+  final bool startResult;
+  bool started = false;
+  bool stopped = false;
+  final _controller = StreamController<bool>.broadcast();
+
+  @override
+  Future<bool> start() async {
+    started = true;
+    return startResult;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopped = true;
+  }
+
+  @override
+  Stream<bool> get transitions => _controller.stream;
+
+  void emit(bool stillEntered) => _controller.add(stillEntered);
 }

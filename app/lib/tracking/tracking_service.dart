@@ -22,6 +22,8 @@ import '../settings/alert_settings.dart';
 import '../valhalla/engine_channel.dart';
 import '../valhalla/models.dart';
 import 'adaptive_gps.dart';
+import 'motion_channel.dart';
+import 'motion_policy.dart';
 import 'nav_seed.dart';
 import 'trip_snapshot.dart';
 
@@ -167,6 +169,12 @@ const _kAlertChannelId = 'guidance';
 /// previous one instead of piling up a history of turns the walker has
 /// already taken.
 const _kAlertNotificationId = 4212;
+
+/// Low-power mode (M5 Task 2d, owner brief) notification text while the
+/// continuous GPS stream is suspended — see [MotionPolicy] and
+/// `TripTaskHandler._notificationText`. Restored to the normal trip/nav text
+/// the moment a resume republishes.
+const kLowPowerPausedNotificationText = 'En pause — immobile';
 
 /// How long a recording trip may go without a single position before the UI
 /// is told the GPS has gone quiet. Long enough not to fire on a cold fix in
@@ -569,6 +577,65 @@ class TripTaskHandler extends TaskHandler {
   static InitializableTtsSpeaker Function() speakerFactory =
       NativeTtsSpeaker.new;
 
+  /// Low-power mode (M5 Task 2d, owner brief): the pause/resume decision —
+  /// see `motion_policy.dart`. Built once in [onStart], from whichever
+  /// threshold applies (`navGuided` set from whether [_nav] exists — brief:
+  /// "en navigation guidée active, seuil doublé").
+  MotionPolicy? _motionPolicy;
+
+  /// Turns GPS fixes into still/moving signals for [_motionPolicy] — see
+  /// [GpsStillnessTracker]'s doc comment for its two roles (the step/GPS
+  /// fallback, fed every accepted fix; the post-pause safety fix, fed just
+  /// that one).
+  GpsStillnessTracker? _stillnessTracker;
+
+  /// Whether the native Activity Recognition Transition API registered
+  /// successfully in [_initMotionSignal]. `true` means STILL enter/exit
+  /// events reach [_motionPolicy] directly, via [_onMotionTransition];
+  /// `false` (off Android, no Play Services, registration refused — see
+  /// `MotionChannel.start`) means every accepted continuous fix drives
+  /// [_stillnessTracker] instead (brief §1's fallback), and this is also
+  /// exactly the path a host `flutter test` and the emulator integration
+  /// test always take, by construction.
+  bool _nativeMotionAvailable = false;
+
+  /// Whether the continuous GPS stream is currently suspended. Read
+  /// straight into every published [TripSnapshot]
+  /// ([TripSnapshot.lowPowerPaused]) and the notification text, and gates
+  /// [_isGpsSilentAt] off entirely — see that method's doc comment.
+  bool _lowPowerPaused = false;
+
+  /// The position of the last *continuous* (non-safety) fix accepted this
+  /// trip. Seeds [_stillnessTracker]'s anchor the moment a pause begins
+  /// (see [_applyMotionAction]'s `MotionAction.pause` case) — in native
+  /// mode the tracker is otherwise unfed while active, so without this the
+  /// very first safety fix would have nothing to compare against.
+  (double, double)? _lastFixLatLon;
+
+  StreamSubscription<bool>? _motionTransitionsSub;
+
+  /// The [MotionSignalSource] [_initMotionSignal] registered, kept only so
+  /// [onDestroy] can release it — a registered native listener must not
+  /// outlive the service.
+  MotionSignalSource? _motionSource;
+
+  /// How many safety fixes have been taken this trip. Exposed for tests
+  /// only — the real GPS fetch behind [SessionController.takeSafetyFix]
+  /// cannot otherwise be observed from outside the isolate on a host test,
+  /// where it always fails silently (no geolocator platform channel).
+  @visibleForTesting
+  int debugSafetyFixCount = 0;
+
+  /// Builds the [MotionSignalSource] [_initMotionSignal] tries to register.
+  /// A static, swappable field — same rationale as [speakerFactory]: this
+  /// class is instantiated by `flutter_foreground_task` itself, never by
+  /// application code, so tests reassign it to a fake to exercise the
+  /// native-available path a bare host test cannot reach on its own (the
+  /// real [MotionChannel] always answers `start() -> false` off a real
+  /// Android device). Reset it in `tearDown` after overriding.
+  @visibleForTesting
+  static MotionSignalSource Function() motionChannelFactory = MotionChannel.new;
+
   FlutterLocalNotificationsPlugin? _notifications;
   bool _notificationsReady = false;
 
@@ -653,6 +720,17 @@ class TripTaskHandler extends TaskHandler {
   /// getting the GPS subscription going.
   @visibleForTesting
   bool get debugIsRecording => _session?.isRecording ?? false;
+
+  /// Whether low-power mode currently has the continuous GPS stream
+  /// suspended (M5 Task 2d). Exposed for tests only.
+  @visibleForTesting
+  bool get debugLowPowerPaused => _lowPowerPaused;
+
+  /// The notification text last published. Exposed for tests only — asserts
+  /// the low-power-mode pause/resume copy without needing to mock
+  /// `FlutterForegroundTask.updateService`'s platform channel.
+  @visibleForTesting
+  String? get debugLastNotificationText => _lastNotificationText;
 
   /// The visits detected so far this trip (M4 Task 5), without needing to
   /// wait for a publish/[ThrottledSnapshotWriter] flush to observe them —
@@ -752,6 +830,18 @@ class TripTaskHandler extends TaskHandler {
       _alertPolicy = AlertPolicy(profile: navSeed.profile);
     }
 
+    // Low-power mode (M5 Task 2d, owner brief): built once [_nav] is
+    // settled, so `navGuided` reflects whether this incarnation actually
+    // has active turn-by-turn guidance — brief: "en navigation guidée
+    // active, seuil doublé (6 min)". [_initMotionSignal] (below,
+    // fire-and-forget like [_initSpeaker]) decides which signal source
+    // feeds it.
+    _motionPolicy = MotionPolicy(navGuided: _nav != null);
+    _stillnessTracker = GpsStillnessTracker(
+      _motionPolicy!,
+      distance: metersBetween,
+    );
+
     _hapticsEnabled =
         await FlutterForegroundTask.getData<bool>(key: _kHapticsEnabledKey) ??
         true;
@@ -796,6 +886,88 @@ class TripTaskHandler extends TaskHandler {
     // trip. It runs in the background and swaps `_speaker` in once (if)
     // it resolves.
     if (_nav != null && _ttsEnabled) unawaited(_initSpeaker());
+
+    // Low-power mode: registering the native transition listener is a
+    // Play Services round trip and, like TTS init above, must never be
+    // allowed to delay the GPS subscription — it runs in the background and
+    // [_stillnessTracker] already covers every fix in the meantime, so a
+    // slow-to-answer registration costs nothing but a few seconds of using
+    // the fallback signal before the native one (if it succeeds) takes over.
+    unawaited(_initMotionSignal());
+  }
+
+  /// Registers [motionChannelFactory]'s [MotionSignalSource] and, if it
+  /// succeeds, starts feeding its events straight to [_motionPolicy] — see
+  /// [_nativeMotionAvailable]'s doc comment for what "succeeds" gates.
+  Future<void> _initMotionSignal() async {
+    final source = motionChannelFactory();
+    final available = await source.start();
+    if (_stopped) {
+      // The trip ended while the registration was in flight — release the
+      // listener immediately rather than leaving it registered against a
+      // service that is already tearing down.
+      if (available) unawaited(source.stop());
+      return;
+    }
+    _motionSource = source;
+    _nativeMotionAvailable = available;
+    if (available) {
+      _motionTransitionsSub = source.transitions.listen(_onMotionTransition);
+    }
+  }
+
+  /// A native STILL enter/exit push (`true`/`false`) — see
+  /// [MotionSignalSource.transitions].
+  void _onMotionTransition(bool stillEntered) {
+    if (_stopped) return;
+    final now = DateTime.now();
+    final policy = _motionPolicy;
+    if (policy == null) return;
+    final action = stillEntered
+        ? policy.stillEntered(now)
+        : policy.stillExited(now);
+    if (action != MotionAction.none) unawaited(_applyMotionAction(action, now));
+  }
+
+  /// Carries out what [_motionPolicy] decided — see [MotionAction]'s own
+  /// doc comment for what each case means.
+  Future<void> _applyMotionAction(MotionAction action, DateTime now) async {
+    if (_stopped) return;
+    switch (action) {
+      case MotionAction.none:
+        return;
+      case MotionAction.pause:
+        // Seeds the safety-fix anchor from the last position actually seen
+        // — in native mode [_stillnessTracker] is otherwise unfed while
+        // active, so without this the first safety fix would have no
+        // anchor to compare against (see [_lastFixLatLon]'s doc comment).
+        final anchor = _lastFixLatLon;
+        if (anchor != null) _stillnessTracker?.seed(anchor.$1, anchor.$2);
+        await _session?.pause();
+        _lowPowerPaused = true;
+        _publish(now, periodic: false);
+      case MotionAction.resume:
+        await _session?.resume();
+        _lowPowerPaused = false;
+        _publish(now, periodic: false);
+      case MotionAction.takeSafetyFix:
+        final sample = await _session?.takeSafetyFix();
+        debugSafetyFixCount++;
+        // Fallback mode already fed this exact fix to [_stillnessTracker]
+        // via [_onFix] (the same hook a continuous fix goes through) — only
+        // native mode needs it fed here, since [_onFix] skips the tracker
+        // entirely while native transitions are the signal of record.
+        if (sample != null && _nativeMotionAvailable) {
+          final followUp = _stillnessTracker?.onFix(
+            sample.lat,
+            sample.lon,
+            sample.time,
+          );
+          if (followUp != null && followUp != MotionAction.none) {
+            await _applyMotionAction(followUp, sample.time);
+          }
+        }
+    }
   }
 
   @override
@@ -813,6 +985,14 @@ class TripTaskHandler extends TaskHandler {
       // trip start it would measure a gap the new session was never given a
       // chance to fill, and raise the warning on the very next event.
       _recordingSince = timestamp;
+    }
+
+    // Low-power mode: evaluated off this same repeat-event timestamp, not a
+    // real-time clock read here — see `MotionPolicy`'s doc comment on why
+    // it takes an explicit `DateTime` on every call.
+    final motionAction = _motionPolicy?.tick(timestamp);
+    if (motionAction != null && motionAction != MotionAction.none) {
+      unawaited(_applyMotionAction(motionAction, timestamp));
     }
 
     _publish(timestamp, periodic: true);
@@ -841,6 +1021,13 @@ class TripTaskHandler extends TaskHandler {
   }
 
   String _notificationText(TripSnapshot snapshot, DateTime now) {
+    // Low-power mode (M5 Task 2d, owner brief) takes over the notification
+    // entirely while paused — checked first, ahead of guidance: a walker
+    // stopped mid-route still needs to know the GPS itself is intentionally
+    // asleep, not just see whatever instruction was last announced frozen
+    // on screen. Restored automatically the moment [_applyMotionAction]
+    // clears [_lowPowerPaused] and republishes.
+    if (snapshot.lowPowerPaused) return kLowPowerPausedNotificationText;
     final fields = _navFields;
     return fields == null
         ? tripNotificationText(snapshot, now)
@@ -853,7 +1040,27 @@ class TripTaskHandler extends TaskHandler {
   /// runs landmark-visit detection (also M4, also every trip), then defers
   /// to [_onNavFix] for turn-by-turn navigation, which no-ops on a free trip
   /// (`_nav == null`) exactly as it always has.
+  ///
+  /// Low-power mode (M5 Task 2d): every fix reaching here is either a
+  /// continuous-stream fix (while active) or a safety fix (while paused —
+  /// `SessionController.takeSafetyFix` calls this same [onFix] hook). Feeds
+  /// [_stillnessTracker] in fallback mode — where it is the *only*
+  /// still/moving signal source, continuous fixes included — since native
+  /// mode drives [_motionPolicy] straight from [_onMotionTransition]
+  /// instead, and only needs a safety fix fed explicitly (see
+  /// [_applyMotionAction]'s `MotionAction.takeSafetyFix` case).
   Future<void> _onFix(GpsSample sample) async {
+    _lastFixLatLon = (sample.lat, sample.lon);
+    if (!_nativeMotionAvailable) {
+      final action = _stillnessTracker?.onFix(
+        sample.lat,
+        sample.lon,
+        sample.time,
+      );
+      if (action != null && action != MotionAction.none) {
+        await _applyMotionAction(action, sample.time);
+      }
+    }
     await _sampleTrack(sample);
     _maybeDetectVisit(sample);
     await _onNavFix(sample);
@@ -1177,7 +1384,28 @@ class TripTaskHandler extends TaskHandler {
   @override
   void onReceiveData(Object data) {
     if (data is! Map) return;
-    if (data['steps'] is int) _steps = data['steps'] as int;
+    if (data['steps'] is int) {
+      final newSteps = data['steps'] as int;
+      // Low-power mode fallback (brief: "reprise IMMÉDIATE ... sur delta de
+      // pas en fallback") — an increase is unambiguous evidence of movement,
+      // so this doubles as a fast resume path even in native mode: harmless
+      // there too, since [MotionPolicy.stillExited] is a no-op unless a
+      // still timer is actually running or the trip is actually paused.
+      // `_steps` is already the UI's trip-relative, reboot-adjusted tally
+      // (see `StepTally`), so a plain increase check is enough — no reboot
+      // handling needed here.
+      if (newSteps > _steps) {
+        final policy = _motionPolicy;
+        if (policy != null) {
+          final now = DateTime.now();
+          final action = policy.stillExited(now);
+          if (action != MotionAction.none) {
+            unawaited(_applyMotionAction(action, now));
+          }
+        }
+      }
+      _steps = newSteps;
+    }
     if (data['hapticsEnabled'] is bool) {
       _hapticsEnabled = data['hapticsEnabled'] as bool;
     }
@@ -1207,6 +1435,13 @@ class TripTaskHandler extends TaskHandler {
     await _session?.dispose();
     _session = null;
     await _cancelAlertNotification();
+    // Low-power mode (M5 Task 2d): a registered native transition listener
+    // must not outlive the service — same "don't leak a platform listener
+    // past teardown" rule as everything else here.
+    await _motionTransitionsSub?.cancel();
+    _motionTransitionsSub = null;
+    await _motionSource?.stop();
+    _motionSource = null;
   }
 
   /// Clears a lingering guidance alert when the trip ends — a walker who
@@ -1227,6 +1462,11 @@ class TripTaskHandler extends TaskHandler {
   }
 
   bool _isGpsSilentAt(DateTime now) {
+    // Low-power mode (M5 Task 2d): the stream is intentionally shut off
+    // while paused — that is a deliberate battery-saving silence, not the
+    // "GPS is broken" failure [isGpsSilent] exists to warn about (see
+    // `GpsSilentBanner`, `app/lib/main.dart`), so it must never read as one.
+    if (_lowPowerPaused) return false;
     final since = _recordingSince;
     if (since == null) return false;
     return isGpsSilent(
@@ -1350,6 +1590,7 @@ class TripTaskHandler extends TaskHandler {
       gpsSilent: _isGpsSilentAt(now),
       nav: _navFields,
       pendingVisits: List.unmodifiable(_pendingVisits),
+      lowPowerPaused: _lowPowerPaused,
     );
   }
 }
