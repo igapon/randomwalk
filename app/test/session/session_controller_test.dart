@@ -635,11 +635,10 @@ void main() {
 
       await session.resume();
       expect(controllers, hasLength(2));
-      expect(
-        requestedFilters,
-        [3, 12],
-        reason: 'the pending adaptive-GPS change applies on resume',
-      );
+      expect(requestedFilters, [
+        3,
+        12,
+      ], reason: 'the pending adaptive-GPS change applies on resume');
     });
   });
 
