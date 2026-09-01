@@ -16,7 +16,7 @@ void main() {
 
     test('verifyOtp throws SyncUnconfigured', () {
       expect(
-        backend.verifyOtp('a@b.ch', '123456'),
+        backend.verifyOtp(email: 'a@b.ch', code: '123456'),
         throwsA(isA<SyncUnconfigured>()),
       );
     });
@@ -40,7 +40,7 @@ void main() {
 
     test('upsertProfile throws SyncUnconfigured', () {
       expect(
-        backend.upsertProfile('Marcheur', 12.5),
+        backend.upsertProfile(pseudo: 'Marcheur', totalKm: 12.5),
         throwsA(isA<SyncUnconfigured>()),
       );
     });
@@ -58,7 +58,7 @@ void main() {
     });
 
     test('topProfiles returns an empty list', () async {
-      final rows = await backend.topProfiles(10);
+      final rows = await backend.topProfiles(limit: 10);
       expect(rows, isEmpty);
     });
   });

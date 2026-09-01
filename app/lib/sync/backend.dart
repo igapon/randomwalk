@@ -16,6 +16,14 @@ class AuthUser {
 /// `LeaderboardEntry` (`leaderboard/repository.dart`) closely enough that a
 /// future `SyncBackend`-backed `LeaderboardRepository` can adapt one to the
 /// other trivially, without depending on this type.
+///
+/// [rank] is always SERVER-computed (Task 2: the `top_profiles` security
+/// definer function) — never assigned by the caller or derived locally from
+/// a page of rows. It is competition ranking over every profile ordered by
+/// `totalKm` descending: tied totals share the same rank, and the rank
+/// after a tie skips ahead by the number of tied rows (1, 2, 2, 4 — not 1,
+/// 2, 2, 3), so [rank] is only meaningful relative to the full leaderboard,
+/// not to the position of this row within whatever page it arrived in.
 class LeaderboardRow {
   final String pseudo;
   final double totalKm;
@@ -29,13 +37,25 @@ class LeaderboardRow {
 
 /// One page of remote [GameEvent]s returned by [SyncBackend.pullEventsSince].
 ///
-/// [nextCursor] is `null` when [events] is the final page — i.e. there is
-/// nothing newer on the server as of this call. A non-null cursor should be
-/// persisted by the caller and passed back in as `cursor` to resume the pull
-/// (either later in the same page sequence, or on a future sync). The cursor
-/// is an opaque string as far as callers are concerned: its format is a
-/// backend implementation detail (Task 3: a Supabase `inserted_at`
-/// timestamp), never parsed outside the backend that issued it.
+/// Ordering and cursor semantics (the contract Task 3's `SupabaseBackend`
+/// and Task 4's `SyncEngine` are both written against):
+/// - [events] is ordered by the server's `inserted_at` ASCENDING — the order
+///   rows landed on the server, not [GameEvent.ts] (the two can differ:
+///   `ts` is client-authoritative and can arrive out of order relative to
+///   when the row was actually inserted).
+/// - [nextCursor] is derived from the LAST event in [events] and is
+///   EXCLUSIVE: passing it back in as `cursor` on the next call returns
+///   only rows strictly after it (by `inserted_at`), never that same row
+///   again. `null` when [events] is empty (nothing to derive a cursor
+///   from) — including the empty-but-more-exists case, since there is
+///   nothing new to page past yet; the caller should stop or retry the same
+///   cursor later, never invent a cursor between calls.
+/// - A `null` cursor passed IN to [SyncBackend.pullEventsSince] means "from
+///   the beginning" — the oldest event on the server.
+/// - The cursor is otherwise opaque to callers: its string format is a
+///   backend implementation detail (Task 3: a serialized Supabase
+///   `inserted_at` timestamp), never parsed or compared outside the
+///   backend that issued it — only ever passed back verbatim.
 class PullPage {
   final List<GameEvent> events;
   final String? nextCursor;
@@ -121,7 +141,7 @@ abstract class SyncBackend {
   /// reserved for backends that don't distinguish (none currently do; kept
   /// nullable for forward compatibility with the contract's shape
   /// elsewhere).
-  Future<AuthUser?> verifyOtp(String email, String code);
+  Future<AuthUser?> verifyOtp({required String email, required String code});
 
   /// Ends the current session, if any. Safe to call with no active session
   /// on a configured backend (a no-op); [UnconfiguredBackend] still throws
@@ -137,18 +157,19 @@ abstract class SyncBackend {
   Future<void> pushEvents(List<GameEvent> events);
 
   /// Fetches remote events the caller doesn't have yet, resuming from
-  /// [cursor] (`null` to start from the beginning). See [PullPage] for how
-  /// to drive pagination across multiple calls.
+  /// [cursor] (`null` to start from the beginning). See [PullPage]'s doc
+  /// comment for the exact ordering and cursor semantics driving pagination
+  /// across multiple calls.
   Future<PullPage> pullEventsSince(String? cursor);
 
   /// Upserts the signed-in user's leaderboard profile — display name and
   /// cumulative distance — so [topProfiles] (called by anyone, signed in or
   /// not) can include it.
-  Future<void> upsertProfile(String pseudo, double totalKm);
+  Future<void> upsertProfile({required String pseudo, required double totalKm});
 
-  /// The top [limit] leaderboard rows across all accounts on this backend,
-  /// ranked by `totalKm` descending.
-  Future<List<LeaderboardRow>> topProfiles(int limit);
+  /// The top [limit] leaderboard rows across all accounts on this backend.
+  /// See [LeaderboardRow.rank] for how ranking (and ties) work.
+  Future<List<LeaderboardRow>> topProfiles({required int limit});
 
   /// Permanently deletes the signed-in user's account and all
   /// server-side data belonging to it (Task 2: cascading `delete_account`
@@ -189,8 +210,10 @@ class UnconfiguredBackend implements SyncBackend {
       throw const SyncUnconfigured();
 
   @override
-  Future<AuthUser?> verifyOtp(String email, String code) async =>
-      throw const SyncUnconfigured();
+  Future<AuthUser?> verifyOtp({
+    required String email,
+    required String code,
+  }) async => throw const SyncUnconfigured();
 
   @override
   Future<void> signOut() async => throw const SyncUnconfigured();
@@ -204,11 +227,14 @@ class UnconfiguredBackend implements SyncBackend {
       const PullPage(events: []);
 
   @override
-  Future<void> upsertProfile(String pseudo, double totalKm) async =>
-      throw const SyncUnconfigured();
+  Future<void> upsertProfile({
+    required String pseudo,
+    required double totalKm,
+  }) async => throw const SyncUnconfigured();
 
   @override
-  Future<List<LeaderboardRow>> topProfiles(int limit) async => const [];
+  Future<List<LeaderboardRow>> topProfiles({required int limit}) async =>
+      const [];
 
   @override
   Future<void> deleteAccount() async => throw const SyncUnconfigured();
