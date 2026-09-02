@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/game/game_state_provider.dart';
 
+import '../support/temp_dir.dart';
+
 void main() {
   late Directory tempDir;
   late GameJournal journal;
@@ -15,7 +17,11 @@ void main() {
   });
 
   tearDown(() async {
-    await tempDir.delete(recursive: true);
+    // gameStateProvider now replays via loadStateFast (Task 5), which
+    // fires an unawaited background checkpoint write on every read (see
+    // state_checkpoint.dart) — deleteTempDirRetrying tolerates that write
+    // still being in flight when this runs (see its own dartdoc).
+    await deleteTempDirRetrying(tempDir);
   });
 
   ProviderContainer buildContainer() {

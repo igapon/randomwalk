@@ -12,6 +12,7 @@ import 'package:randomwalk/sync/backend.dart';
 import 'package:randomwalk/sync/providers.dart';
 
 import '../support/fake_sync_backend.dart';
+import '../support/temp_dir.dart';
 
 /// [runAutoSync]/[restoreAccountAndAutoSync] take a [WidgetRef] (matching
 /// their real call sites: `HomeShell.initState`, `_onSessionEnded`, the
@@ -52,7 +53,10 @@ void main() {
   });
 
   tearDown(() async {
-    await tempDir.delete(recursive: true);
+    // gameStateProvider replays via loadStateFast (Task 5), which fires an
+    // unawaited background checkpoint write on every read — tolerate that
+    // write still being in flight (see deleteTempDirRetrying's dartdoc).
+    await deleteTempDirRetrying(tempDir);
   });
 
   /// Pumps the harness and returns its live [WidgetRef]. Tests then drive

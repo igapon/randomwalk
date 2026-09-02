@@ -24,6 +24,7 @@ import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/valhalla/models.dart';
 
 import 'support/fake_sync_backend.dart';
+import 'support/temp_dir.dart';
 import 'support/trip_fakes.dart';
 
 void main() {
@@ -39,7 +40,10 @@ void main() {
   });
 
   tearDown(() async {
-    await tempDir.delete(recursive: true);
+    // gameStateProvider replays via loadStateFast (Task 5), which fires an
+    // unawaited background checkpoint write on every read — tolerate that
+    // write still being in flight (see deleteTempDirRetrying's dartdoc).
+    await deleteTempDirRetrying(tempDir);
   });
 
   TripController buildTrip() => TripController(
