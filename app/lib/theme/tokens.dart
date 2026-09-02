@@ -14,17 +14,20 @@ class AppColors {
   static const yellow = Color(0xFFF5B800);
   static const hydro = Color(0xFF3D7A8C);
 
-  /// Hex form of [ink] — the Aventure tab's fog-of-war fill color (60%
-  /// opacity, set via the layer's own `fillOpacity` rather than baked into
-  /// this string). Same value as [routeLineCasingHex] below; named
-  /// separately since the two call sites (route casing vs. fog) have
-  /// nothing to do with each other.
-  static const inkHex = '#1C2B25';
-
   // Dark palette.
   static const darkBg = Color(0xFF12201A);
   static const darkSurface = Color(0xFF1C2B25);
   static const darkYellow = Color(0xFFE6B800);
+
+  /// Fog-of-war veil colors (Task 2h — "papier non exploré", not a grey
+  /// checkerboard): the light-theme veil is [paper] itself, the dark-theme
+  /// veil is [darkBg] itself — both hex strings for `map/fog_layer.dart`'s
+  /// `FillLayerProperties`/`LineLayerProperties` (String-typed, not
+  /// `Color`), exactly matching the brief's pinned values (`#F7F8F4` /
+  /// `#12201A`, ≈85% opacity applied via the layer's own `fillOpacity`
+  /// rather than baked into these strings).
+  static const fogPaperHex = '#F7F8F4';
+  static const fogDarkHex = '#12201A';
 
   // Pale tints derived from the accents, used for containers / selection
   // states (me-row highlight, NavigationBar indicator) so the saturated

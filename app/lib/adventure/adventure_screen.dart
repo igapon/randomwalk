@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,7 +10,7 @@ import '../game/grid.dart';
 import '../game/pois.dart';
 import '../game/poi_loader.dart';
 import '../game/reducers.dart';
-import '../game/reveal.dart';
+import '../map/fog_layer.dart';
 import '../map/initial_camera.dart' show resolveInitialCameraCenter;
 import '../map/map_screen.dart' show kMapStyleUrlLight, kMapStyleUrlDark;
 import '../nav/polyline_math.dart' show metersBetween;
@@ -21,9 +20,6 @@ import 'badge_labels.dart';
 import 'fog_regen.dart';
 import 'hud_format.dart';
 import 'poi_symbols.dart';
-
-const _kFogSourceId = 'adventure-fog';
-const _kFogLayerId = 'adventure-fog-layer';
 
 /// True when nothing in [state] shows any sign of play yet — no ground
 /// covered, no cells revealed, no landmark ever visited.
@@ -40,18 +36,14 @@ bool isAdventureEmpty(GameState state) =>
     state.cellsRevealed == 0 &&
     state.landmarksVisited == 0;
 
-Map<String, dynamic> _emptyFeatureCollection() => const {
-  'type': 'FeatureCollection',
-  'features': <dynamic>[],
-};
-
 Set<CellId> _parseRevealedCells(GameState state) => {
   for (final key in state.revealedCellKeys)
     if (CellId.parseKey(key) case final parsed?) parsed,
 };
 
 /// The 4th tab: a dedicated fog-of-war map (revealed corridor/landmark
-/// discs, unrevealed ground drawn as a 60%-opacity ink overlay), the
+/// discs, unrevealed ground drawn as a soft, theme-tinted "papier non
+/// exploré" veil — see `map/fog_layer.dart`), the
 /// landmark diamonds around the current viewport, and a compact HUD that
 /// opens the badges/stats sheet.
 ///
@@ -72,8 +64,10 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
   bool _iconsRegistered = false;
   List<Symbol> _landmarkSymbols = const [];
 
+  /// The reusable fog-of-war component (`map/fog_layer.dart`) — same
+  /// builder/paint config Task 2j will reuse for the main map.
+  final _fog = FogLayer();
   DateTime? _lastFogGen;
-  FogViewport? _lastFogViewport;
   int _lastRevealedVersion = -1;
 
   /// Injectable purely so a future test could pin the clock; production
@@ -159,25 +153,19 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     _iconsRegistered = false;
     _landmarkSymbols = const [];
     _lastFogGen = null;
-    _lastFogViewport = null;
     _lastRevealedVersion = -1;
   }
 
   Future<void> _onStyleLoaded() async {
+    final controller = _controller;
     try {
       await _registerIcons();
-      await _controller?.addGeoJsonSource(
-        _kFogSourceId,
-        _emptyFeatureCollection(),
-      );
-      await _controller?.addFillLayer(
-        _kFogSourceId,
-        _kFogLayerId,
-        const FillLayerProperties(
-          fillColor: AppColors.inkHex,
-          fillOpacity: 0.6,
-        ),
-      );
+      if (controller != null && mounted) {
+        await _fog.install(
+          controller,
+          brightness: Theme.of(context).brightness,
+        );
+      }
     } catch (_) {
       // Game never blocks the tool: a style/layer failure just means no fog
       // is drawn this session, not a crash.
@@ -221,49 +209,35 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     }
   }
 
+  /// Regenerates the fog geometry when (and only when) the revealed cell
+  /// set has actually changed — see `fog_regen.dart`'s doc comment for why
+  /// this no longer reads the camera/viewport at all (Task 2h: that
+  /// coupling was the root cause of "fog of war ... changes when i move
+  /// the map"). Still invoked from `onCameraIdle` (see [build]) alongside
+  /// [_refreshLandmarks], which genuinely IS viewport-dependent — but
+  /// [shouldRegenFog] declines every one of those calls unless the
+  /// revealed set moved too, so panning triggers no fog work at all.
   Future<void> _refreshFog(GameState state) async {
     final controller = _controller;
     if (controller == null) return;
-    final LatLngBounds bounds;
-    try {
-      bounds = await controller.getVisibleRegion();
-    } catch (_) {
-      return;
-    }
-    final viewport = FogViewport(
-      (bounds.southwest.latitude, bounds.southwest.longitude),
-      (bounds.northeast.latitude, bounds.northeast.longitude),
-    );
     final now = clock();
     final revealedVersion = state.revealedCellKeys.length;
     final regen = shouldRegenFog(
       lastGen: _lastFogGen,
       now: now,
-      lastViewport: _lastFogViewport,
-      viewport: viewport,
       lastRevealedVersion: _lastRevealedVersion,
       revealedVersion: revealedVersion,
     );
     if (!regen) return;
 
-    final revealed = _parseRevealedCells(state);
-    final geojson = fogGeoJson(
-      sw: viewport.sw,
-      ne: viewport.ne,
-      revealed: revealed,
-    );
     try {
-      await controller.setGeoJsonSource(
-        _kFogSourceId,
-        jsonDecode(geojson) as Map<String, dynamic>,
-      );
+      await _fog.update(controller, revealed: _parseRevealedCells(state));
     } catch (_) {
       // Best-effort — a failed redraw just leaves the previous fog on
       // screen one cycle longer.
       return;
     }
     _lastFogGen = now;
-    _lastFogViewport = viewport;
     _lastRevealedVersion = revealedVersion;
   }
 
