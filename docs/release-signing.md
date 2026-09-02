@@ -92,3 +92,54 @@ No `key.properties`? The release build still succeeds, signed with the
 debug keystore — safe for local testing, but **not** installable as an
 update over a Play-distributed build and **not** what should ever be
 uploaded to the Play Console.
+
+## Optional CI job: `aab` (workflow_dispatch only)
+
+`.github/workflows/ci.yml` has a fifth job, `aab`, that builds a release
+Android App Bundle (`.aab` — the format the Play Console requires, not the
+`.apk` the other jobs build). It never runs on `push`/`pull_request` — only
+when triggered by hand from the GitHub Actions tab ("Run workflow") — so it
+can never turn the ordinary push-triggered CI gate red.
+
+It reuses the exact same fallback logic described above: if the four
+`ANDROID_*` repository secrets below are configured, it reconstructs
+`key.properties` and a keystore file from them before building, producing a
+real upload-signed AAB; if they are absent, it skips that step entirely and
+`build.gradle.kts`'s own existing fallback signs with the debug keystore
+instead, with the same loud `println` warning — so the job always succeeds,
+but only a real-secrets run produces something installable as a Play
+Console update.
+
+To configure real signing secrets (GitHub repo → **Settings** → **Secrets
+and variables** → **Actions** → **New repository secret**):
+
+| Secret name | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | The upload keystore file, base64-encoded (see command below) |
+| `ANDROID_STORE_PASSWORD` | The `storePassword` from `key.properties` |
+| `ANDROID_KEY_PASSWORD` | The `keyPassword` from `key.properties` (same value here, see the note above) |
+| `ANDROID_KEY_ALIAS` | `upload` |
+
+Encoding the keystore for the `ANDROID_KEYSTORE_BASE64` secret:
+
+```
+# Windows (PowerShell)
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE\randomwalk-upload.jks")) | Set-Clipboard
+
+# Linux/macOS
+base64 -w0 ~/randomwalk-upload.jks
+```
+
+Paste the resulting single-line string as the secret's value.
+
+Two more secrets are optional and independent of signing —
+`SUPABASE_URL`/`SUPABASE_ANON_KEY` (see `supabase/README.md`): if set, the
+AAB is built with sync/leaderboard-via-Supabase enabled; if unset, the build
+falls back to the same unconfigured, M4-identical local-only behavior every
+other CI job already produces. Never store the Supabase **service role**
+key anywhere — only the `anon` public key belongs here, exactly as in a
+local build.
+
+The built AAB is uploaded as a workflow artifact (`randomwalk-aab`),
+downloadable from the completed run's summary page — that is the file to
+hand to the Play Console (see `docs/owner-handoff.md`).

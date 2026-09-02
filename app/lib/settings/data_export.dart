@@ -20,7 +20,7 @@ import 'identity.dart';
 /// alongside `share_plus` (see `task-6-report.md`'s CI/AGP risk note).
 /// **Keep this in sync by hand whenever `pubspec.yaml`'s `version:` line
 /// changes.**
-const kAppVersion = '1.0.0+1';
+const kAppVersion = '1.0.0+2';
 
 /// Filename prefix every export writes (`<prefix><epoch-ms>.json`) — shared
 /// between the writer and [DataExporter]'s own leftover sweep so the sweep
