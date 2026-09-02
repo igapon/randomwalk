@@ -50,15 +50,22 @@ typedef GridRing = List<(int, int)>;
 /// "<50ms for 5k cells" indicative budget (see `fog_geometry_test.dart`'s
 /// perf test).
 ///
-/// **Loop orientation encodes role** — callers never need a separate
-/// point-in-polygon test to tell "outer boundary of a revealed blob" from
-/// "unrevealed pocket fully enclosed by revealed cells": the shoelace
-/// [signedArea] of a loop is positive (CCW) for the former, negative (CW)
-/// for the latter — a direct consequence of the edge-cancellation rule
-/// above (a lone revealed cell's own 4-edge loop is already CCW/positive;
-/// a hole traced from the surrounding cells' contributed edges is the
-/// exact reverse). See [fogWorldGeoJson] for how the two roles become
-/// GeoJSON holes vs. new exterior rings respectively.
+/// **Loop orientation reflects local state, but role needs depth, not just
+/// sign**: the shoelace [signedArea] of a loop is positive (CCW) exactly
+/// when the cells immediately inside it are revealed, negative (CW) when
+/// they are unrevealed — a direct consequence of the edge-cancellation
+/// rule above (a lone revealed cell's own 4-edge loop is already
+/// CCW/positive; a hole traced from the surrounding cells' contributed
+/// edges is the exact reverse). That sign is always locally correct, but
+/// on its own it is NOT enough to decide which GeoJSON polygon a loop's
+/// ring belongs to once loops nest more than one level deep — e.g. a
+/// small revealed island inside an unrevealed pocket inside a bigger
+/// revealed blob is perfectly ordinary once `GameState.revealedCellKeys`
+/// accumulates cells across many separate, physically disconnected trips
+/// (a loop walked around a park one week, a smaller loop inside that same
+/// park — never retracing the outer loop — another week). [fogWorldGeoJson]
+/// resolves this with an explicit containment/depth classification instead
+/// of relying on sign alone; see its own doc comment.
 ///
 /// A vertex with two outgoing edges (the diagonal-touch case) needs one
 /// more piece of care beyond "just keep walking until back at `start`":
@@ -73,12 +80,6 @@ typedef GridRing = List<(int, int)>;
 /// out as its own separate closed loop right away (removed from the
 /// in-progress walk, appended to the result), and the walk continues from
 /// there — this is what actually separates the two cycles correctly.
-///
-/// **Known limitation** (unreachable from this app's disc/corridor reveal
-/// shapes in practice, so deliberately not handled): nesting beyond one
-/// level (e.g. a revealed island inside an unrevealed pocket inside a
-/// revealed blob) is not resolved by depth; the innermost loop would be
-/// attached to the wrong ring by [fogWorldGeoJson].
 List<GridRing> traceGridBoundary(Set<CellId> revealed) {
   // Adjacency, allowing MULTIPLE outgoing edges per vertex — required for
   // the diagonal-touch case (see doc comment above); a single-successor
@@ -191,6 +192,79 @@ List<(int, int)> simplifyCollinear(GridRing ring) {
   return kept.isEmpty ? ring : kept;
 }
 
+/// Even-odd ray-casting point-in-polygon test for grid-corner point
+/// [point] against closed CYCLIC rectilinear [ring] (see [GridRing]'s doc
+/// comment — not closed, wraparound implicit). Exact integer arithmetic
+/// throughout: every ring edge from [traceGridBoundary] is axis-aligned,
+/// so a horizontal test ray only ever crosses VERTICAL edges (an edge
+/// with `y1 == y2` fails the `(y1 > py) != (y2 > py)` check identically on
+/// both sides and is skipped), whose crossing x-coordinate is simply that
+/// edge's own (shared) x — no interpolation, no floating point, no
+/// ambiguity from an edge lying exactly on the ray.
+bool _pointInRing((int, int) point, GridRing ring) {
+  final (px, py) = point;
+  var inside = false;
+  final n = ring.length;
+  for (var i = 0; i < n; i++) {
+    final (x1, y1) = ring[i];
+    final (x2, y2) = ring[(i + 1) % n];
+    if ((y1 > py) != (y2 > py) && px < x1) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/// For each ring in [rings] (by index), how many of the OTHER rings
+/// contain it — one [_pointInRing] test (of one arbitrary vertex) per
+/// ordered pair, so `O(n^2)` in the number of LOOPS (not cells): tiny in
+/// practice, one loop per connected revealed blob or enclosed pocket, not
+/// per cell. This is the general containment/depth classification
+/// [fogWorldGeoJson] uses instead of [signedArea]'s sign alone — see that
+/// function's doc comment for why sign alone is insufficient once loops
+/// can nest more than one level deep.
+///
+/// Depth 0 = an outermost boundary (not contained by anything) = a
+/// revealed blob's own boundary directly against the (default-unrevealed)
+/// world background. Depth 1 = an unrevealed pocket inside that blob.
+/// Depth 2 = a revealed island inside that pocket. And so on — depth
+/// parity always matches [signedArea]'s sign (even = revealed interior =
+/// CCW, odd = unrevealed interior = CW), by the same edge-cancellation
+/// argument [traceGridBoundary] relies on, but depth is what actually
+/// determines which polygon a ring's hole belongs to, not merely its own
+/// parity in isolation.
+List<int> _ringDepths(List<GridRing> rings) {
+  final depths = List<int>.filled(rings.length, 0);
+  for (var i = 0; i < rings.length; i++) {
+    final probe = rings[i].first;
+    for (var j = 0; j < rings.length; j++) {
+      if (i != j && _pointInRing(probe, rings[j])) depths[i]++;
+    }
+  }
+  return depths;
+}
+
+/// The index into [rings] of the ring that most TIGHTLY contains ring
+/// [i] — the one among its containers with the greatest [depths] value —
+/// or `null` if [i] has no container at all (its parent is the fog's
+/// world rectangle itself). In a well-formed nesting (simple, disjoint,
+/// non-overlapping rings — always true for [traceGridBoundary]'s output),
+/// ring [i]'s container set is exactly its ancestor chain in the
+/// containment tree, so this is well-defined and always has depth
+/// `depths[i] - 1` when non-null.
+int? _tightestContainer(int i, List<GridRing> rings, List<int> depths) {
+  final probe = rings[i].first;
+  int? best;
+  for (var j = 0; j < rings.length; j++) {
+    if (j != i &&
+        _pointInRing(probe, rings[j]) &&
+        (best == null || depths[j] > depths[best])) {
+      best = j;
+    }
+  }
+  return best;
+}
+
 /// Chaikin corner-cutting: [iterations] passes of replacing every vertex of
 /// closed ring [ring] (GeoJSON-style — first point repeated as the last)
 /// with two points at [ratio] and `1 - ratio` along each edge, rounding
@@ -267,19 +341,34 @@ List<List<double>> _closedLonLatRing(List<(double, double)> latLonPoints) => [
 /// regardless of camera position — see `fog_geometry_test.dart`'s
 /// viewport-independence test.
 ///
-/// **Winding, worked out for MapLibre/GeoJSON's right-hand rule** (RFC 7946
-/// §3.1.6: exterior rings CCW, interior/hole rings CW, as seen in
-/// `[lon, lat]` = standard x-right/y-up axes):
-/// - [traceGridBoundary]'s CCW (positive-area) loops are a revealed blob's
-///   own outer boundary — these become the shared world polygon's HOLES, so
-///   they are reversed to CW before use.
-/// - Its CW (negative-area) loops are an unrevealed pocket fully enclosed by
-///   revealed cells — these are fog again (unrevealed = fog by definition),
-///   so each becomes its own new, separate exterior ring (a small floating
-///   "fog island" Polygon in the MultiPolygon) — reversed to CCW, since a
-///   single GeoJSON Polygon cannot nest a hole inside a hole (RFC 7946); an
-///   island inside a hole must be its own Polygon even though it visually
-///   sits inside the shared one.
+/// **Classification is by containment DEPTH, not sign alone** — see
+/// [traceGridBoundary]'s doc comment for why sign alone breaks once loops
+/// nest more than one level deep (a revealed island inside an unrevealed
+/// pocket inside a revealed blob — perfectly ordinary once
+/// `GameState.revealedCellKeys` has accumulated cells across many
+/// separate, physically disconnected trips over the app's lifetime).
+/// [_ringDepths]/[_tightestContainer] build the full containment TREE
+/// (arbitrary depth, not just one level) on the UNSMOOTHED rectilinear
+/// rings — exact integer arithmetic, no ambiguity from smoothing — and
+/// every ring's role is then purely a function of its own depth and its
+/// tightest container (its parent in that tree):
+/// - **Even depth** (0, 2, 4, …) = a revealed boundary = a **hole**, cut
+///   into whichever polygon its parent ring is the exterior of (or into the
+///   shared **world** polygon itself, for depth 0 — no parent ring at all).
+/// - **Odd depth** (1, 3, 5, …) = an unrevealed-pocket boundary = a
+///   standalone **new exterior ring**, its own separate Polygon in the
+///   MultiPolygon (a hole cannot nest another hole in GeoJSON, so a fog
+///   island one level inside a hole must be its own Polygon even though it
+///   visually sits inside the shared one) — any even-depth ring directly
+///   nested inside IT becomes one of ITS holes, recursively, to whatever
+///   depth the revealed-cell history actually produces.
+///
+/// **Winding** (RFC 7946 §3.1.6: exterior rings CCW, interior/hole rings
+/// CW, as seen in `[lon, lat]` = standard x-right/y-up axes): every ring
+/// gets reversed from how [traceGridBoundary] traced it, regardless of
+/// depth — an even-depth ring traces CCW (revealed interior) but is used
+/// as a CW hole; an odd-depth ring traces CW (unrevealed interior) but is
+/// used as a CCW exterior. Both cases need exactly one reversal.
 ///
 /// The result is a `FeatureCollection` with exactly two features, both
 /// consumed by `fog_layer.dart`'s two paint layers over the one shared
@@ -294,49 +383,38 @@ List<List<double>> _closedLonLatRing(List<(double, double)> latLonPoints) => [
 /// passes, after [simplifyCollinear] discards the mid-run points a
 /// grid-cell trace produces one per unit edge) — the "coins arrondis" the
 /// brief asks for, replacing the fog's grid-square corners with the pinned
-/// "papier non exploré" softness.
+/// "papier non exploré" softness — but only AFTER the containment/depth
+/// classification above, which is computed on the exact, unsmoothed rings.
 String fogWorldGeoJson({
   required Set<CellId> revealed,
   double cellM = cellSizeM,
   int smoothIterations = 2,
 }) {
-  final loops = traceGridBoundary(revealed);
-  // Rings (each a closed `[lon, lat]` list) that become the shared world
-  // polygon's interior holes.
-  final worldHoles = <List<List<double>>>[];
-  // Each entry is a whole standalone Polygon (a single exterior ring, no
-  // holes of its own) — a "fog island" floating inside a world hole.
-  final islandPolygons = <List<List<List<double>>>>[];
-  // Every hole/island ring, for the halo line layer — never the world
-  // rectangle itself (always off-screen, nothing to soften there).
-  final haloLines = <List<List<double>>>[];
-
-  for (final loop in loops) {
+  // Unsmoothed, exact-integer rings — the only geometry containment is
+  // ever tested against (see the doc comment above).
+  final rings = <GridRing>[];
+  for (final loop in traceGridBoundary(revealed)) {
     final simplified = simplifyCollinear(loop);
-    if (simplified.length < 3) continue; // Degenerate; not a real loop.
-
-    final area = signedArea([for (final (x, y) in simplified) (x, y)]);
-    final closedGrid = [...simplified, simplified.first];
-    final latLon = [
-      for (final (x, y) in closedGrid) gridVertexLatLon(x, y, cellM: cellM),
-    ];
-    final smoothed = chaikinSmooth(latLon, iterations: smoothIterations);
-
-    if (area > 0) {
-      // Revealed blob's outer boundary, traced CCW -> reverse to CW for use
-      // as a hole in the world polygon (RFC 7946 §3.1.6).
-      final holeRing = _closedLonLatRing(smoothed.reversed.toList());
-      worldHoles.add(holeRing);
-      haloLines.add(holeRing);
-    } else {
-      // Unrevealed pocket fully enclosed by revealed cells, traced CW ->
-      // reverse to CCW for use as its own exterior ring (a hole cannot
-      // nest another hole in GeoJSON, so this is a separate Polygon).
-      final islandRing = _closedLonLatRing(smoothed.reversed.toList());
-      islandPolygons.add([islandRing]);
-      haloLines.add(islandRing);
-    }
+    if (simplified.length >= 3) rings.add(simplified);
   }
+
+  final depths = _ringDepths(rings);
+  final parents = <int?>[
+    for (var i = 0; i < rings.length; i++) _tightestContainer(i, rings, depths),
+  ];
+
+  // Every ring's final, smoothed, correctly-wound `[lon, lat]` closed
+  // ring, by index — computed once, reused for whichever role (hole or
+  // exterior) that ring turns out to play below.
+  final wound = <List<List<double>>>[
+    for (final ring in rings)
+      _closedLonLatRing(
+        chaikinSmooth([
+          for (final (x, y) in [...ring, ring.first])
+            gridVertexLatLon(x, y, cellM: cellM),
+        ], iterations: smoothIterations).reversed.toList(),
+      ),
+  ];
 
   const worldRing = [
     [kFogWorldWest, kFogWorldSouth],
@@ -346,10 +424,26 @@ String fogWorldGeoJson({
     [kFogWorldWest, kFogWorldSouth],
   ];
 
+  // Holes belonging to each exterior ring's polygon, keyed by that
+  // exterior ring's index — `null` for the shared world polygon itself
+  // (depth-0 rings have no parent ring).
+  final holesByParent = <int?, List<List<List<double>>>>{};
+  for (var i = 0; i < rings.length; i++) {
+    if (depths[i].isEven) {
+      (holesByParent[parents[i]] ??= []).add(wound[i]);
+    }
+  }
+
   final fillPolygons = <List<List<List<double>>>>[
-    [worldRing, ...worldHoles],
-    ...islandPolygons,
+    [worldRing, ...?holesByParent[null]],
+    for (var i = 0; i < rings.length; i++)
+      if (depths[i].isOdd) [wound[i], ...?holesByParent[i]],
   ];
+
+  // Every ring, hole or exterior alike, for the halo line layer — never
+  // the world rectangle itself (always off-screen, nothing to soften
+  // there).
+  final haloLines = <List<List<double>>>[for (final ring in wound) ring];
 
   final fillFeature = <String, dynamic>{
     'type': 'Feature',

@@ -4,6 +4,57 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/game/grid.dart';
 import 'package:randomwalk/map/fog_geometry.dart';
 
+/// Even-odd ray-casting point-in-ring test over DECODED `[lon, lat]`
+/// GeoJSON ring coordinates — a test-file-local mirror of the mechanism
+/// `fog_geometry.dart` uses internally for containment, but applied here to
+/// the actual, final, smoothed output, so these tests verify end-to-end
+/// rendered behavior rather than re-asserting internals.
+bool _pointInLonLatRing((double, double) point, List<dynamic> ring) {
+  final (px, py) = point;
+  var inside = false;
+  final n = ring.length;
+  for (var i = 0; i < n; i++) {
+    final a = ring[i] as List;
+    final b = ring[(i + 1) % n] as List;
+    final x1 = (a[0] as num).toDouble();
+    final y1 = (a[1] as num).toDouble();
+    final x2 = (b[0] as num).toDouble();
+    final y2 = (b[1] as num).toDouble();
+    if ((y1 > py) != (y2 > py)) {
+      final xIntersect = x1 + (py - y1) * (x2 - x1) / (y2 - y1);
+      if (px < xIntersect) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/// Whether `(lon, lat)` [point] is covered by the fog fill's
+/// `MultiPolygon` — inside some polygon's exterior ring and not inside any
+/// of THAT polygon's own hole rings. This is the actual visual contract
+/// the fill layer renders (MapLibre fills a `Polygon` by exterior-minus-
+/// holes, same as every other GeoJSON consumer), so it's what the nested-
+/// loop regression tests below assert against, rather than any particular
+/// internal ring/index shape.
+bool _pointInFogFill((double, double) point, Map<String, dynamic> fillFeature) {
+  final polygons = fillFeature['geometry']['coordinates'] as List;
+  for (final polygon in polygons) {
+    final rings = (polygon as List).cast<List>();
+    if (!_pointInLonLatRing(point, rings[0])) continue;
+    final inHole = rings.skip(1).any((hole) => _pointInLonLatRing(point, hole));
+    if (!inHole) return true;
+  }
+  return false;
+}
+
+/// `(lon, lat)` of the center of grid cell ([x], [y]) — a point safely
+/// inside that cell's interior even after Chaikin smoothing has rounded
+/// its ring's corners.
+(double, double) _cellCenterLonLat(int x, int y) {
+  final sw = gridVertexLatLon(x, y);
+  final ne = gridVertexLatLon(x + 1, y + 1);
+  return ((sw.$2 + ne.$2) / 2, (sw.$1 + ne.$1) / 2);
+}
+
 void main() {
   group('traceGridBoundary', () {
     test('a single revealed cell traces its own 4-vertex CCW loop', () {
@@ -278,6 +329,83 @@ void main() {
       expect(polygons, hasLength(2));
       final island = polygons[1].cast<List>();
       expect(island, hasLength(1), reason: 'island has no holes of its own');
+    });
+
+    test('reviewer regression: a revealed ring around an unrevealed pocket, '
+        'plus a second, DISCONNECTED revealed island inside that same '
+        'pocket (e.g. two separate trips weeks apart — a loop walked around '
+        'a park, then a smaller loop inside it later, the outer loop never '
+        'retraced) — the inner island must NOT be silently re-fogged', () {
+      // Outer revealed "frame": a 5x5 footprint minus its inner 3x3 (an
+      // annulus), leaving a 3x3 unrevealed pocket in the middle.
+      final revealed = <CellId>{
+        for (var x = 0; x < 5; x++)
+          for (var y = 0; y < 5; y++)
+            if (x < 1 || x > 3 || y < 1 || y > 3) CellId(x, y),
+        // A single, disconnected revealed cell dead-center of that
+        // pocket — its own neighbours (1,2)/(3,2)/(2,1)/(2,3) are all
+        // still unrevealed, so this is genuinely its own connected
+        // component, not touching the outer frame.
+        const CellId(2, 2),
+      };
+      final doc = decode(fogWorldGeoJson(revealed: revealed));
+      final fill = featureOfKind(doc, 'fill');
+
+      // The genuinely explored inner island must read as clear, not
+      // fog — this is exactly what sign-only classification got wrong
+      // (it dumped this ring into the WORLD polygon's holes instead of
+      // the enclosing fog island's, so the fog island's fill — with no
+      // hole of its own — silently re-covered it).
+      expect(
+        _pointInFogFill(_cellCenterLonLat(2, 2), fill),
+        isFalse,
+        reason: 'the small revealed island must not be re-fogged',
+      );
+      // A neighbouring cell that IS still part of the unrevealed pocket
+      // must still read as fog — the fix must not over-correct either.
+      expect(_pointInFogFill(_cellCenterLonLat(1, 2), fill), isTrue);
+      // A cell well outside the whole footprint (never revealed at all)
+      // is fog too.
+      expect(_pointInFogFill(_cellCenterLonLat(20, 20), fill), isTrue);
+    });
+
+    test('three-level nesting (revealed blob -> unrevealed pocket -> '
+        'revealed island) renders as exactly two polygons: the world '
+        '(holding the outer boundary as its own hole) and a standalone fog-'
+        'island polygon (holding the inner revealed island as ITS hole, not '
+        'the world\'s) — the general depth classification this task added '
+        'in place of sign-only classification', () {
+      final revealed = <CellId>{
+        for (var x = 0; x < 5; x++)
+          for (var y = 0; y < 5; y++)
+            if (x < 1 || x > 3 || y < 1 || y > 3) CellId(x, y),
+        const CellId(2, 2),
+      };
+      final doc = decode(fogWorldGeoJson(revealed: revealed));
+      final fill = featureOfKind(doc, 'fill');
+      final polygons = (fill['geometry']['coordinates'] as List).cast<List>();
+
+      expect(
+        polygons,
+        hasLength(2),
+        reason: 'world polygon + one fog-island polygon',
+      );
+
+      final worldPolygon = polygons[0].cast<List>();
+      expect(
+        worldPolygon,
+        hasLength(2),
+        reason: 'exterior + the outer boundary as its hole',
+      );
+
+      final islandPolygon = polygons[1].cast<List>();
+      expect(
+        islandPolygon,
+        hasLength(2),
+        reason:
+            'the fog island\'s own exterior + the inner revealed '
+            'island as ITS hole — not the world\'s',
+      );
     });
 
     test('every ring is closed (first coordinate == last)', () {
