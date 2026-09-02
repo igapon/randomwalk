@@ -35,9 +35,10 @@ class FakeTotalDistanceStore implements TotalDistanceStore {
 class MemoryFinalisedTripMemory implements FinalisedTripMemory {
   final banked = <DateTime>{};
 
-  /// Task 2g: the trip identity ([DateTime]) last passed to
-  /// [setPendingCelebration], or `null` after [clearPendingCelebration].
-  DateTime? pending;
+  /// Task 2g fix round 1 (Important 5): the (identity, stats) pair last
+  /// passed to [setPendingCelebration], or `null` after
+  /// [clearPendingCelebration].
+  (DateTime, PendingCelebrationStats)? pending;
 
   @override
   Future<bool> wasFinalised(DateTime startedAt) async =>
@@ -48,11 +49,14 @@ class MemoryFinalisedTripMemory implements FinalisedTripMemory {
       banked.add(startedAt.toUtc());
 
   @override
-  Future<void> setPendingCelebration(DateTime startedAt) async =>
-      pending = startedAt.toUtc();
+  Future<void> setPendingCelebration(
+    DateTime startedAt,
+    PendingCelebrationStats stats,
+  ) async => pending = (startedAt.toUtc(), stats);
 
   @override
-  Future<DateTime?> pendingCelebration() async => pending;
+  Future<(DateTime, PendingCelebrationStats)?> pendingCelebration() async =>
+      pending;
 
   @override
   Future<void> clearPendingCelebration() async => pending = null;
@@ -121,6 +125,10 @@ class FakeTripTracker implements TripTracker {
   /// matching [startedWith].
   final startedPoisFilePath = <String?>[];
   final publishedSteps = <int>[];
+
+  /// Every [TripTracker.publishVisitXp] call this fake has seen, in order
+  /// (Task 2g fix round 1, Important 2).
+  final publishedVisitXp = <double>[];
   int stops = 0;
   int clears = 0;
   int attaches = 0;
@@ -185,6 +193,10 @@ class FakeTripTracker implements TripTracker {
 
   @override
   Future<void> publishSteps(int steps) async => publishedSteps.add(steps);
+
+  @override
+  Future<void> publishVisitXp(double totalVisitXp) async =>
+      publishedVisitXp.add(totalVisitXp);
 
   /// Every [TripTracker.updateAlertSettings] call this fake has seen, in
   /// order.

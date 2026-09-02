@@ -1,4 +1,64 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../valhalla/models.dart';
+
+/// Task 2g fix round 1 (Important 5): the synchronously-known stats
+/// `TripController._finalise` builds for a celebration-worthy trip,
+/// persisted alongside [FinalisedTripMemory.setPendingCelebration]'s marker
+/// so the DEFERRED path (nothing was watching live when the trip finalised)
+/// can render distance/durée/vitesse immediately too, exactly like the live
+/// path's `FinishedTripCelebration` — only the combined XP figure still
+/// needs `TripHistoryStore`'s own poll, on both paths equally. Before this,
+/// the deferred path pushed `celebration: null` and relied entirely on that
+/// poll for every stat, so a timeout left the screen with nothing to show
+/// at all — the exact scenario this task's flagship background-arrival case
+/// hits hardest.
+class PendingCelebrationStats {
+  final double distanceKm;
+  final Duration duration;
+  final double avgSpeedKmh;
+  final RoutingProfile profile;
+  final bool isLoop;
+
+  const PendingCelebrationStats({
+    required this.distanceKm,
+    required this.duration,
+    required this.avgSpeedKmh,
+    required this.profile,
+    required this.isLoop,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'distanceKm': distanceKm,
+    'durationMs': duration.inMilliseconds,
+    'avgSpeedKmh': avgSpeedKmh,
+    'profile': profile.name,
+    'isLoop': isLoop,
+  };
+
+  /// Parses one value back, or `null` for anything corrupt/missing — a
+  /// broken persisted payload must degrade to "nothing pending" (the same
+  /// as no marker at all), never crash the startup check that reads it.
+  static PendingCelebrationStats? tryParse(Object? json) {
+    if (json is! Map) return null;
+    try {
+      return PendingCelebrationStats(
+        distanceKm: (json['distanceKm'] as num).toDouble(),
+        duration: Duration(milliseconds: (json['durationMs'] as num).toInt()),
+        avgSpeedKmh: (json['avgSpeedKmh'] as num).toDouble(),
+        profile: RoutingProfile.values.firstWhere(
+          (p) => p.name == json['profile'],
+          orElse: () => RoutingProfile.walk,
+        ),
+        isLoop: json['isLoop'] as bool? ?? false,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
 
 /// Remembers which trips have already been banked and submitted.
 ///
@@ -24,7 +84,9 @@ abstract class FinalisedTripMemory {
   /// Task 2g (owner brief): remembers the identity ([startedAt] — see this
   /// class's own doc comment on why that is a trip's identity) of the most
   /// recently finalised trip whose congratulations screen has not been shown
-  /// yet, so it survives a cold start.
+  /// yet, plus [stats] (fix round 1, Important 5 — see
+  /// [PendingCelebrationStats]'s own doc comment), so both survive a cold
+  /// start.
   ///
   /// Set by `TripController._finalise` for exactly the trips the brief wants
   /// a celebration for — a guided (route-bound) trip that had latched
@@ -42,10 +104,15 @@ abstract class FinalisedTripMemory {
   /// time, so at most one congratulations screen can ever be pending.
   /// [clearPendingCelebration] is called once the screen has actually been
   /// shown.
-  Future<void> setPendingCelebration(DateTime startedAt);
+  Future<void> setPendingCelebration(
+    DateTime startedAt,
+    PendingCelebrationStats stats,
+  );
 
-  /// The pending celebration's trip identity, or `null` if there is none.
-  Future<DateTime?> pendingCelebration();
+  /// The pending celebration's trip identity and stats, or `null` if there
+  /// is none (including when the persisted payload is corrupt — see
+  /// [PendingCelebrationStats.tryParse]).
+  Future<(DateTime, PendingCelebrationStats)?> pendingCelebration();
 
   Future<void> clearPendingCelebration();
 }
@@ -53,8 +120,10 @@ abstract class FinalisedTripMemory {
 class PrefsFinalisedTripMemory implements FinalisedTripMemory {
   static const _key = 'finalised_trip_ids';
 
-  /// Task 2g: see [FinalisedTripMemory.setPendingCelebration].
-  static const _pendingCelebrationKey = 'pending_trip_celebration_started_at';
+  /// Task 2g: see [FinalisedTripMemory.setPendingCelebration]. One combined
+  /// JSON blob (identity + stats) rather than two keys, so a read can never
+  /// observe one half written without the other.
+  static const _pendingCelebrationKey = 'pending_trip_celebration';
 
   /// How many ids to keep. One is enough for the race this guards against —
   /// only the trip that was just stopped can be resurrected — but a short
@@ -86,21 +155,31 @@ class PrefsFinalisedTripMemory implements FinalisedTripMemory {
   static String _id(DateTime startedAt) => startedAt.toUtc().toIso8601String();
 
   @override
-  Future<void> setPendingCelebration(DateTime startedAt) async {
+  Future<void> setPendingCelebration(
+    DateTime startedAt,
+    PendingCelebrationStats stats,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_pendingCelebrationKey, _id(startedAt));
+    await prefs.setString(
+      _pendingCelebrationKey,
+      jsonEncode({'startedAt': _id(startedAt), 'stats': stats.toJson()}),
+    );
   }
 
   @override
-  Future<DateTime?> pendingCelebration() async {
+  Future<(DateTime, PendingCelebrationStats)?> pendingCelebration() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_pendingCelebrationKey);
     if (raw == null) return null;
     try {
-      return DateTime.parse(raw);
-    } catch (_) {
+      final json = jsonDecode(raw) as Map<String, dynamic>;
+      final startedAt = DateTime.parse(json['startedAt'] as String);
+      final stats = PendingCelebrationStats.tryParse(json['stats']);
+      if (stats == null) return null;
+      return (startedAt, stats);
       // A corrupt value is exactly "nothing pending" — never worth crashing
       // the map screen's startup check over.
+    } catch (_) {
       return null;
     }
   }

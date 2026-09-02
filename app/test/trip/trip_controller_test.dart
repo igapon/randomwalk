@@ -1009,6 +1009,82 @@ void main() {
       expect(calls.single.visitXpEarned, closeTo(25, 1e-9));
     });
 
+    test(
+      'each accumulation pushes the running total to the tracker (fix '
+      'round 1, Important 2) so it survives on the persisted snapshot',
+      () async {
+        final trip = build(processGameVisits: (v) async => xpEvents(25));
+        await trip.startTrip();
+
+        tracker.emit(
+          recordingSnapshot(distanceKm: 1.0).copyWith(
+            pendingVisits: [
+              PendingVisit(
+                poiId: 'node/1',
+                kind: 'reveal',
+                lat: 46.5,
+                lon: 6.6,
+                ts: now,
+              ),
+            ],
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(tracker.publishedVisitXp, [25]);
+      },
+    );
+
+    test('fix round 1 (Important 3): a landmark visit riding the SAME final '
+        "batch that triggers auto-finish is still counted — TripController "
+        "waits for that batch's own processing before reading the "
+        'accumulator, rather than racing it', () async {
+      final calls = <FinishedTrip>[];
+      final trip = build(
+        processTripExploration: (t) async => calls.add(t),
+        // Simulates a slow-but-not-wedged GameVisitConsumer.consume —
+        // e.g. its own journal read/append taking a moment.
+        processGameVisits: (v) async {
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          return xpEvents(25);
+        },
+      );
+      await trip.startTrip(route: fakeRoute());
+
+      // A landmark right at the destination: the SAME final, auto-finish
+      // (status: idle, per the real service's own marker) snapshot also
+      // carries the pending visit.
+      tracker.emit(
+        recordingSnapshot(distanceKm: 2.4, routeBound: true).copyWith(
+          status: TripStatus.idle,
+          nav: const NavFields(arrived: true),
+          pendingVisits: [
+            PendingVisit(
+              poiId: 'node/destination',
+              kind: 'reveal',
+              lat: 46.5,
+              lon: 6.6,
+              ts: now,
+            ),
+          ],
+        ),
+      );
+      // Give _adopt's fire-and-forget processGameVisits call a chance to
+      // actually start (and stopTrip() a chance to be under way) before
+      // asserting — the race this test exists to close.
+      await Future<void>.delayed(Duration.zero);
+
+      // Wait for the whole auto-finish + finalisation chain to settle —
+      // longer than processGameVisits' own artificial 30ms delay, well
+      // under _finalise's 2s bound.
+      for (var i = 0; i < 20 && calls.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      expect(calls, hasLength(1));
+      expect(calls.single.visitXpEarned, closeTo(25, 1e-9));
+    });
+
     test('two separate visit batches within the SAME trip both accumulate '
         '(not overwritten by one another)', () async {
       final calls = <FinishedTrip>[];
@@ -1248,6 +1324,44 @@ void main() {
         await banked.wasFinalised(arrivedGuidedSnapshot().startedAt),
         isTrue,
       );
+      // Fix round 1 (Important 4): mirrors `finishInterrupted`'s own
+      // tolerant stop.
+      expect(tracker.stops, 1);
+    });
+
+    test('restore()\'s new branch stops the service even if Android brought '
+        'it back (allowAutoRestart) before this ran — same orphan-service '
+        'concern finishInterrupted\'s own doc comment names', () async {
+      totals.total = 10;
+      tracker
+        ..persisted = arrivedGuidedSnapshot()
+        // The service is (unexpectedly) still/again running by the time
+        // this reconciliation happens.
+        ..running = true;
+      final trip = build();
+
+      await trip.restore();
+
+      expect(trip.state, TripState.idle);
+      expect(tracker.stops, 1);
+      expect(tracker.running, isFalse);
+    });
+
+    test("restore()'s cold-start auto-finish reports the visit XP the service "
+        "itself persisted, even though this fresh controller's own "
+        'in-memory accumulator starts at 0 (fix round 1, Important 2 — the '
+        'whole point of pushing it into TripSnapshot)', () async {
+      final calls = <FinishedTrip>[];
+      tracker
+        ..persisted = arrivedGuidedSnapshot().copyWith(visitXpEarned: 25)
+        ..running = false;
+      final trip = build(processTripExploration: (t) async => calls.add(t));
+
+      await trip.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.visitXpEarned, closeTo(25, 1e-9));
     });
 
     test('restore() never double-finalises an auto-finished trip already '
@@ -1313,10 +1427,11 @@ void main() {
       expect(fired, isNotNull);
       expect(fired!.distanceKm, closeTo(2.4, 1e-9));
       expect(fired!.startedAt, recordingSnapshot().startedAt);
-      expect(
-        await banked.pendingCelebration(),
-        recordingSnapshot().startedAt.toUtc(),
-      );
+      final pending = await banked.pendingCelebration();
+      expect(pending?.$1, recordingSnapshot().startedAt.toUtc());
+      // Fix round 1 (Important 5): the marker carries the stats too, not
+      // just the identity.
+      expect(pending?.$2.distanceKm, closeTo(2.4, 1e-9));
     });
 
     test('clearPendingCelebration/takePendingCelebration round-trip through '
@@ -1331,10 +1446,9 @@ void main() {
       );
       await trip.stopTrip();
 
-      expect(
-        await trip.takePendingCelebration(),
-        recordingSnapshot().startedAt,
-      );
+      final celebration = await trip.takePendingCelebration();
+      expect(celebration?.startedAt, recordingSnapshot().startedAt);
+      expect(celebration?.distanceKm, closeTo(2.4, 1e-9));
       await trip.clearPendingCelebration();
       expect(await trip.takePendingCelebration(), isNull);
     });
