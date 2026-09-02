@@ -466,29 +466,58 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  /// Draws the new casing/line pair before removing the old one, so the
-  /// route never flashes empty between a replan and its redraw.
+  /// Updates the drawn route line's geometry IN PLACE — same stable
+  /// [_routeLineCasing]/[_routeLine] native ids throughout a trip — rather
+  /// than adding a fresh pair and removing the old one.
+  ///
+  /// Task 2e item 2 (owner device-QA: "après recalcul j'ai l'impression que
+  /// les anciens itinéraires restent visibles"): the previous add-then-remove
+  /// version raced itself. `_maybeSyncReplannedRoute` is invoked from a
+  /// `postFrameCallback` scheduled on every `build()` while the route-bound
+  /// trip keeps ticking (roughly every 1-2 s — see `TripController.tick`/
+  /// `_onTrackerSnapshot`), with no guard against a second call starting
+  /// before the first's `addLine`/`removeLine` round trips had completed. Two
+  /// overlapping calls could each read the SAME "old" line (captured before
+  /// either had reassigned the field), add their own fresh replacement, and
+  /// then each remove only the "old" line THEY captured — orphaning the
+  /// intermediate line the first call had added and the second overwrote in
+  /// the field before it was ever removed: a ghost polyline with no
+  /// remaining reference, left on the map for the rest of the trip.
+  ///
+  /// `updateLine` mutates the existing [Line]'s geometry via the SAME native
+  /// id (`maplibre_gl`'s `LineManager.set`) instead of creating a new one, so
+  /// even under the exact same overlapping-calls race there is nothing left
+  /// to orphan — whichever call's `updateLine` lands last simply wins the
+  /// geometry, same as any other last-write-wins race, with no line ever
+  /// created that isn't already tracked by [_routeLineCasing]/[_routeLine].
+  /// Falls back to `addLine` only the first time this trip draws a line at
+  /// all (guarded separately by [_drawOverlays], which always runs first for
+  /// a route-bound trip — this fallback exists purely so this method stays
+  /// correct if that ever stopped being true).
   Future<void> _redrawRouteLine(List<(double, double)> shape) async {
-    final oldCasing = _routeLineCasing;
-    final oldLine = _routeLine;
     final geometry = [for (final (lat, lon) in shape) LatLng(lat, lon)];
-    _routeLineCasing = await controller?.addLine(
-      LineOptions(
-        geometry: geometry,
-        lineColor: AppColors.routeLineCasingHex,
-        lineWidth: 7,
-        lineOpacity: 1.0,
-      ),
-    );
-    _routeLine = await controller?.addLine(
-      LineOptions(
-        geometry: geometry,
-        lineColor: AppColors.routeLineHex,
-        lineWidth: 4.5,
-      ),
-    );
-    if (oldCasing != null) await controller?.removeLine(oldCasing);
-    if (oldLine != null) await controller?.removeLine(oldLine);
+    final casing = _routeLineCasing;
+    final line = _routeLine;
+    if (casing != null && line != null) {
+      await controller?.updateLine(casing, LineOptions(geometry: geometry));
+      await controller?.updateLine(line, LineOptions(geometry: geometry));
+    } else {
+      _routeLineCasing = await controller?.addLine(
+        LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineCasingHex,
+          lineWidth: 7,
+          lineOpacity: 1.0,
+        ),
+      );
+      _routeLine = await controller?.addLine(
+        LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineHex,
+          lineWidth: 4.5,
+        ),
+      );
+    }
     if (!mounted) return;
     setState(() {});
   }
