@@ -97,18 +97,54 @@ class GameStateCheckpoint {
   };
 
   /// Throws (`FormatException`/`TypeError`/similar) on anything that
-  /// doesn't decode cleanly, INCLUDING an unrecognized `version` —
-  /// [GameStateCheckpointStore.read] catches every such failure and treats
-  /// it as "no usable checkpoint".
+  /// doesn't decode cleanly, INCLUDING an unrecognized `version` OR a
+  /// well-typed but internally-inconsistent set of fields (Task 5 review
+  /// I3 — see the checks below) — [GameStateCheckpointStore.read] catches
+  /// every such failure and treats it as "no usable checkpoint".
   factory GameStateCheckpoint.fromJson(Map<String, dynamic> json) {
     if (json['version'] != kGameStateCheckpointVersion) {
       throw const FormatException('unsupported game state checkpoint version');
     }
+    final fileEventCount = json['fileEventCount'] as int;
+    final skippedLinesAtCheckpoint = json['skippedLinesAtCheckpoint'] as int;
     final maxTsRaw = json['maxTs'] as String?;
+    final maxTs = maxTsRaw == null ? null : DateTime.parse(maxTsRaw);
+
+    // Structural validation (Task 5 review I3): a checkpoint file can be
+    // syntactically valid JSON with every field the right Dart TYPE and
+    // still be nonsense — e.g. hand-tampered, or written by a future
+    // version's bug. Two demonstrated failure modes this specifically
+    // closes: (a) a negative fileEventCount would otherwise reach
+    // `_prefixFingerprint`'s `events[count - 1]` indexing and throw a
+    // RangeError — a type `GameStateCheckpointStore.read()`'s catch
+    // clauses don't cover, and (per `loadStateFast`'s own fail-closed
+    // wrapper) is now caught there too, but rejecting it HERE means a
+    // structurally-bad file is recognized as such at the one place that
+    // already knows the whole shape, rather than relying only on a
+    // second, more general safety net further downstream. (b) `maxTs ==
+    // null` with `fileEventCount > 0` used to fail OPEN: `_isValid` skips
+    // its entire tail-`ts` loop when `maxTs` is null (see that field's own
+    // dartdoc — null is only supposed to occur when `fileEventCount == 0`,
+    // meaning "nothing checkpointed yet, so no bound to check"), so this
+    // exact combination let ANY tail event through, including one that
+    // should have invalidated the checkpoint.
+    if (fileEventCount < 0) {
+      throw const FormatException('negative fileEventCount');
+    }
+    if (skippedLinesAtCheckpoint < 0) {
+      throw const FormatException('negative skippedLinesAtCheckpoint');
+    }
+    if (fileEventCount > 0 && maxTs == null) {
+      throw const FormatException(
+        'maxTs is null but fileEventCount > 0 — a checkpoint that '
+        'actually covers events must record their max ts',
+      );
+    }
+
     return GameStateCheckpoint(
-      fileEventCount: json['fileEventCount'] as int,
-      skippedLinesAtCheckpoint: json['skippedLinesAtCheckpoint'] as int,
-      maxTs: maxTsRaw == null ? null : DateTime.parse(maxTsRaw),
+      fileEventCount: fileEventCount,
+      skippedLinesAtCheckpoint: skippedLinesAtCheckpoint,
+      maxTs: maxTs,
       prefixHash: json['prefixHash'] as String,
       state: _stateFromJson(json['state'] as Map<String, dynamic>),
     );
@@ -162,6 +198,13 @@ GameState _stateFromJson(Map<String, dynamic> j) => GameState(
 /// Persists/restores a single [GameStateCheckpoint] in a JSON file living
 /// next to the journal (`GameJournal.dir`, "à côté du journal" per the
 /// plan) — `game_state_checkpoint.json`, a sibling of `game_events.jsonl`.
+///
+/// **Account-personal data (Task 5 review I4):** this file is a full copy
+/// of the player's profile — XP, coins, badges, visited places, revealed
+/// cells — derived from the journal but persisted independently of it.
+/// Any local purge / `deleteAccount` flow (`sync/backend.dart` notes this
+/// is Task 6's separate, explicit step) MUST delete this file alongside
+/// the journal itself, or a deleted account's data survives in it.
 class GameStateCheckpointStore {
   final Directory dir;
 
@@ -220,37 +263,6 @@ String _prefixFingerprint(List<GameEvent> events, int count) {
   return sha256.convert(utf8.encode(summary)).toString();
 }
 
-/// Mirrors `reducers.dart`'s private `_typePrecedence`/
-/// `_byTsPrecedenceThenId` exactly — duplicated, not imported, because both
-/// are library-private to `reducers.dart` and this task's brief locks that
-/// file from any change.
-///
-/// Needed ONLY to order a checkpoint's TAIL events among THEMSELVES the way
-/// [reduceAll] would — never to decide whether the checkpoint is usable at
-/// all (see [loadStateFast]'s dartdoc: that decision compares raw `ts`
-/// alone, deliberately, precisely so it does not need this table).
-/// `state_checkpoint_test.dart`'s equivalence property test is the
-/// correctness backstop that would catch any drift between this copy and
-/// the real one: every same-`ts` ordering hazard `reducers.dart`'s own
-/// table documents (`xp_earned`/`energy_changed`, `landmark_visited`/
-/// `xp_earned`) is exercised there too, via checkpoint+tail replay compared
-/// against a from-scratch [reduceAll].
-int _tailTypePrecedence(String type) => switch (type) {
-  GameEventTypes.landmarkVisited => 0,
-  GameEventTypes.energyChanged => 2,
-  _ => 1,
-};
-
-int _byTsPrecedenceThenId(GameEvent a, GameEvent b) {
-  final byTs = a.ts.compareTo(b.ts);
-  if (byTs != 0) return byTs;
-  final byPrecedence = _tailTypePrecedence(
-    a.type,
-  ).compareTo(_tailTypePrecedence(b.type));
-  if (byPrecedence != 0) return byPrecedence;
-  return a.id.compareTo(b.id);
-}
-
 /// Loads the current [GameState] for [journal]: [checkpointStore]'s
 /// checkpoint-plus-tail fast path when a valid checkpoint exists, a full
 /// [reduceAll] replay otherwise. Always produces exactly the same
@@ -281,10 +293,13 @@ int _byTsPrecedenceThenId(GameEvent a, GameEvent b) {
 /// regardless of type-precedence/id (those only ever break a `ts` TIE).
 /// This is a deliberately coarser, safe-by-construction proxy for comparing
 /// full `(ts, precedence, id)` sort keys, chosen specifically so this file
-/// never has to duplicate `reducers.dart`'s private type-precedence table
-/// just to decide whether the checkpoint is still usable (it IS still
-/// needed, but only to order the tail's own events among themselves once
-/// the checkpoint has already been accepted — see [_byTsPrecedenceThenId]).
+/// never has to duplicate `reducers.dart`'s type-precedence table just to
+/// decide whether the checkpoint is still usable (the full comparator IS
+/// still needed, but only to order the tail's own events among themselves
+/// once the checkpoint has already been accepted — see [byTsPrecedenceThenId],
+/// exported from `reducers.dart` for exactly this, Task 5 review I1: an
+/// earlier version hand-copied that table here, and mutation-testing showed
+/// the copy could silently drift with nothing failing).
 /// Any violation (some tail event's `ts` <= `checkpoint.maxTs`) invalidates
 /// the checkpoint outright and falls back to a full replay — "simple,
 /// correct", per the brief, not an attempt to salvage a partial checkpoint.
@@ -337,10 +352,26 @@ Future<GameState> loadStateFast(
   final skippedLines = journal.skippedLines;
   final checkpoint = await checkpointStore.read();
 
-  final usable =
-      checkpoint != null && _isValid(checkpoint, events, skippedLines);
-
-  final state = usable ? _replayTail(checkpoint, events) : reduceAll(events);
+  // Fail CLOSED (Task 5 review I3), not just fail-safe-on-read: any
+  // failure anywhere in the checkpoint-path decision or replay — a
+  // malformed field this file didn't anticipate, an indexing bug,
+  // anything — falls back to a full replay, never propagates out of this
+  // function. Letting an exception escape here would hit
+  // gameStateProvider's own blanket `catch (_) => const GameState()`,
+  // which would silently and PERMANENTLY zero a player's XP/badges/coins
+  // on every future launch (a thrown state never reaches
+  // _maybeWriteCheckpoint, so the bad file is never replaced either) — the
+  // worst failure mode this feature could have, and strictly worse than
+  // the merely-slower full replay it should have fallen back to instead.
+  var usable = false;
+  GameState state;
+  try {
+    usable = checkpoint != null && _isValid(checkpoint, events, skippedLines);
+    state = usable ? _replayTail(checkpoint, events) : reduceAll(events);
+  } catch (_) {
+    usable = false;
+    state = reduceAll(events);
+  }
 
   unawaited(
     _maybeWriteCheckpoint(
@@ -385,13 +416,14 @@ bool _isValid(
 
 /// Folds [events]'s tail (everything past [checkpoint.fileEventCount],
 /// sorted among itself the way [reduceAll] would sort it — see
-/// [_byTsPrecedenceThenId]) onto [checkpoint.state] via [reduceOne], one
-/// event at a time. Only ever called once [_isValid] has already confirmed
-/// no tail event can sort before/among the checkpointed prefix, which is
-/// what makes this equivalent to a full [reduceAll] of [events].
+/// [byTsPrecedenceThenId], `reducers.dart`'s own exported comparator, not a
+/// local copy) onto [checkpoint.state] via [reduceOne], one event at a
+/// time. Only ever called once [_isValid] has already confirmed no tail
+/// event can sort before/among the checkpointed prefix, which is what
+/// makes this equivalent to a full [reduceAll] of [events].
 GameState _replayTail(GameStateCheckpoint checkpoint, List<GameEvent> events) {
   final tail = events.sublist(checkpoint.fileEventCount)
-    ..sort(_byTsPrecedenceThenId);
+    ..sort(byTsPrecedenceThenId);
   var state = checkpoint.state;
   // Dedup within the tail only (O(tail), not O(prefix)) — mirrors
   // reduceAll's own id-dedup loop, restricted to what could plausibly

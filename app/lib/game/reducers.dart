@@ -287,7 +287,7 @@ bool _mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
 /// unlock the instant their underlying condition is met, not only when a
 /// `badge_unlocked` event happens to be replayed.
 GameState reduceAll(Iterable<GameEvent> events) {
-  final sorted = events.toList()..sort(_byTsPrecedenceThenId);
+  final sorted = events.toList()..sort(byTsPrecedenceThenId);
   var state = const GameState();
   final seenIds = <String>{};
   for (final event in sorted) {
@@ -299,7 +299,14 @@ GameState reduceAll(Iterable<GameEvent> events) {
   return state;
 }
 
-int _byTsPrecedenceThenId(GameEvent a, GameEvent b) {
+/// [reduceAll]'s replay-order comparator, exposed (Task 5 review, I1) so a
+/// caller that folds a subset of the journal itself — [GameJournal]-backed
+/// checkpoint replay (`game/state_checkpoint.dart`'s `_replayTail`), so far
+/// the only one — can order events the exact same way [reduceAll] would,
+/// without hand-copying this logic. A pure rename from the previous
+/// library-private `_byTsPrecedenceThenId`: zero behavior change, same
+/// three-tier table via [_typePrecedence] below.
+int byTsPrecedenceThenId(GameEvent a, GameEvent b) {
   final byTs = a.ts.compareTo(b.ts);
   if (byTs != 0) return byTs;
   final byPrecedence = _typePrecedence(

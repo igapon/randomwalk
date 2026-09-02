@@ -213,12 +213,12 @@ void main() {
     });
 
     test('write then read round-trips', () async {
-      const checkpoint = GameStateCheckpoint(
+      final checkpoint = GameStateCheckpoint(
         fileEventCount: 5,
         skippedLinesAtCheckpoint: 0,
-        maxTs: null,
+        maxTs: DateTime.utc(2026, 1, 1),
         prefixHash: 'abc',
-        state: GameState(coins: 10),
+        state: const GameState(coins: 10),
       );
       await store.write(checkpoint);
       final read = await store.read();
@@ -226,6 +226,79 @@ void main() {
       expect(read!.fileEventCount, 5);
       expect(read.state.coins, 10);
     });
+
+    test('a checkpoint with a negative fileEventCount reads as null (Task 5 '
+        'review I3a)', () async {
+      final file = File('${journal.dir.path}/game_state_checkpoint.json');
+      await file.parent.create(recursive: true);
+      await file.writeAsString(
+        jsonEncode({
+          'version': kGameStateCheckpointVersion,
+          'fileEventCount': -3,
+          'skippedLinesAtCheckpoint': 0,
+          'maxTs': null,
+          'prefixHash': '',
+          'state': const GameStateCheckpoint(
+            fileEventCount: 0,
+            skippedLinesAtCheckpoint: 0,
+            maxTs: null,
+            prefixHash: '',
+            state: GameState(),
+          ).toJson()['state'],
+        }),
+      );
+      expect(await store.read(), isNull);
+    });
+
+    test('a checkpoint with a negative skippedLinesAtCheckpoint reads as '
+        'null (Task 5 review I3a)', () async {
+      final file = File('${journal.dir.path}/game_state_checkpoint.json');
+      await file.parent.create(recursive: true);
+      await file.writeAsString(
+        jsonEncode({
+          'version': kGameStateCheckpointVersion,
+          'fileEventCount': 0,
+          'skippedLinesAtCheckpoint': -1,
+          'maxTs': null,
+          'prefixHash': '',
+          'state': const GameStateCheckpoint(
+            fileEventCount: 0,
+            skippedLinesAtCheckpoint: 0,
+            maxTs: null,
+            prefixHash: '',
+            state: GameState(),
+          ).toJson()['state'],
+        }),
+      );
+      expect(await store.read(), isNull);
+    });
+
+    test(
+      'a checkpoint claiming fileEventCount > 0 but maxTs == null reads '
+      'as null (Task 5 review I3a — this exact shape used to fail open: '
+      '_isValid skipped its whole tail-ts check when maxTs was null)',
+      () async {
+        final file = File('${journal.dir.path}/game_state_checkpoint.json');
+        await file.parent.create(recursive: true);
+        await file.writeAsString(
+          jsonEncode({
+            'version': kGameStateCheckpointVersion,
+            'fileEventCount': 5,
+            'skippedLinesAtCheckpoint': 0,
+            'maxTs': null,
+            'prefixHash': 'whatever',
+            'state': const GameStateCheckpoint(
+              fileEventCount: 0,
+              skippedLinesAtCheckpoint: 0,
+              maxTs: null,
+              prefixHash: '',
+              state: GameState(),
+            ).toJson()['state'],
+          }),
+        );
+        expect(await store.read(), isNull);
+      },
+    );
 
     test('a garbage (non-JSON) file reads as null, never throws', () async {
       final file = File('${journal.dir.path}/game_state_checkpoint.json');
@@ -557,6 +630,201 @@ void main() {
       expect(state, full);
       expect(state.xp, 15);
     });
+
+    test('a tampered checkpoint file with maxTs == null but fileEventCount > '
+        '0 is rejected outright by loadStateFast, never trusted (Task 5 '
+        'review I3a — this exact malformed shape used to fail OPEN: '
+        '_isValid skipped its whole tail-ts loop whenever maxTs was null, '
+        'so an older-ts tail event silently corrupted state instead of '
+        'invalidating the checkpoint)', () async {
+      final t0 = DateTime.utc(2026, 1, 10, 12, 0, 0);
+      final t1 = DateTime.utc(2026, 1, 10, 13, 0, 0);
+      await journal.appendAll([
+        GameEvent(
+          id: 'prefix-earn',
+          ts: t1,
+          type: GameEventTypes.coinsEarned,
+          payload: const {'amount': 50},
+        ),
+      ]);
+      // Hand-craft a checkpoint claiming to cover that one event but
+      // with maxTs tampered to null despite fileEventCount == 1.
+      final file = File('${journal.dir.path}/game_state_checkpoint.json');
+      await file.parent.create(recursive: true);
+      await file.writeAsString(
+        jsonEncode({
+          'version': kGameStateCheckpointVersion,
+          'fileEventCount': 1,
+          'skippedLinesAtCheckpoint': 0,
+          'maxTs': null,
+          'prefixHash': 'irrelevant — rejected before the hash check runs',
+          'state': const GameStateCheckpoint(
+            fileEventCount: 0,
+            skippedLinesAtCheckpoint: 0,
+            maxTs: null,
+            prefixHash: '',
+            state: GameState(coins: 50),
+          ).toJson()['state'],
+        }),
+      );
+
+      // An OLDER-ts tail event. Full sorted replay applies it FIRST (on
+      // the zero starting state — coins_spent 30 on 0 coins clamps to
+      // 0), then the coins_earned 50 — so the correct answer is 50.
+      // The bug this guards against: had the malformed checkpoint been
+      // trusted, _replayTail would have folded coins_spent 30 onto the
+      // checkpoint's coins:50 and landed on 20 instead.
+      await journal.append(
+        GameEvent(
+          id: 'tail-spend',
+          ts: t0,
+          type: GameEventTypes.coinsSpent,
+          payload: const {'amount': 30},
+        ),
+      );
+
+      final state = await loadStateFast(journal, store);
+      final full = reduceAll(await journal.readAll());
+      expect(state, full);
+      expect(state.coins, 50);
+    });
+
+    test(
+      'a checkpoint with a negative fileEventCount never crashes '
+      'loadStateFast, and falls back to the correct full replay (Task 5 '
+      'review I3b — this used to throw a RangeError out of loadStateFast, '
+      'past gameStateProvider\'s blanket catch, permanently zeroing state '
+      'on every future launch since the bad file was never replaced)',
+      () async {
+        await journal.appendAll([
+          GameEvent(
+            id: 'e1',
+            ts: DateTime.utc(2026, 1, 1),
+            type: GameEventTypes.coinsEarned,
+            payload: const {'amount': 9},
+          ),
+        ]);
+        final file = File('${journal.dir.path}/game_state_checkpoint.json');
+        await file.parent.create(recursive: true);
+        await file.writeAsString(
+          jsonEncode({
+            'version': kGameStateCheckpointVersion,
+            'fileEventCount': -3,
+            'skippedLinesAtCheckpoint': 0,
+            'maxTs': null,
+            'prefixHash': '',
+            'state': const GameStateCheckpoint(
+              fileEventCount: 0,
+              skippedLinesAtCheckpoint: 0,
+              maxTs: null,
+              prefixHash: '',
+              state: GameState(),
+            ).toJson()['state'],
+          }),
+        );
+
+        final state = await loadStateFast(journal, store);
+        expect(state.coins, 9);
+      },
+    );
+  });
+
+  group('tie boundary (Task 5 review I2) — a tail event tied with the '
+      'checkpoint\'s maxTs must invalidate, not just a strictly-older one', () {
+    test('case (b): tail landmark_visited(energy/cafe) + xp_earned tied with '
+        'a checkpoint whose last event is energy_changed -- correct sorted '
+        'replay applies the refill and xp read BEFORE the drain (xp 15, '
+        'energy 10); the bug (relaxing the tie check) would instead fold '
+        'the tail onto the checkpoint\'s already-drained energy (xp 10, '
+        'energy 35)', () async {
+      final t = DateTime.utc(2026, 1, 10, 12, 0, 0);
+      // Prefix: a single energy_changed -90 @ t. Starting energy is the
+      // default 100, so the checkpoint captures energy 10, maxTs = t.
+      await journal.appendAll([
+        GameEvent(
+          id: 'prefix-drain',
+          ts: t,
+          type: GameEventTypes.energyChanged,
+          payload: const {'delta': -90},
+        ),
+      ]);
+      await loadStateFast(journal, store);
+      final checkpoint = await _waitForCheckpoint(store, fileEventCount: 1);
+      expect(checkpoint.maxTs, t);
+      expect(checkpoint.state.energy, 10);
+
+      // Tail, tied at the exact same ts as maxTs:
+      await journal.appendAll([
+        GameEvent(
+          id: 'tail-landmark',
+          ts: t,
+          type: GameEventTypes.landmarkVisited,
+          payload: const {
+            'poiId': 'poi-a',
+            'kind': 'energy',
+            'subkind': 'cafe',
+          },
+        ),
+        GameEvent(
+          id: 'tail-xp',
+          ts: t,
+          type: GameEventTypes.xpEarned,
+          payload: const {'amount': 10, 'preMultiplied': false},
+        ),
+      ]);
+
+      final state = await loadStateFast(journal, store);
+      final full = reduceAll(await journal.readAll());
+      expect(state, full);
+      // Hand-computed ground truth (not just self-consistency with
+      // reduceAll): at the tie, landmark_visited (tier 0) applies
+      // first — cafe refill +25 onto the PRE-drain energy 100, clamped
+      // to 100 — then xp_earned (tier 1) reads that 100 energy for a
+      // 1.5x multiplier (round(10 * 1.5) = 15), then energy_changed
+      // (tier 2) drains last (100 - 90 = 10).
+      expect(state.xp, 15);
+      expect(state.energy, 10);
+    });
+
+    test('case (c): same ts AND same precedence tier, ordered only by id -- '
+        'correct sorted replay applies the smaller id (coins_earned) '
+        'before the larger one (coins_spent), giving 20; the bug would '
+        'instead fold the tail\'s earn onto the checkpoint\'s already-spent '
+        '0, giving 50', () async {
+      final t = DateTime.utc(2026, 1, 10, 12, 0, 0);
+      // Prefix: coins_spent 30, id 'zzz-spend', @t. Starting coins is
+      // the default 0, clamped: checkpoint captures coins 0, maxTs = t.
+      await journal.appendAll([
+        GameEvent(
+          id: 'zzz-spend',
+          ts: t,
+          type: GameEventTypes.coinsSpent,
+          payload: const {'amount': 30},
+        ),
+      ]);
+      await loadStateFast(journal, store);
+      final checkpoint = await _waitForCheckpoint(store, fileEventCount: 1);
+      expect(checkpoint.maxTs, t);
+      expect(checkpoint.state.coins, 0);
+
+      // Tail, tied at the exact same ts, same tier (both coins_* are
+      // tier 1), smaller id.
+      await journal.append(
+        GameEvent(
+          id: 'aaa-earn',
+          ts: t,
+          type: GameEventTypes.coinsEarned,
+          payload: const {'amount': 50},
+        ),
+      );
+
+      final state = await loadStateFast(journal, store);
+      final full = reduceAll(await journal.readAll());
+      expect(state, full);
+      // Hand-computed: 'aaa-earn' < 'zzz-spend' sorts first -> earn 50
+      // (0 -> 50) then spend 30 (50 -> 20).
+      expect(state.coins, 20);
+    });
   });
 
   group('property: checkpoint+tail equivalence to a full replay', () {
@@ -579,7 +847,17 @@ void main() {
           final batch = <GameEvent>[];
           final batchSize = 1 + rnd.nextInt(8);
           for (var i = 0; i < batchSize; i++) {
-            clock = clock.add(Duration(minutes: 1 + rnd.nextInt(120)));
+            // ~20% of the time, reuse the previous event's ts instead of
+            // advancing the clock (Task 5 review I1) — deliberately
+            // produces same-ts bundles of randomly-typed events, so the
+            // tail's own precedence tiebreak (byTsPrecedenceThenId,
+            // reducers.dart's exported comparator) is actually exercised
+            // by this property test, not just self-consistent regardless
+            // of it. Never on the batch's first event (i == 0): there is
+            // no earlier ts within this batch yet to reuse.
+            if (i == 0 || rnd.nextDouble() >= 0.2) {
+              clock = clock.add(Duration(minutes: 1 + rnd.nextInt(120)));
+            }
             batch.add(_randomEvent(rnd, clock));
           }
           // ~40% of rounds also simulate a SyncEngine-style merge: one or
