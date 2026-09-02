@@ -1327,7 +1327,11 @@ void main() {
       () async {
         final snapshotPath = '${tempDir.path}/snapshot.json';
         final poisPath = await writePoisFixture([
-          {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
+          // Task 2k: a live kind — 'coins' entries are excluded from the
+          // store's index entirely (see `pois_test.dart`), which would make
+          // this test pass for the wrong reason (no candidate at all, rather
+          // than genuinely exercising the same-trip dedup this test targets).
+          {'id': 'node/1', 'kind': 'reveal', 'lat': bankLat, 'lon': bankLon},
         ]);
         final handler = await startedHandler(
           snapshotPath: snapshotPath,
@@ -1377,7 +1381,7 @@ void main() {
       final snapshotPath = '${tempDir.path}/snapshot.json';
       final priorVisit = PendingVisit(
         poiId: 'node/1',
-        kind: 'coins',
+        kind: 'reveal', // Task 2k: must be a live kind — see the note below.
         lat: bankLat,
         lon: bankLon,
         ts: DateTime.utc(2026, 8, 31, 9, 0, 5),
@@ -1399,7 +1403,10 @@ void main() {
       ).writeAsString(jsonEncode(onDiskSnapshot.toJson()));
 
       final poisPath = await writePoisFixture([
-        {'id': 'node/1', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
+        // Task 2k: must be a live kind (see the priorVisit note above) —
+        // this fixture is what `_maybeDetectVisit` actually queries when
+        // re-checking the dwell at the same spot post-restart.
+        {'id': 'node/1', 'kind': 'reveal', 'lat': bankLat, 'lon': bankLon},
       ]);
       final seed = TripSnapshot.starting(
         startedAt: DateTime.utc(2026, 8, 31, 9),

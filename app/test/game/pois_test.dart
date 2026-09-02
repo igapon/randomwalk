@@ -6,7 +6,12 @@ import 'package:randomwalk/game/pois.dart';
 
 void main() {
   const churchLat = 46.5200, churchLon = 6.6300;
+  // Task 2k: the old-manifest bank sits close to the church (~130 m) so the
+  // 500 m `near()` radius test below still exercises "an old retired-kind
+  // entry is in range but must not come back" rather than merely "it's too
+  // far to matter either way".
   const bankLat = 46.5210, bankLon = 6.6310;
+  const museumLat = 46.5211, museumLon = 6.6311; // ~140 m: also in range.
   const cafeLat = 46.9000, cafeLon = 7.4000; // far away, different cell
 
   final fixtureJson = jsonEncode([
@@ -17,6 +22,9 @@ void main() {
       'lon': churchLon,
       'name': 'Église Saint-Pierre',
     },
+    // Task 2k: retired kind — an old `pois.json.gz` a device hasn't
+    // refreshed yet may still contain one of these. Must parse fine (see
+    // `GamePoi.tryParse` below) but never be indexed/shown/visitable.
     {'id': 'node/2', 'kind': 'coins', 'lat': bankLat, 'lon': bankLon},
     {
       'id': 'node/3',
@@ -25,6 +33,16 @@ void main() {
       'lat': cafeLat,
       'lon': cafeLon,
       'name': 'Café Central',
+    },
+    // Task 2k: the new active kind — full citizen of the live store, same
+    // as `reveal`.
+    {
+      'id': 'node/4',
+      'kind': 'culture',
+      'subkind': 'museum',
+      'lat': museumLat,
+      'lon': museumLon,
+      'name': 'Musée Cantonal',
     },
   ]);
 
@@ -70,6 +88,44 @@ void main() {
       expect(poi.name, isNull);
     });
 
+    test('parses a culture entry with a subkind (Task 2k)', () {
+      final poi = GamePoi.tryParse({
+        'id': 'node/4',
+        'kind': 'culture',
+        'subkind': 'museum',
+        'lat': 46.5,
+        'lon': 6.6,
+        'name': 'Musée Cantonal',
+      });
+      expect(poi, isNotNull);
+      expect(poi!.kind, PoiKind.culture);
+      expect(poi.subkind, 'museum');
+    });
+
+    test('Task 2k: a retired-kind (coins/energy) entry still parses into a '
+        "well-typed GamePoi — it's PoiStore.load that excludes it from the "
+        'live index (see the PoiStore.load group below), not parsing '
+        'itself', () {
+      final bank = GamePoi.tryParse({
+        'id': 'node/2',
+        'kind': 'coins',
+        'lat': 46.5,
+        'lon': 6.6,
+      });
+      expect(bank, isNotNull);
+      expect(bank!.kind, PoiKind.coins);
+
+      final cafe = GamePoi.tryParse({
+        'id': 'node/3',
+        'kind': 'energy',
+        'subkind': 'cafe',
+        'lat': 46.5,
+        'lon': 6.6,
+      });
+      expect(cafe, isNotNull);
+      expect(cafe!.kind, PoiKind.energy);
+    });
+
     test('rejects an unknown kind', () {
       expect(
         GamePoi.tryParse({
@@ -105,12 +161,40 @@ void main() {
   });
 
   group('PoiStore.load', () {
-    test('loads a gzipped fixture and reports the correct count', () async {
-      final dir = await Directory.systemTemp.createTemp('pois');
-      final file = await writeFixture(dir, name: 'pois.json.gz', gzipped: true);
-      final store = await PoiStore.load(file);
-      expect(store.count, 3);
-    });
+    test(
+      'loads a gzipped fixture: count reflects only the LIVE kinds (Task '
+      '2k: reveal + culture — the coins/energy entries parse fine but are '
+      'excluded from the index, see the next test)',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('pois');
+        final file = await writeFixture(
+          dir,
+          name: 'pois.json.gz',
+          gzipped: true,
+        );
+        final store = await PoiStore.load(file);
+        expect(store.count, 2); // church (reveal) + museum (culture).
+      },
+    );
+
+    test(
+      'Task 2k: coins/energy entries in the fixture never surface via '
+      'near(), even though they are well within range',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('pois');
+        final file = await writeFixture(
+          dir,
+          name: 'pois.json.gz',
+          gzipped: true,
+        );
+        final store = await PoiStore.load(file);
+        final nearby = store.near(churchLat, churchLon, 500);
+        final ids = nearby.map((p) => p.id).toSet();
+        expect(ids, {'node/1', 'node/4'}); // church + museum only.
+        expect(ids.contains('node/2'), isFalse); // bank: retired.
+        expect(ids.contains('node/3'), isFalse); // cafe: retired (and far).
+      },
+    );
 
     test(
       'a plain (non-gzipped) file fails gzip decode -> PoiStore.empty',
@@ -173,12 +257,13 @@ void main() {
       store = await PoiStore.load(file);
     });
 
-    test('finds POIs within radius, excludes far ones', () {
+    test('finds POIs within radius, excludes far and retired-kind ones', () {
       final nearby = store.near(churchLat, churchLon, 500);
       final ids = nearby.map((p) => p.id).toSet();
       expect(ids.contains('node/1'), isTrue); // the church itself
-      expect(ids.contains('node/2'), isTrue); // bank ~130m away
-      expect(ids.contains('node/3'), isFalse); // cafe is far away
+      expect(ids.contains('node/4'), isTrue); // museum ~140m away
+      expect(ids.contains('node/2'), isFalse); // bank: retired (Task 2k)
+      expect(ids.contains('node/3'), isFalse); // cafe: far AND retired
     });
 
     test('a tight radius excludes a POI in a neighboring cell', () {

@@ -28,6 +28,11 @@ void main() {
       'lon': churchLon,
       'name': 'Église Saint-Pierre',
     },
+    // Task 2k: a retired-kind entry — parses fine but must be excluded from
+    // the loaded store's index/count (see `pois_test.dart` for the focused
+    // coverage of that rule; this file only needs to know the count reflects
+    // it, since these tests are about the loader plumbing, not the kind
+    // taxonomy itself).
     {'id': 'node/2', 'kind': 'coins', 'lat': 46.521, 'lon': 6.631},
   ]);
 
@@ -50,7 +55,9 @@ void main() {
 
         final store = await loadPoiStoreOffUiIsolate(file);
 
-        expect(store.count, 2);
+        // Task 2k: 1, not 2 — the retired-kind ('coins') entry parses fine
+        // but is excluded from the store's index.
+        expect(store.count, 1);
         final near = store.near(churchLat, churchLon, 50);
         expect(near, hasLength(1));
         expect(near.single.id, 'node/1');
@@ -144,7 +151,8 @@ void main() {
       expect(file!.path, '${root.path}/v1/pois.json.gz');
 
       final store = await container.read(poisStoreProvider.future);
-      expect(store.count, 2);
+      // Task 2k: 1, not 2 — see the loader test above for the same note.
+      expect(store.count, 1);
     });
 
     test(

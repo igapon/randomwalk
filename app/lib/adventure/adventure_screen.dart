@@ -251,7 +251,6 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
               child: Align(
                 alignment: Alignment.topLeft,
                 child: AdventureHud(
-                  coins: state.coins,
                   energy: state.energy,
                   xp: state.xp,
                   level: state.level,
@@ -273,22 +272,29 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
   }
 }
 
-/// Compact, inset-safe HUD: pièces · énergie (barre fine) · niveau +
-/// progression XP. Tapping opens the badges/stats sheet ([BadgesSheet]).
+/// Compact, inset-safe HUD: énergie (barre fine) · niveau + progression XP.
+/// Tapping opens the badges/stats sheet ([BadgesSheet]).
+///
+/// Task 2k: no longer shows pièces — coins lost their only live source (the
+/// old `coins`-kind bank/ATM POIs, retired — see `game/pois.dart`'s doc
+/// comment on [PoiKind]) and the owner asked for them off the HUD.
+/// `GameState.coins` and every `coins_earned`/`coins_spent`/
+/// `landmark_visited` (kind: coins) reducer path stay exactly as they were
+/// (see `reducers.dart`) — a journal written before this task keeps
+/// replaying to the exact same coin balance, this widget just no longer
+/// displays it.
 ///
 /// Pure-data widget (no provider reads of its own) so it can be pumped in
 /// isolation with fixed values — see `adventure_screen_test.dart`.
 class AdventureHud extends StatelessWidget {
   const AdventureHud({
     super.key,
-    required this.coins,
     required this.energy,
     required this.xp,
     required this.level,
     this.onTap,
   });
 
-  final int coins;
   final double energy;
   final int xp;
   final int level;
@@ -312,14 +318,6 @@ class AdventureHud extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.paid_outlined,
-                size: 18,
-                color: theme.colorScheme.onSurface,
-              ),
-              const SizedBox(width: 4),
-              Text(formatWholeNumber(coins), style: theme.textTheme.labelLarge),
-              const SizedBox(width: AppSpacing.md),
               Icon(Icons.bolt, size: 18, color: theme.colorScheme.onSurface),
               const SizedBox(width: 4),
               SizedBox(

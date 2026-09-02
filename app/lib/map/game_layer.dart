@@ -46,12 +46,19 @@ Set<CellId> parseRevealedCells(GameState state) => {
 };
 
 /// Icon color per [PoiKind] — the Aventure map's own scheme (yellow reveal /
-/// hydro coins / terre energy), now shared verbatim by whichever screen
-/// installs this layer.
+/// terre culture, brief: "iconographie culturelle (losanges terre
+/// #B0552F)"), now shared verbatim by whichever screen installs this layer.
+///
+/// Task 2k: no entries for the retired `coins`/`energy` kinds — a POI of
+/// either kind can never make it into a [PoiStore]'s live index any more
+/// (see `pois.dart`'s `_isLiveKind`), so no code path here ever needs to
+/// resolve an icon for one. `PoiKind.values` (all four) is still what
+/// `poi_symbols_test.dart` walks generically, so those two kinds simply stay
+/// unregistered rather than being removed from the enum outright — see that
+/// enum's own doc comment for why.
 const _kPoiColorsByKind = {
   PoiKind.reveal: AppColors.yellow,
-  PoiKind.coins: AppColors.hydro,
-  PoiKind.energy: AppColors.terre,
+  PoiKind.culture: AppColors.terre,
 };
 
 class GameLayer {

@@ -43,13 +43,16 @@ void main() {
       home: Scaffold(body: child),
     );
 
-    testWidgets('shows coins and level', (tester) async {
+    testWidgets('shows level (Task 2k: no coins pill — see AdventureHud\'s '
+        'own doc comment)', (tester) async {
       await tester.pumpWidget(
-        app(const AdventureHud(coins: 1234, energy: 80, xp: 150, level: 2)),
+        app(const AdventureHud(energy: 80, xp: 150, level: 2)),
       );
 
-      expect(find.text('1 234'), findsOneWidget);
       expect(find.text('Niveau 2'), findsOneWidget);
+      // Task 2k: pièces are gone from the HUD entirely — no coin icon, and
+      // no leftover "1 234"-style formatted coin text anywhere in the tree.
+      expect(find.byIcon(Icons.paid_outlined), findsNothing);
     });
 
     testWidgets('tapping invokes onTap', (tester) async {
@@ -57,7 +60,6 @@ void main() {
       await tester.pumpWidget(
         app(
           AdventureHud(
-            coins: 0,
             energy: 100,
             xp: 0,
             level: 0,
@@ -72,7 +74,7 @@ void main() {
 
     testWidgets('energy bar reflects the energy fraction', (tester) async {
       await tester.pumpWidget(
-        app(const AdventureHud(coins: 0, energy: 50, xp: 0, level: 0)),
+        app(const AdventureHud(energy: 50, xp: 0, level: 0)),
       );
 
       final bars = tester.widgetList<LinearProgressIndicator>(
