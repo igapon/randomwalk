@@ -14,12 +14,15 @@ l'application avant publication — voir `docs/owner-handoff.md`)*.
 
 ## Résumé en une phrase
 
-RandomWalk fonctionne **hors-ligne et sans compte par défaut** : vos
-trajets, votre journal de jeu et vos traces GPS restent sur votre appareil ;
-créer un compte est **optionnel** et ne sert qu'à synchroniser votre
-progression entre appareils et à afficher votre pseudo sur un classement.
-Il n'y a **aucune publicité, aucun traqueur publicitaire et aucun outil
-d'analyse tiers** dans l'application.
+RandomWalk fonctionne **hors-ligne et sans compte par défaut** : sans
+compte, vos trajets, votre journal de jeu et vos traces GPS restent
+entièrement sur votre appareil. Créer un compte est **optionnel** et sert à
+synchroniser votre progression (y compris, de façon approximative, les
+zones explorées et les lieux visités — voir section 4) entre appareils et à
+afficher votre pseudo sur un classement ; vos traces GPS détaillées et
+l'historique complet de vos trajets, eux, ne sont **jamais** synchronisés,
+compte ou pas (voir section 3). Il n'y a **aucune publicité, aucun traqueur
+publicitaire et aucun outil d'analyse tiers** dans l'application.
 
 ## 1. Localisation en arrière-plan (« Autoriser tout le temps »)
 
@@ -71,21 +74,28 @@ Aucune donnée de pas ni d'activité n'est transmise hors de l'appareil ;
 cette permission sert uniquement à optimiser la consommation de batterie
 pendant l'enregistrement d'un trajet.
 
-## 3. Données qui restent toujours sur votre appareil (« local-first »)
+## 3. Données qui ne quittent jamais votre appareil, avec ou sans compte
 
-Par défaut, et même après avoir créé un compte, les données suivantes ne
-quittent **jamais** votre téléphone :
+Que vous ayez créé un compte ou non, les données suivantes ne sont **jamais
+synchronisées ni envoyées** à un serveur, sous quelque forme que ce soit :
 
-- le journal d'événements de jeu complet (XP, badges, pièces, énergie,
-  visites de lieux, points de repère explorés) ;
-- l'historique détaillé de vos trajets et leurs traces GPS point par
-  point ;
-- l'état de la « carte brumeuse » (fog of war) — les zones que vous avez
-  explorées ;
-- votre identifiant d'appareil et votre pseudo (générés localement).
+- **l'historique détaillé de vos trajets et leurs traces GPS point par
+  point** — la synchronisation décrite section 4 ne porte que sur le
+  journal d'événements de jeu, jamais sur cet historique ni sur une trace
+  GPS complète ;
+- **l'état complet, cellule par cellule, de votre carte explorée**
+  (le fichier local qui accélère l'affichage du brouillard de guerre) —
+  reconstruit et mis en cache localement, jamais transmis tel quel.
 
 Ces données sont stockées dans l'espace de stockage privé de l'application
-et supprimées si vous désinstallez RandomWalk.
+et supprimées si vous désinstallez RandomWalk (ou via la suppression locale
+proposée section 7).
+
+**Ce qui, en revanche, fait partie du journal de jeu synchronisable dès
+qu'un compte est configuré** — XP, badges, pièces, énergie, mais aussi les
+cellules de carte explorées et les lieux culturels visités — est décrit
+sans détour section 4 : ne le cherchez pas ici, cette section ne concerne
+que ce qui reste strictement local dans tous les cas.
 
 ## 4. Compte et synchronisation (optionnel)
 
@@ -103,7 +113,21 @@ européenne (région Francfort/UE centrale) :
 | Votre adresse e-mail | Authentification (code de connexion), gérée par le fournisseur d'authentification Supabase |
 | Votre pseudo | Affiché sur le classement, synchronisé entre vos appareils |
 | Votre distance totale cumulée (km) | Classement, synchronisée entre vos appareils |
-| Votre journal d'événements de jeu (XP, badges, pièces, énergie, visites — **jamais de coordonnées GPS brutes ni de tracé de trajet**) | Permet de reconstituer et fusionner votre progression sur plusieurs appareils |
+| Votre journal d'événements de jeu — XP, badges, pièces, énergie, **cellules de la carte explorées et lieux culturels visités** | Permet de reconstituer et fusionner votre progression (y compris la carte explorée) sur plusieurs appareils |
+
+**Ce que ce journal contient précisément, et ce qu'il ne contient pas** :
+chaque « cellule explorée » est une case d'environ 150 m × 150 m de la
+grille interne du jeu — une zone approximative, pas une position précise —
+et chaque « lieu visité » est référencé par l'identifiant du point d'intérêt
+culturel concerné (église, point de vue, tour...) dans notre base
+embarquée, pas par des coordonnées. **Ce journal ne contient jamais vos
+coordonnées GPS brutes ni le tracé complet d'un trajet** (ces données-là
+restent toujours locales, avec ou sans compte — voir section 3). Mais soyez
+clair avec vous-même sur ce que cela veut dire : dès qu'un compte est
+configuré, le journal envoyé au serveur révèle bel et bien, de façon
+approximative, les zones que vous avez explorées et les lieux culturels que
+vous avez visités — ce n'est pas rien, même si ce n'est pas un tracé GPS.
+**Sans compte configuré, rien de tout cela ne quitte jamais l'appareil.**
 
 Un compte n'a de sens qu'associé à au moins un appareil ; la sécurité des
 données est assurée par des règles d'accès strictes côté base de données

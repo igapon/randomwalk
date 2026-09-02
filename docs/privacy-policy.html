@@ -61,16 +61,32 @@
 <strong>RandomWalk</strong> (éditeur&nbsp;: lmqc, <code>fr.lmqc.randomwalk</code>)
 collecte, pourquoi, où elles sont stockées, et comment les supprimer.</p>
 
-<p class="contact">Contact&nbsp;: <a href="mailto:contact@lmqc.fr">contact@lmqc.fr</a></p>
+<!--
+  TODO OWNER (blocking before publication): contact@lmqc.fr is a
+  PLACEHOLDER, not a confirmed address. Replace it below (and update the
+  visible warning) before this page is published anywhere public. See
+  docs/owner-handoff.md.
+-->
+<p class="contact-todo" style="background:#fff3cd;color:#664d03;border:1px solid #ffe69c;border-radius:8px;padding:0.6rem 0.9rem;font-size:0.9rem;">
+  ⚠️ <strong>TODO propriétaire</strong>&nbsp;: l'adresse de contact ci-dessous
+  est un espace réservé (placeholder) — à remplacer avant toute publication
+  publique de cette page. Voir <code>docs/owner-handoff.md</code>.
+</p>
+<p class="contact">Contact&nbsp;: <a href="mailto:contact@lmqc.fr">contact@lmqc.fr</a>
+<em>(à confirmer par le propriétaire avant publication)</em></p>
 
 <div class="summary">
 <strong>Résumé en une phrase&nbsp;:</strong> RandomWalk fonctionne
-<strong>hors-ligne et sans compte par défaut</strong>&nbsp;: vos trajets, votre
-journal de jeu et vos traces GPS restent sur votre appareil&nbsp;; créer un
-compte est <strong>optionnel</strong> et ne sert qu'à synchroniser votre
-progression entre appareils et à afficher votre pseudo sur un classement. Il
-n'y a <strong>aucune publicité, aucun traqueur publicitaire et aucun outil
-d'analyse tiers</strong> dans l'application.
+<strong>hors-ligne et sans compte par défaut</strong>&nbsp;: sans compte, vos
+trajets, votre journal de jeu et vos traces GPS restent entièrement sur votre
+appareil. Créer un compte est <strong>optionnel</strong> et sert à
+synchroniser votre progression (y compris, de façon approximative, les zones
+explorées et les lieux visités — voir section 4) entre appareils et à
+afficher votre pseudo sur un classement&nbsp;; vos traces GPS détaillées et
+l'historique complet de vos trajets, eux, ne sont <strong>jamais</strong>
+synchronisés, compte ou pas (voir section 3). Il n'y a <strong>aucune
+publicité, aucun traqueur publicitaire et aucun outil d'analyse
+tiers</strong> dans l'application.
 </div>
 
 <h2>1. Localisation en arrière-plan (« Autoriser tout le temps »)</h2>
@@ -111,19 +127,27 @@ strictement locales à l'appareil&nbsp;:</p>
 </ul>
 <p>Aucune donnée de pas ni d'activité n'est transmise hors de l'appareil.</p>
 
-<h2>3. Données qui restent toujours sur votre appareil</h2>
-<p>Par défaut, et même après avoir créé un compte, les données suivantes ne
-quittent <strong>jamais</strong> votre téléphone&nbsp;:</p>
+<h2>3. Données qui ne quittent jamais votre appareil, avec ou sans compte</h2>
+<p>Que vous ayez créé un compte ou non, les données suivantes ne sont
+<strong>jamais synchronisées ni envoyées</strong> à un serveur, sous quelque
+forme que ce soit&nbsp;:</p>
 <ul>
-  <li>le journal d'événements de jeu complet (XP, badges, pièces, énergie,
-  visites, points de repère explorés)&nbsp;;</li>
-  <li>l'historique détaillé de vos trajets et leurs traces GPS point par
-  point&nbsp;;</li>
-  <li>l'état de la carte brumeuse (fog of war) — zones explorées&nbsp;;</li>
-  <li>votre identifiant d'appareil et votre pseudo (générés localement).</li>
+  <li><strong>l'historique détaillé de vos trajets et leurs traces GPS
+  point par point</strong> — la synchronisation décrite section 4 ne porte
+  que sur le journal d'événements de jeu, jamais sur cet historique ni sur
+  une trace GPS complète&nbsp;;</li>
+  <li><strong>l'état complet, cellule par cellule, de votre carte
+  explorée</strong> (le fichier local qui accélère l'affichage du brouillard
+  de guerre) — reconstruit et mis en cache localement, jamais transmis tel
+  quel.</li>
 </ul>
 <p>Stockées dans l'espace privé de l'application, supprimées à la
-désinstallation.</p>
+désinstallation (ou via la suppression locale, section 7).</p>
+<p>Ce qui, en revanche, fait partie du journal de jeu synchronisable dès
+qu'un compte est configuré — XP, badges, pièces, énergie, mais aussi les
+cellules de carte explorées et les lieux culturels visités — est décrit
+sans détour section 4&nbsp;: cette section-ci ne concerne que ce qui reste
+strictement local dans tous les cas.</p>
 
 <h2>4. Compte et synchronisation (optionnel)</h2>
 <p>RandomWalk peut fonctionner <strong>sans jamais créer de compte</strong> —
@@ -136,10 +160,21 @@ unique par e-mail, pas de mot de passe), les données suivantes sont envoyées
 <tr><td>Votre adresse e-mail</td><td>Authentification par code de connexion</td></tr>
 <tr><td>Votre pseudo</td><td>Classement, synchronisation entre appareils</td></tr>
 <tr><td>Votre distance totale cumulée (km)</td><td>Classement, synchronisation entre appareils</td></tr>
-<tr><td>Votre journal d'événements de jeu (XP, badges, pièces, énergie, visites — jamais de GPS brut)</td><td>Reconstitution/fusion de la progression multi-appareils</td></tr>
+<tr><td>Votre journal d'événements de jeu — XP, badges, pièces, énergie, <strong>cellules de la carte explorées et lieux culturels visités</strong></td><td>Reconstitution/fusion de la progression (y compris la carte explorée) sur plusieurs appareils</td></tr>
 </table>
-<p>Sans compte configuré, aucune de ces données n'est jamais envoyée où que
-ce soit.</p>
+<p><strong>Ce que ce journal contient précisément, et ce qu'il ne contient
+pas</strong>&nbsp;: chaque « cellule explorée » est une case d'environ
+150&nbsp;m × 150&nbsp;m de la grille interne du jeu — une zone approximative,
+pas une position précise — et chaque « lieu visité » est référencé par
+l'identifiant du point d'intérêt culturel concerné (église, point de vue,
+tour...), pas par des coordonnées. <strong>Ce journal ne contient jamais vos
+coordonnées GPS brutes ni le tracé complet d'un trajet</strong> (ces
+données-là restent toujours locales, avec ou sans compte — voir section 3).
+Mais soyons clairs&nbsp;: dès qu'un compte est configuré, le journal envoyé
+au serveur révèle bel et bien, de façon approximative, les zones que vous
+avez explorées et les lieux culturels que vous avez visités — ce n'est pas
+rien, même si ce n'est pas un tracé GPS. <strong>Sans compte configuré, rien
+de tout cela ne quitte jamais l'appareil.</strong></p>
 
 <h2>5. Classement anonyme (drive.lmqc.fr)</h2>
 <p>Indépendamment d'un compte, RandomWalk peut soumettre votre score à un

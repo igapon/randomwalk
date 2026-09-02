@@ -145,11 +145,24 @@ jobs:
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > android/upload-keystore.jks
+            # storeFile MUST be an absolute path here, not a bare filename.
+            # android/app/build.gradle.kts reads key.properties (found via
+            # rootProject.file("key.properties"), i.e. android/key.properties)
+            # but resolves storeFile with a bare `file(it)` call, which
+            # Gradle evaluates against the CURRENT project — the :app module,
+            # i.e. android/app/ — not against android/ where key.properties
+            # itself lives and where this step wrote the keystore. A relative
+            # "upload-keystore.jks" would therefore resolve one directory
+            # off (android/app/upload-keystore.jks, which doesn't exist) and
+            # fail the signed build. This is exactly why the real local
+            # key.properties (docs/release-signing.md) also uses an absolute
+            # path rather than a relative one. $GITHUB_WORKSPACE is the
+            # absolute checkout root on every GitHub-hosted runner.
             {
               echo "storePassword=$STORE_PASSWORD"
               echo "keyPassword=$KEY_PASSWORD"
               echo "keyAlias=$KEY_ALIAS"
-              echo "storeFile=upload-keystore.jks"
+              echo "storeFile=$GITHUB_WORKSPACE/app/android/upload-keystore.jks"
             } > android/key.properties
             echo "Signing secrets found — building a REAL signed AAB with the upload key."
           else

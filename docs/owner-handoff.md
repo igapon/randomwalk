@@ -135,10 +135,16 @@ externe). Deux options simples pour l'héberger :
   `https://igapon.github.io/randomwalk/privacy-policy.html`.
 
 Coller l'URL choisie dans **App content → Privacy policy** et dans le champ
-correspondant de la fiche store. Mettre à jour le champ "Contact" en haut de
-`docs/privacy-policy.md`/`.html` (actuellement un placeholder
-`contact@lmqc.fr` — à confirmer/remplacer par l'adresse de contact réelle
-choisie par le propriétaire avant publication).
+correspondant de la fiche store.
+
+- [ ] **Remplacer l'adresse de contact avant publication.** Le champ
+  "Contact" en haut de `docs/privacy-policy.md` **et** de
+  `docs/privacy-policy.html` (les deux fichiers, pas un seul — le `.html`
+  porte aujourd'hui un bandeau TODO visible juste au-dessus de l'adresse
+  pour qu'il soit impossible de le publier tel quel par inadvertance)
+  contient actuellement un placeholder, `contact@lmqc.fr` — à confirmer ou
+  remplacer par l'adresse de contact réelle choisie par le propriétaire, et
+  le bandeau TODO à retirer du `.html` une fois fait.
 
 ### 2g. Envoyer en revue
 
