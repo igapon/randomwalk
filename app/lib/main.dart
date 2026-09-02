@@ -292,14 +292,17 @@ class _HomeShellState extends ConsumerState<HomeShell>
   /// have just finalised a trip that auto-finished while this process was
   /// away — see `TripController.restore`'s own doc comment) for a
   /// congratulations screen nothing live ever got the chance to show.
+  ///
+  /// Fix round 1 (Important 5): `takePendingCelebration()` now returns the
+  /// stats too (persisted alongside the marker — see
+  /// `PendingCelebrationStats`'s own doc comment), not just the trip's
+  /// identity, so this deferred path shows distance/durée/vitesse
+  /// immediately, exactly like the live path — only the combined XP figure
+  /// still needs `TripCelebrationScreen`'s own poll.
   Future<void> _checkPendingCelebration(TripController trip) async {
-    final startedAt = await trip.takePendingCelebration();
-    if (startedAt == null) return;
-    // No synchronous stats survive a cold start (unlike the live path,
-    // where `_onTripCelebration`'s `celebration` argument carries them) —
-    // `TripCelebrationScreen` resolves everything itself from
-    // `TripHistoryStore` in that case (see its own doc comment).
-    await _showCelebration(startedAt, null);
+    final celebration = await trip.takePendingCelebration();
+    if (celebration == null) return;
+    await _showCelebration(celebration.startedAt, celebration);
   }
 
   Future<void> _showCelebration(

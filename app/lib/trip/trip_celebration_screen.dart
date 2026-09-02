@@ -23,12 +23,16 @@ import 'trip_controller.dart';
 ///
 /// [startedAt] is the trip's identity (see `FinalisedTripMemory`'s own doc
 /// comment on why that is the natural identity in this codebase);
-/// [celebration] carries whatever `TripController` already knew
-/// synchronously at the moment it finalised — distance/duration/speed, see
-/// `FinishedTripCelebration`'s own doc comment — so the screen has
-/// something to show immediately for the *live* path. It is null for the
-/// deferred (next-open) path: nothing synchronous survives a cold start, so
-/// that path waits on [_resolve] for everything, stats included.
+/// [celebration] carries whatever `TripController` already knew — distance/
+/// duration/speed, see `FinishedTripCelebration`'s own doc comment — so the
+/// screen has something to show immediately. Fix round 1 (Important 5): the
+/// deferred (next-open) path supplies this too now, not just the live one —
+/// `TripController.takePendingCelebration()` rebuilds it from the stats
+/// `FinalisedTripMemory` now persists alongside the pending-celebration
+/// marker. `celebration` stays nullable purely as a defensive fallback (a
+/// caller with truly nothing synchronous can still pass `null`); in
+/// practice every production caller supplies one, so only the combined XP
+/// figure below is ever left for [_resolve] to fill in.
 ///
 /// The combined XP figure (exploration + landmark-visit — see
 /// `history/trip_history_recorder.dart`'s "Task 2g update" doc comment) is
@@ -75,20 +79,41 @@ class _TripCelebrationScreenState extends ConsumerState<TripCelebrationScreen> {
     unawaited(_resolve());
   }
 
+  /// Fix round 1 (Important 1): the WHOLE body is wrapped in try/catch —
+  /// `ref.read(tripHistoryStoreProvider.future)` can throw (`main.dart`
+  /// itself documents `TripHistoryStore.open` failing as a real
+  /// possibility), and that call sits OUTSIDE `resolveCelebrationEntry`'s
+  /// own try/catch (it only guards `fetchLatest`, called once the store
+  /// already exists). Before this fix, that throw escaped the `unawaited(
+  /// _resolve())` in [initState] as an unhandled async error and `setState`
+  /// never ran — `_gaveUp` stayed `false` forever, so the deferred path
+  /// spun on [CircularProgressIndicator] indefinitely and the live path
+  /// showed XP as `···` indefinitely. Moving the store resolution INSIDE
+  /// the `fetchLatest` closure handed to [resolveCelebrationEntry] means a
+  /// transient store failure is retried like any other "not yet written"
+  /// case; this outer try/catch is the backstop for a PERSISTENT one (or
+  /// any other unexpected throw), so this method can never leave [_gaveUp]
+  /// stuck at `false`.
   Future<void> _resolve() async {
-    final store = await ref.read(tripHistoryStoreProvider.future);
-    final entry = await resolveCelebrationEntry(
-      fetchLatest: store.latest,
-      startedAt: widget.startedAt,
-    );
-    if (!mounted) return;
-    setState(() {
-      if (entry != null) {
-        _entry = entry;
-      } else {
-        _gaveUp = true;
-      }
-    });
+    try {
+      final entry = await resolveCelebrationEntry(
+        fetchLatest: () async {
+          final store = await ref.read(tripHistoryStoreProvider.future);
+          return store.latest();
+        },
+        startedAt: widget.startedAt,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (entry != null) {
+          _entry = entry;
+        } else {
+          _gaveUp = true;
+        }
+      });
+    } catch (_) {
+      if (mounted) setState(() => _gaveUp = true);
+    }
   }
 
   @override

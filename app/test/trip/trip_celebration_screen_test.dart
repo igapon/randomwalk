@@ -108,6 +108,26 @@ void main() {
       expect(calls, 2);
     });
 
+    test('fix round 1 (Important 1): a fetchLatest that throws on EVERY '
+        'attempt (e.g. TripHistoryStore.open persistently failing, not just '
+        'a transient hiccup) still gives up after maxPolls rather than '
+        'spinning/throwing forever — this is what makes '
+        'TripCelebrationScreen._resolve() able to set _gaveUp instead of an '
+        'unhandled async error leaving the spinner up indefinitely', () async {
+      var calls = 0;
+      final entry = await resolveCelebrationEntry(
+        fetchLatest: () async {
+          calls++;
+          throw StateError('store permanently unavailable');
+        },
+        startedAt: startedAt,
+        maxPolls: 4,
+        delay: noDelay,
+      );
+      expect(entry, isNull);
+      expect(calls, 4);
+    });
+
     test('waits pollInterval apart between attempts', () async {
       final waited = <Duration>[];
       await resolveCelebrationEntry(
