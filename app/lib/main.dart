@@ -32,6 +32,7 @@ import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart' show PendingVisit;
 import 'package:randomwalk/trip/active_route_store.dart';
+import 'package:randomwalk/trip/trip_celebration_screen.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
 import 'package:randomwalk/valhalla/engine.dart';
@@ -99,7 +100,8 @@ Future<TripController> _buildTripController() async {
   // app failing to start; every other exploration/visit failure mode is
   // handled inside `ExplorationRecorder`/`GameVisitConsumer` themselves.
   Future<void> Function(FinishedTrip trip)? processTripExploration;
-  Future<void> Function(List<PendingVisit> visits)? processGameVisits;
+  Future<List<GameEvent>> Function(List<PendingVisit> visits)?
+  processGameVisits;
   try {
     final journal = GameJournal(Directory('${dir.path}/game'));
     final edgesStore = await EdgesStore.open('${dir.path}/covered_edges.db');
@@ -252,6 +254,10 @@ class _HomeShellState extends ConsumerState<HomeShell>
     final trip = ref.read(tripControllerProvider);
     trip.onSessionEnded = _onSessionEnded;
     trip.onSessionError = _onSessionError;
+    // Task 2g: fired synchronously from inside `_finalise` for a guided
+    // trip that had just latched arrival — see `onTripCelebration`'s own
+    // doc comment.
+    trip.onTripCelebration = _onTripCelebration;
     // M5 launch auto-sync: fire-and-forget, best-effort, silent (per
     // task-4-brief.md — errors are only ever surfaced on the account
     // screen). Not awaited: initState can't be async, and this must never
@@ -260,6 +266,56 @@ class _HomeShellState extends ConsumerState<HomeShell>
     // restoreAccountAndAutoSync's own doc comment, in particular for how
     // it keeps an unconfigured build byte-identical to M4.
     unawaited(restoreAccountAndAutoSync(ref));
+    // Task 2g: a trip that auto-finished (or was manually stopped after
+    // arriving) while nothing was watching live — the app backgrounded, or
+    // its whole process killed and later relaunched — surfaces its
+    // congratulations screen here instead, exactly once. Fire-and-forget:
+    // `initState` cannot be async, and this must never delay the first
+    // frame the way `trip.restore()` (already resolved by the time
+    // `runApp` ran, see `main()`) deliberately is allowed to.
+    unawaited(_checkPendingCelebration(trip));
+  }
+
+  /// Task 2g: pushed the instant a guided trip finalises having latched
+  /// arrival, straight from `TripController._finalise` (live path — the app
+  /// is on screen right now). Always clears the pending-celebration marker
+  /// first: it was set unconditionally by `_finalise` so the *deferred*
+  /// path (see [_checkPendingCelebration]) works even when nothing is
+  /// watching, and without clearing it here too, the very trip whose
+  /// celebration was just shown live would be offered a second time at the
+  /// next cold start.
+  void _onTripCelebration(FinishedTripCelebration celebration) {
+    unawaited(_showCelebration(celebration.startedAt, celebration));
+  }
+
+  /// Task 2g: checked once at startup (after `restore()`, which may itself
+  /// have just finalised a trip that auto-finished while this process was
+  /// away — see `TripController.restore`'s own doc comment) for a
+  /// congratulations screen nothing live ever got the chance to show.
+  Future<void> _checkPendingCelebration(TripController trip) async {
+    final startedAt = await trip.takePendingCelebration();
+    if (startedAt == null) return;
+    // No synchronous stats survive a cold start (unlike the live path,
+    // where `_onTripCelebration`'s `celebration` argument carries them) —
+    // `TripCelebrationScreen` resolves everything itself from
+    // `TripHistoryStore` in that case (see its own doc comment).
+    await _showCelebration(startedAt, null);
+  }
+
+  Future<void> _showCelebration(
+    DateTime startedAt,
+    FinishedTripCelebration? celebration,
+  ) async {
+    await ref.read(tripControllerProvider).clearPendingCelebration();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TripCelebrationScreen(
+          startedAt: startedAt,
+          celebration: celebration,
+        ),
+      ),
+    );
   }
 
   @override

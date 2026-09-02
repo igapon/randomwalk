@@ -20,10 +20,41 @@ import 'package:shared_preferences/shared_preferences.dart';
 abstract class FinalisedTripMemory {
   Future<bool> wasFinalised(DateTime startedAt);
   Future<void> markFinalised(DateTime startedAt);
+
+  /// Task 2g (owner brief): remembers the identity ([startedAt] — see this
+  /// class's own doc comment on why that is a trip's identity) of the most
+  /// recently finalised trip whose congratulations screen has not been shown
+  /// yet, so it survives a cold start.
+  ///
+  /// Set by `TripController._finalise` for exactly the trips the brief wants
+  /// a celebration for — a guided (route-bound) trip that had latched
+  /// arrival, whether it ended via the Task 2g auto-finish or a manual
+  /// « Terminer » on an already-arrived trip — including from `restore()`'s
+  /// own reconciliation of a trip that auto-finished while nothing was
+  /// attached (backgrounded, or the whole app process killed: the foreground
+  /// service survives both, see `tracking_service.dart`'s `stopWithTask:
+  /// false`). That reconciliation path is the whole reason this exists as
+  /// *persisted* state rather than a plain in-memory field on
+  /// `TripController`: an in-memory value cannot survive the cold start it
+  /// is specifically for.
+  ///
+  /// A single slot, not a list: only one trip can ever be recording at a
+  /// time, so at most one congratulations screen can ever be pending.
+  /// [clearPendingCelebration] is called once the screen has actually been
+  /// shown.
+  Future<void> setPendingCelebration(DateTime startedAt);
+
+  /// The pending celebration's trip identity, or `null` if there is none.
+  Future<DateTime?> pendingCelebration();
+
+  Future<void> clearPendingCelebration();
 }
 
 class PrefsFinalisedTripMemory implements FinalisedTripMemory {
   static const _key = 'finalised_trip_ids';
+
+  /// Task 2g: see [FinalisedTripMemory.setPendingCelebration].
+  static const _pendingCelebrationKey = 'pending_trip_celebration_started_at';
 
   /// How many ids to keep. One is enough for the race this guards against —
   /// only the trip that was just stopped can be resurrected — but a short
@@ -53,4 +84,30 @@ class PrefsFinalisedTripMemory implements FinalisedTripMemory {
   }
 
   static String _id(DateTime startedAt) => startedAt.toUtc().toIso8601String();
+
+  @override
+  Future<void> setPendingCelebration(DateTime startedAt) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_pendingCelebrationKey, _id(startedAt));
+  }
+
+  @override
+  Future<DateTime?> pendingCelebration() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pendingCelebrationKey);
+    if (raw == null) return null;
+    try {
+      return DateTime.parse(raw);
+    } catch (_) {
+      // A corrupt value is exactly "nothing pending" — never worth crashing
+      // the map screen's startup check over.
+      return null;
+    }
+  }
+
+  @override
+  Future<void> clearPendingCelebration() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingCelebrationKey);
+  }
 }

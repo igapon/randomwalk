@@ -35,6 +35,10 @@ class FakeTotalDistanceStore implements TotalDistanceStore {
 class MemoryFinalisedTripMemory implements FinalisedTripMemory {
   final banked = <DateTime>{};
 
+  /// Task 2g: the trip identity ([DateTime]) last passed to
+  /// [setPendingCelebration], or `null` after [clearPendingCelebration].
+  DateTime? pending;
+
   @override
   Future<bool> wasFinalised(DateTime startedAt) async =>
       banked.contains(startedAt.toUtc());
@@ -42,6 +46,16 @@ class MemoryFinalisedTripMemory implements FinalisedTripMemory {
   @override
   Future<void> markFinalised(DateTime startedAt) async =>
       banked.add(startedAt.toUtc());
+
+  @override
+  Future<void> setPendingCelebration(DateTime startedAt) async =>
+      pending = startedAt.toUtc();
+
+  @override
+  Future<DateTime?> pendingCelebration() async => pending;
+
+  @override
+  Future<void> clearPendingCelebration() async => pending = null;
 }
 
 /// Records every [recordSession] call this fake has seen — unconditionally,

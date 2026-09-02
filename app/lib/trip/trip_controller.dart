@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../exploration/exploration_recorder.dart';
+import '../game/events.dart' show GameEvent, GameEventTypes;
 import '../loop/speed_history.dart';
 import '../nav/nav_fields.dart';
 import '../session/recorder.dart';
@@ -51,6 +52,44 @@ enum TripStartFailure {
 
   /// The permission flow passed but the service refused to start.
   serviceUnavailable,
+}
+
+/// Task 2g (owner brief): the synchronously-known facts about a just-
+/// finalised, arrived guided trip — everything `TripController._finalise`
+/// itself already has in hand at the moment it finishes, handed to
+/// [TripController.onTripCelebration] so a screen can render distance/
+/// duration/speed immediately rather than waiting on the asynchronous
+/// history write.
+///
+/// [startedAt] is this trip's identity (same convention `FinalisedTripMemory`
+/// uses) — the celebration screen matches it against `TripHistoryStore`'s
+/// freshly-written row to read the authoritative, combined XP figure (see
+/// `history/trip_history_recorder.dart`'s "Task 2g update" doc comment for
+/// why that number is not known synchronously: it depends on
+/// `processTripExploration` actually finishing, which is fire-and-forget by
+/// design and must stay that way — see `_finalise`'s own doc comment on why
+/// that hook is never awaited).
+class FinishedTripCelebration {
+  final DateTime startedAt;
+  final double distanceKm;
+  final Duration duration;
+  final double avgSpeedKmh;
+  final RoutingProfile profile;
+
+  /// Whether this trip followed a planned loop — purely to phrase the
+  /// screen's headline ("boucle terminée" vs. "vous êtes arrivé(e)"); the XP
+  /// consequence of a loop (`loop_completed`, +50 XP) is already folded into
+  /// the combined total the screen reads from history.
+  final bool isLoop;
+
+  const FinishedTripCelebration({
+    required this.startedAt,
+    required this.distanceKm,
+    required this.duration,
+    required this.avgSpeedKmh,
+    required this.profile,
+    required this.isLoop,
+  });
 }
 
 const _kTripProfileKey = 'trip_profile';
@@ -123,7 +162,24 @@ class TripController extends ChangeNotifier {
   /// (see [_maybeProcessGameVisits]) — same "never blocks the tool"
   /// relationship [processTripExploration] has to `_finalise`, just fired
   /// from [_adopt] instead of trip end, since visits arrive mid-trip.
-  final Future<void> Function(List<PendingVisit> visits)? processGameVisits;
+  ///
+  /// Task 2g: returns exactly the events THIS call appended (mirroring
+  /// `ExplorationRecorder.process`'s own contract — see
+  /// `GameVisitConsumer.consume`'s doc comment) so [_maybeProcessGameVisits]
+  /// can accumulate this trip's own landmark-visit XP into [_tripVisitXp].
+  final Future<List<GameEvent>> Function(List<PendingVisit> visits)?
+  processGameVisits;
+
+  /// Task 2g (owner brief): fired once, synchronously from inside
+  /// `_finalise`, for a guided (route-bound) trip that had latched arrival —
+  /// whether it ended via the Task 2g auto-finish or a manual « Terminer »
+  /// on an already-arrived trip. Null whenever nothing is watching live: in
+  /// particular during `restore()`'s own cold-start reconciliation, which
+  /// runs before `runApp`/the widget tree exist — that is fine by design,
+  /// since [FinalisedTripMemory.setPendingCelebration] (also set from
+  /// `_finalise`, unconditionally for the same trips) is exactly the
+  /// deferred path for that case (see its own doc comment).
+  void Function(FinishedTripCelebration celebration)? onTripCelebration;
 
   /// Notified when the map should turn its "follow me" camera mode on
   /// (route-bound trip start) or off (trip stop / manual pan elsewhere).
@@ -153,6 +209,29 @@ class TripController extends ChangeNotifier {
   SessionStepCounter? _steps;
   StreamSubscription<TripSnapshot>? _updates;
   StreamSubscription<String?>? _errors;
+
+  /// Task 2g: this trip's own accumulated landmark-visit XP — the running
+  /// sum of `xp_earned` amounts among the events every [processGameVisits]
+  /// call made FOR THIS TRIP itself returned (see [_maybeProcessGameVisits]),
+  /// never a `GameState` read (see [FinishedTrip.visitXpEarned]'s doc
+  /// comment for why). Reset to 0 in [_launch] — i.e. at every genuinely new
+  /// `startTrip()` and at every `resumeInterrupted()` — so it can never leak
+  /// into a later trip; handed to `_finalise`'s `FinishedTrip` at trip end.
+  ///
+  /// Known, accepted limitation: this is in-memory, per-`TripController`-
+  /// instance state. A trip interrupted (the whole app process killed) after
+  /// already earning some visit XP, then resumed by a FRESH `TripController`
+  /// in a new process, loses that pre-interruption contribution — the new
+  /// instance's accumulator starts at 0 regardless of what the dead one saw.
+  /// The visit XP itself is not lost (already durably journaled by the
+  /// `GameVisitConsumer` call that earned it) — only its contribution to
+  /// THIS trip's own history-row total. Accepted rather than solved by
+  /// persisting a running counter in `TripSnapshot` itself: interruption is
+  /// already the uncommon case this codebase treats as such elsewhere (see
+  /// e.g. `_finalise`'s own "moving time" approximation), and the
+  /// alternative is plumbing yet another field through every service
+  /// incarnation for a residual this narrow.
+  double _tripVisitXp = 0;
 
   TripController({
     required this.tracker,
@@ -250,6 +329,28 @@ class TripController extends ChangeNotifier {
     if (_activeRoute != null) _profile = _activeRoute!.profile;
 
     final snapshot = await tracker.readSnapshot();
+
+    // Task 2g: a guided trip (A→B or loop) that latched arrival while this
+    // process was away — backgrounded, or the whole app task swiped away
+    // (the foreground service survives both: `tracking_service.dart`'s
+    // `_configure` sets `stopWithTask: false`) — publishes its FINAL
+    // snapshot with `status: idle` instead of simply vanishing (see
+    // `TripTaskHandler._autoFinishOnArrival`). Finalise it through the
+    // exact same pipeline a live auto-finish or a manual "Terminer" uses —
+    // banking, history, game XP, the celebration marker — rather than
+    // falling into the generic "debris, discard" handling just below, which
+    // would silently drop all of that. Checked before the generic branch,
+    // not folded into it, so the ordinary case (an idle leftover from a
+    // trip that already finalised normally) is completely unaffected.
+    if (snapshot != null &&
+        !snapshot.isRecording &&
+        snapshot.routeBound &&
+        snapshot.navArrived &&
+        !await _finalisedTrips.wasFinalised(snapshot.startedAt)) {
+      await _finalise(snapshot);
+      return;
+    }
+
     // A non-recording snapshot is debris from a finalised trip. So is a
     // recording one whose trip has already been banked: the service's last
     // flush can land after the stop cleared the file (see
@@ -432,6 +533,10 @@ class TripController extends ChangeNotifier {
 
   Future<bool> _launch(TripSnapshot seed, {NavSeed? nav}) async {
     _starting = true;
+    // Task 2g: a fresh accumulator for whichever trip this launch is about
+    // to start or resume — see [_tripVisitXp]'s own doc comment for why this
+    // must happen here rather than only once, in the constructor.
+    _tripVisitXp = 0;
     try {
       final permissions = await ensurePermissions();
       _trackingMode = permissions.mode;
@@ -579,12 +684,46 @@ class TripController extends ChangeNotifier {
             startedAt: snapshot.startedAt,
             endedAt: _clock(),
             profile: snapshot.profile,
+            // Task 2g: this trip's own accumulated landmark-visit XP — see
+            // [_tripVisitXp]'s doc comment. Read here, not after
+            // `tracker.clearSnapshot()` below: nothing resets it before the
+            // NEXT trip's own `_launch`, but reading it as close to "this
+            // trip's own data" as possible keeps the two together.
+            visitXpEarned: _tripVisitXp,
           ),
         ).catchError((e) {
           debugPrint(
             'TripController: exploration processing failed, continuing: $e',
           );
         }),
+      );
+    }
+
+    // Task 2g (owner brief): a guided trip that had latched arrival gets a
+    // congratulations screen — whether it got here via the Task 2g
+    // auto-finish or a manual "Terminer" tapped after quietly arriving. Free
+    // trips (never `routeBound`) and a guided trip stopped before arriving
+    // never do. The marker is persisted unconditionally, not just when
+    // [onTripCelebration] is wired: it is what makes the *deferred* case
+    // (nothing watching live right now — see that field's own doc comment)
+    // work at all, including from `restore()`'s own call into this same
+    // method. The callback itself, though, fires further down — after the
+    // trip has actually reached [TripState.idle] — so anything reacting to
+    // it (pushing a screen) sees a fully settled, idle `TripController`
+    // underneath rather than one still reading as recording.
+    FinishedTripCelebration? celebration;
+    if (snapshot != null && snapshot.routeBound && snapshot.navArrived) {
+      await _finalisedTrips.setPendingCelebration(snapshot.startedAt);
+      final rawDuration = _clock().difference(snapshot.startedAt);
+      final duration = rawDuration.isNegative ? Duration.zero : rawDuration;
+      final hours = duration.inMilliseconds / Duration.millisecondsPerHour;
+      celebration = FinishedTripCelebration(
+        startedAt: snapshot.startedAt,
+        distanceKm: distanceKm,
+        duration: duration,
+        avgSpeedKmh: hours > 0 ? distanceKm / hours : 0,
+        profile: snapshot.profile,
+        isLoop: _activeRoute?.isLoop ?? false,
       );
     }
 
@@ -597,6 +736,7 @@ class TripController extends ChangeNotifier {
     // card is what clears it.
     onCameraFollowChanged?.call(false);
     notifyListeners();
+    if (celebration != null) onTripCelebration?.call(celebration);
 
     await onSessionEnded?.call(totalKm);
     return distanceKm;
@@ -636,7 +776,23 @@ class TripController extends ChangeNotifier {
     _lastPollAt = now;
 
     final persisted = await tracker.readSnapshot();
-    if (persisted == null || !persisted.isRecording) return;
+    if (persisted == null) return;
+    if (!persisted.isRecording) {
+      // Task 2g: the live data-port message this same event usually reaches
+      // us on can be dropped (e.g. right as the service isolate tears
+      // itself down) — this poll, up to `_kSnapshotPollInterval` later, is
+      // the belt-and-braces catch for exactly that.
+      if (isRecording && _isAutoFinishSignal(persisted)) {
+        // Adopted first (distance/steps/etc.), same as the live-channel
+        // path below — see `_onTrackerSnapshot`'s own doc comment for why:
+        // it is what makes `stopTrip()`'s own `_freshest` pick this exact,
+        // known-final snapshot rather than depending on `tracker.stop()`'s
+        // own (potentially staler) read racing it correctly.
+        _adopt(persisted);
+        unawaited(stopTrip());
+      }
+      return;
+    }
     if (!isRecording) return;
     final current = _snapshot;
     if (current != null && !persisted.updatedAt.isAfter(current.updatedAt)) {
@@ -645,8 +801,33 @@ class TripController extends ChangeNotifier {
     _adopt(persisted);
   }
 
+  /// Task 2g: whether [snapshot] is the service's own signal that a guided
+  /// trip auto-finished at arrival (`TripTaskHandler._autoFinishOnArrival`)
+  /// — its final published/persisted snapshot, marked `status: idle` while
+  /// still carrying `routeBound`/`navArrived` from the trip it just ended.
+  /// Never true for a free trip (never `routeBound`) or an ordinary
+  /// mid-trip idle blip (the service has no other way to publish
+  /// `status: idle` while a trip is recording — see that method's own doc
+  /// comment).
+  bool _isAutoFinishSignal(TripSnapshot snapshot) =>
+      !snapshot.isRecording && snapshot.routeBound && snapshot.navArrived;
+
   void _onTrackerSnapshot(TripSnapshot snapshot) {
     if (_state != TripState.recording) return;
+    // Task 2g: the service's own signal that a guided trip auto-finished at
+    // arrival — react exactly as a manual "Terminer" tap would (same
+    // pipeline, same events, same history write). `_adopt` still runs
+    // first — it is what makes `_snapshot` (hence `stopTrip()`'s own
+    // `_freshest` comparison against `tracker.stop()`'s independent read)
+    // reflect this exact, known-final distance/steps rather than depending
+    // on whichever of the two happens to carry the later `updatedAt`; the
+    // extra `notifyListeners()`/`_maybeProcessGameVisits` calls this costs
+    // are harmless; only `stopTrip()` right after actually matters.
+    if (_isAutoFinishSignal(snapshot)) {
+      _adopt(snapshot);
+      unawaited(stopTrip());
+      return;
+    }
     _adopt(snapshot);
   }
 
@@ -669,16 +850,33 @@ class TripController extends ChangeNotifier {
   /// M4 exploration Task 5: fire-and-forget, exactly like
   /// [processTripExploration] — a slow or throwing `GameVisitConsumer` must
   /// never delay adopting a snapshot or block the trip in any way.
+  ///
+  /// Task 2g: chains [_accumulateVisitXp] onto the call's own returned
+  /// events before the existing `catchError` — a failure there is caught by
+  /// the same handler as a failure in [process] itself, so this still never
+  /// escapes into the fire-and-forget caller.
   void _maybeProcessGameVisits(List<PendingVisit> visits) {
     final process = processGameVisits;
     if (process == null || visits.isEmpty) return;
     unawaited(
-      process(visits).catchError((e) {
+      process(visits).then(_accumulateVisitXp).catchError((e) {
         debugPrint(
           'TripController: game visit processing failed, continuing: $e',
         );
       }),
     );
+  }
+
+  /// Task 2g: adds this one `processGameVisits` call's own `xp_earned`
+  /// amounts to [_tripVisitXp] — see that field's doc comment for why this
+  /// is the only source ever consulted (never a `GameState` read). A no-op
+  /// for a batch that earned no XP at all (e.g. every visit in it was a
+  /// cooldown-blocked revisit, which appends `landmark_visited` alone).
+  void _accumulateVisitXp(List<GameEvent> events) {
+    for (final event in events) {
+      if (event.type != GameEventTypes.xpEarned) continue;
+      _tripVisitXp += (event.payload['amount'] as num?)?.toDouble() ?? 0;
+    }
   }
 
   /// Persists the planned route. Called by the map screen on every planning
@@ -739,6 +937,21 @@ class TripController extends ChangeNotifier {
       hapticsEnabled: value,
     );
   }
+
+  /// Task 2g: the pending celebration's trip identity, if any — a thin
+  /// passthrough to [FinalisedTripMemory.pendingCelebration] (private on
+  /// this class) so whatever widget hosts the congratulations screen (see
+  /// `trip/trip_celebration_screen.dart`) can check for one at startup,
+  /// after [restore] — for a trip that finalised while nothing was watching
+  /// live. Does not clear it: call [clearPendingCelebration] once the
+  /// screen has actually been shown.
+  Future<DateTime?> takePendingCelebration() =>
+      _finalisedTrips.pendingCelebration();
+
+  /// Marks the pending celebration (if any) as shown, so it is not offered
+  /// again on the next cold start — see [takePendingCelebration].
+  Future<void> clearPendingCelebration() =>
+      _finalisedTrips.clearPendingCelebration();
 
   /// Re-reads whether "Autoriser tout le temps" has since been granted —
   /// called when the app comes back to the foreground, so the degraded-mode
