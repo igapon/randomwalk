@@ -25,7 +25,7 @@ import '../loop/loop_planner.dart';
 import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
 import '../nav/nav_fields.dart' show formatDistance;
-import '../nav/polyline_math.dart' show metersBetween;
+import '../nav/polyline_math.dart' show metersBetween, simplifyForDisplay;
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
 import '../trip/active_route_store.dart';
@@ -528,7 +528,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
     final route = plan.route;
     if (route != null) {
-      final geometry = [for (final (lat, lon) in route.shape) LatLng(lat, lon)];
+      // Task 2l: the drawn line is simplified for DISPLAY only — nothing
+      // navigation-related reads this geometry back; `route.shape` itself
+      // (used by `RouteFollower`/ETA/off-route math) is untouched. See
+      // [simplifyForDisplay]'s own doc comment for why this matters: this
+      // is the exact code path the owner's device-QA report tied to a
+      // startup freeze whenever a trip is restored with an already-planned
+      // route.
+      final geometry = [
+        for (final (lat, lon) in simplifyForDisplay(route.shape))
+          LatLng(lat, lon),
+      ];
       // Casing first (drawn below), then the yellow line on top.
       _routeLineCasing = await controller?.addLine(
         LineOptions(
@@ -618,7 +628,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
   /// a route-bound trip — this fallback exists purely so this method stays
   /// correct if that ever stopped being true).
   Future<void> _redrawRouteLine(List<(double, double)> shape) async {
-    final geometry = [for (final (lat, lon) in shape) LatLng(lat, lon)];
+    // Task 2l: same display-only simplification `_drawOverlays` applies —
+    // this is the method every REPLAN redraw goes through (see
+    // `_maybeSyncReplannedRoute`), the owner's second reported freeze
+    // moment. `shape` itself (the caller's full-resolution route/replanned
+    // geometry) is passed through unsimplified everywhere else — only the
+    // `LatLng` list actually handed to the platform channel is thinned.
+    final geometry = [
+      for (final (lat, lon) in simplifyForDisplay(shape)) LatLng(lat, lon),
+    ];
     final casing = _routeLineCasing;
     final line = _routeLine;
     if (casing != null && line != null) {

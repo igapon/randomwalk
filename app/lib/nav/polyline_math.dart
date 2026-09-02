@@ -94,3 +94,85 @@ Projection projectOntoRoute(
   }
   return best!;
 }
+
+/// Douglas-Peucker line simplification for DISPLAY purposes only — never
+/// for navigation math. [RouteFollower]/[NavigationRuntime]/[Projection]
+/// above all keep consuming the full-resolution `route.shape` untouched;
+/// this exists purely for what gets drawn on the map.
+///
+/// Task 2l (owner: "la carte freeze au début" / "aussi après l'écart
+/// d'itinéraire"): `map_screen.dart`'s `_drawOverlays` (route restore at
+/// startup) and `_redrawRouteLine` (every replan mid-navigation) both
+/// convert the FULL route shape to `LatLng` and hand it to
+/// `MapLibreMapController.addLine`/`updateLine` — the one code path that
+/// runs identically in both of the owner's reported freeze moments. A
+/// walking route's Valhalla shape can carry many thousands of closely-
+/// spaced points; simplifying it for display cuts that point count (and
+/// therefore the Dart-side conversion cost and the platform-channel
+/// payload) drastically while staying visually identical at normal map
+/// zoom.
+///
+/// [toleranceM] is the maximum perpendicular deviation (meters, via a
+/// local equirectangular projection — plenty accurate at route scale, same
+/// approximation [projectOntoRoute] already relies on) a dropped point may
+/// have strayed from the simplified line. The 3m default is tighter than a
+/// phone GPS fix's own typical accuracy, so the simplified line is
+/// visually indistinguishable from the full-resolution one on screen.
+List<(double, double)> simplifyForDisplay(
+  List<(double, double)> shape, {
+  double toleranceM = 3.0,
+}) {
+  if (shape.length <= 2) return shape;
+  final keep = List<bool>.filled(shape.length, false);
+  keep[0] = true;
+  keep[shape.length - 1] = true;
+  _douglasPeucker(shape, 0, shape.length - 1, toleranceM, keep);
+  return [
+    for (var i = 0; i < shape.length; i++)
+      if (keep[i]) shape[i],
+  ];
+}
+
+void _douglasPeucker(
+  List<(double, double)> pts,
+  int first,
+  int last,
+  double toleranceM,
+  List<bool> keep,
+) {
+  if (last <= first + 1) return;
+  final (lat1, lon1) = pts[first];
+  final (lat2, lon2) = pts[last];
+  // Project the whole span into local meters around the segment's own
+  // start point — same approximation `projectOntoRoute` above already uses,
+  // adequate for one simplification span (never remotely close to the
+  // equirectangular projection's validity limits at these distances).
+  final (ex, ey) = _toLocalMeters(lat2, lon2, lat1, lon1);
+  var maxDist = -1.0;
+  var maxIndex = -1;
+  for (var i = first + 1; i < last; i++) {
+    final (lat, lon) = pts[i];
+    final (px, py) = _toLocalMeters(lat, lon, lat1, lon1);
+    final dist = _perpendicularDistanceM(px, py, ex, ey);
+    if (dist > maxDist) {
+      maxDist = dist;
+      maxIndex = i;
+    }
+  }
+  if (maxDist > toleranceM && maxIndex != -1) {
+    keep[maxIndex] = true;
+    _douglasPeucker(pts, first, maxIndex, toleranceM, keep);
+    _douglasPeucker(pts, maxIndex, last, toleranceM, keep);
+  }
+}
+
+/// Distance from local-meters point ([px], [py]) to the segment from the
+/// origin to ([ex], [ey]).
+double _perpendicularDistanceM(double px, double py, double ex, double ey) {
+  final segLen2 = ex * ex + ey * ey;
+  if (segLen2 == 0) return math.sqrt(px * px + py * py);
+  final t = ((px * ex + py * ey) / segLen2).clamp(0.0, 1.0);
+  final dx = px - t * ex;
+  final dy = py - t * ey;
+  return math.sqrt(dx * dx + dy * dy);
+}

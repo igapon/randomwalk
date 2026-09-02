@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart' show Brightness;
 import 'package:maplibre_gl/maplibre_gl.dart';
 
@@ -165,12 +166,45 @@ class FogLayer {
   /// viewport is read here or anywhere downstream, which is the actual fix
   /// for "fog of war ... changes when i move the map" (see
   /// `fog_geometry.dart`'s doc comment for the full root-cause writeup).
+  ///
+  /// Task 2l (owner: "la carte freeze au début"): [fogWorldGeoJson] is
+  /// `O(rings^2 * ring_length)` in the CONTAINMENT classification
+  /// (`_ringDepths`/`_tightestContainer`), not `O(cells)` — the existing
+  /// Task 2h perf test only ever measured a solid block (one ring) and
+  /// uniform 3x3 blobs (tiny 4-vertex rings each), both of which keep that
+  /// term cheap. A real player's `revealedCellKeys` instead accumulates from
+  /// many separate WALKS, each a long, thin, winding corridor whose traced
+  /// ring is roughly as long as the walk itself (a corridor barely cancels
+  /// any of its own interior edges) — measured (see
+  /// `fog_geometry_bench_test.dart`): 300 disjoint 150-cell corridors
+  /// (34k cells, a very ordinary multi-month history) already cost ~210ms
+  /// on the calling isolate; 600 corridors cost ~760ms. Run on the UI
+  /// isolate at the first `onStyleLoaded` (via `GameLayer.refresh` /
+  /// `_refreshGameLayer`, called unconditionally the first time — see
+  /// `shouldRegenFog`'s "never generated yet" rule), that reads exactly as
+  /// the owner described: the map "freezes" for the whole synchronous
+  /// duration — animations, scrolling and touch handling all stall, because
+  /// nothing else on the UI isolate's event loop can run until it returns.
+  ///
+  /// Fixed by moving the actual computation to [compute] — a real, separate
+  /// isolate, same pattern `poi_loader.dart`'s `loadPoiStoreOffUiIsolate`
+  /// already uses for the POI parse (also once suspected, but already
+  /// off-isolate: see that file's own doc comment). The UI isolate's event
+  /// loop stays free for the whole duration; `setGeoJsonSource` still runs
+  /// here once the result comes back, so the fog simply appears a little
+  /// after the map itself rather than blocking it. No caller needs to
+  /// change: this method's signature and contract (world-in-coordinates,
+  /// pure function of [revealed]) are unchanged, only WHERE the pure part
+  /// of the work happens.
   Future<void> update(
     MapLibreMapController controller, {
     required Set<CellId> revealed,
     double cellM = cellSizeM,
   }) async {
-    final geojson = fogWorldGeoJson(revealed: revealed, cellM: cellM);
+    final geojson = await fogWorldGeoJsonOffUiIsolate(
+      revealed: revealed,
+      cellM: cellM,
+    );
     await controller.setGeoJsonSource(
       FogLayerIds.source,
       jsonDecode(geojson) as Map<String, dynamic>,
@@ -195,3 +229,21 @@ class FogLayer {
     );
   }
 }
+
+/// Runs [fogWorldGeoJson] on a fresh background isolate via [compute] — see
+/// [FogLayer.update]'s doc comment for the measured freeze this fixes.
+/// Exposed as a standalone top-level function (not a private detail of
+/// [FogLayer.update]) so it is directly unit-testable without a
+/// [MapLibreMapController] — mirrors `poi_loader.dart`'s
+/// `loadPoiStoreOffUiIsolate` sitting alongside `PoiStore.load`.
+Future<String> fogWorldGeoJsonOffUiIsolate({
+  required Set<CellId> revealed,
+  double cellM = cellSizeM,
+}) => compute(_fogWorldGeoJsonSync, (revealed, cellM));
+
+/// Top-level (not a closure) so `compute` can hand it to a fresh isolate
+/// without capturing any UI-isolate state — same requirement
+/// `poi_loader.dart`'s `_loadPoiStoreSync` documents for the same reason.
+/// `compute` takes exactly one argument, hence the record.
+String _fogWorldGeoJsonSync((Set<CellId>, double) args) =>
+    fogWorldGeoJson(revealed: args.$1, cellM: args.$2);

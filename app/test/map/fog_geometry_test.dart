@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:randomwalk/game/grid.dart';
@@ -485,5 +486,121 @@ void main() {
 
       expect(stopwatch.elapsedMilliseconds, lessThan(50));
     });
+
+    test('perf: MANY SEPARATE winding corridors — the adversarial shape a '
+        'real player\'s multi-trip history actually produces — blows well '
+        'past the solid-block/uniform-blob budget above (task 2l, owner: '
+        '"la carte freeze au début")', () {
+      // Both perf tests above are near-worst-case for the EDGE-CANCELLATION
+      // work (`traceGridBoundary`) but near-BEST-case for the CONTAINMENT
+      // classification (`_ringDepths`/`_tightestContainer`, `O(rings^2 *
+      // ring_length)`): a solid block traces to exactly one ring, and 500
+      // uniform 3x3 blobs each trace to a tiny 4-vertex ring after
+      // `simplifyCollinear`. A real revealed-cell set instead accumulates
+      // from many separate WALKS — long, thin, winding, mutually-disjoint
+      // corridors — whose traced rings are each roughly as long as the walk
+      // itself (a one-cell-wide winding path barely cancels any of its own
+      // interior edges). That is the shape that actually stresses the
+      // O(rings^2 * ring_length) term, and it is completely absent from the
+      // synthetic tests above despite a SMALLER total cell count.
+      final revealed = _manyDisjointCorridors(count: 300, lengthCells: 150);
+      expect(revealed.length, lessThan(40000)); // fewer cells than the perf
+      // tests above (~5-9k), yet:
+
+      fogWorldGeoJson(revealed: revealed); // Warm-up.
+      final stopwatch = Stopwatch()..start();
+      fogWorldGeoJson(revealed: revealed);
+      stopwatch.stop();
+
+      expect(
+        stopwatch.elapsedMilliseconds,
+        greaterThan(50),
+        reason:
+            'this is exactly why `FogLayer.update` (map/fog_layer.dart) now '
+            'runs this computation through `compute()` instead of calling '
+            'it directly on the UI isolate — see that method\'s own doc '
+            'comment, and `fog_layer_test.dart`\'s non-blocking regression '
+            'test, for the actual fix',
+      );
+    });
+
+    test('perf: doubling the number of DISJOINT corridors (same size each) '
+        'costs distinctly more than double the time — the superlinear '
+        'signature of the O(rings^2 * ring_length) containment term, not '
+        'just "more geometry to process"', () {
+      final revealedA = _manyDisjointCorridors(count: 300, lengthCells: 150);
+      final revealedB = _manyDisjointCorridors(count: 600, lengthCells: 150);
+      // Sanity: B really is ~2x A's cells (so a merely-linear cost would
+      // also double, which is exactly what this test needs to rule out).
+      expect(revealedB.length, greaterThan(revealedA.length * 1.8));
+      expect(revealedB.length, lessThan(revealedA.length * 2.2));
+
+      fogWorldGeoJson(revealed: revealedA); // Warm-up both.
+      fogWorldGeoJson(revealed: revealedB);
+
+      final swA = Stopwatch()..start();
+      fogWorldGeoJson(revealed: revealedA);
+      swA.stop();
+      final swB = Stopwatch()..start();
+      fogWorldGeoJson(revealed: revealedB);
+      swB.stop();
+
+      expect(
+        swB.elapsedMicroseconds,
+        greaterThan(swA.elapsedMicroseconds * 1.5),
+        reason:
+            'doubling the ring count for the same per-ring size should cost '
+            'meaningfully more than double if the O(rings^2) containment '
+            'term is really what dominates here (measured locally: '
+            '~208ms -> ~757ms, a ~3.6x cost for a 2x input)',
+      );
+    });
   });
+}
+
+/// One long, thin, winding "corridor" of [lengthCells] cells starting at
+/// ([ox], [oy]) — a self-avoiding-ish random walk on the grid, biased to
+/// keep moving forward so it doesn't fold back on itself and cancel its own
+/// edges (a real walk almost never doubles back cell-for-cell either).
+Set<CellId> _corridor(int ox, int oy, int lengthCells, math.Random rng) {
+  final cells = <CellId>{};
+  var x = ox, y = oy;
+  cells.add(CellId(x, y));
+  const dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+  var lastDir = 0;
+  for (var i = 1; i < lengthCells; i++) {
+    // 70% chance to keep going the same way (fewer 4-way branch points,
+    // closer to how a real walking path actually looks), else turn.
+    final dir = rng.nextDouble() < 0.7 ? lastDir : rng.nextInt(4);
+    lastDir = dir;
+    final (dx, dy) = dirs[dir];
+    x += dx;
+    y += dy;
+    cells.add(CellId(x, y));
+  }
+  return cells;
+}
+
+/// [count] separate corridors of [lengthCells] cells each, spaced widely
+/// apart on a coarse lattice so none of them ever touch or merge — the
+/// "many separate trips over months of usage" scenario `fog_geometry.dart`'s
+/// own doc comments call out as ordinary.
+Set<CellId> _manyDisjointCorridors({
+  required int count,
+  required int lengthCells,
+  int seed = 42,
+}) {
+  final rng = math.Random(seed);
+  final revealed = <CellId>{};
+  // Spacing large enough that even a maximally-wandering corridor of
+  // `lengthCells` cells (bounded by a `lengthCells x lengthCells` box)
+  // cannot reach its neighbours.
+  final spacing = lengthCells + 20;
+  final perRow = (math.sqrt(count)).ceil();
+  for (var i = 0; i < count; i++) {
+    final ox = (i % perRow) * spacing;
+    final oy = (i ~/ perRow) * spacing;
+    revealed.addAll(_corridor(ox, oy, lengthCells, rng));
+  }
+  return revealed;
 }
