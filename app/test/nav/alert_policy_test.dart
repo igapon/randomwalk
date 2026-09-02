@@ -33,11 +33,11 @@ void main() {
       expect(policy.shouldAlert(update(distanceToManeuverM: 150)), isFalse);
     });
 
-    test('walk profile alerts at 80 m', () {
+    test('walk profile alerts at 20 m (Task 2e: was 80 m, way too early)', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
       expect(policy.shouldAlert(update(distanceToManeuverM: 300)), isFalse);
-      expect(policy.shouldAlert(update(distanceToManeuverM: 90)), isFalse);
-      expect(policy.shouldAlert(update(distanceToManeuverM: 80)), isTrue);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 25)), isFalse);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 20)), isTrue);
     });
 
     test('bike profile alerts at 200 m, not at 90 m', () {
@@ -52,40 +52,96 @@ void main() {
       // The first-ever observation for a maneuver is itself the crossing:
       // there is no earlier fix to have been above threshold.
       final policy = AlertPolicy(profile: RoutingProfile.walk);
-      expect(policy.shouldAlert(update(distanceToManeuverM: 40)), isTrue);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 15)), isTrue);
     });
 
     test('fires once per maneuver, not on every fix under threshold', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
-      expect(policy.shouldAlert(update(distanceToManeuverM: 70)), isTrue);
-      expect(policy.shouldAlert(update(distanceToManeuverM: 60)), isFalse);
-      expect(policy.shouldAlert(update(distanceToManeuverM: 20)), isFalse);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 18)), isTrue);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 17)), isFalse);
       // Even a GPS wobble pushing the distance back above threshold must not
       // re-arm the same maneuver.
-      expect(policy.shouldAlert(update(distanceToManeuverM: 95)), isFalse);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 25)), isFalse);
     });
 
     test('re-arms once the maneuver index advances', () {
       final policy = AlertPolicy(profile: RoutingProfile.walk);
       expect(
-        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 70)),
+        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 18)),
         isTrue,
       );
       expect(
-        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 10)),
+        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 15)),
         isFalse,
       );
 
       // New maneuver, still under its own threshold from the first fix seen
       // for it.
       expect(
-        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 75)),
+        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 19)),
         isTrue,
       );
       expect(
-        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 5)),
+        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 16)),
         isFalse,
       );
+    });
+  });
+
+  group('AlertPolicy — walk confirmation at 8 m (Task 2e item 3)', () {
+    test('confirms once more at 8 m after the 20 m alert already fired', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 20)), isTrue);
+      // Still approaching, above the confirm distance: silent.
+      expect(policy.shouldAlert(update(distanceToManeuverM: 12)), isFalse);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 8)), isTrue);
+    });
+
+    test('confirms at most once per maneuver', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 20)), isTrue);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 8)), isTrue);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 4)), isFalse);
+      // Even a wobble back above the confirm distance (but still under the
+      // primary one) must not re-fire the confirmation.
+      expect(policy.shouldAlert(update(distanceToManeuverM: 9)), isFalse);
+    });
+
+    test('a fix that jumps straight under 8 m without a prior 20 m alert is '
+        'the first alert, not a confirmation of one never given', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 5)), isTrue);
+      // That single alert already covered ground normally split between
+      // the 20 m and 8 m thresholds — the confirmation is pre-consumed, so
+      // an even closer fix moments later does not immediately buzz again.
+      expect(policy.shouldAlert(update(distanceToManeuverM: 3)), isFalse);
+    });
+
+    test('confirmation re-arms once the maneuver index advances', () {
+      final policy = AlertPolicy(profile: RoutingProfile.walk);
+      expect(
+        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 20)),
+        isTrue,
+      );
+      expect(
+        policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 8)),
+        isTrue,
+      );
+      expect(
+        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 20)),
+        isTrue,
+      );
+      expect(
+        policy.shouldAlert(update(maneuverIndex: 1, distanceToManeuverM: 8)),
+        isTrue,
+      );
+    });
+
+    test('bike profile never confirms, even well under 8 m', () {
+      final policy = AlertPolicy(profile: RoutingProfile.bike);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 200)), isTrue);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 8)), isFalse);
+      expect(policy.shouldAlert(update(distanceToManeuverM: 2)), isFalse);
     });
   });
 
@@ -159,7 +215,7 @@ void main() {
         final policy = AlertPolicy(profile: RoutingProfile.walk);
         // Alerted for maneuver 0 on the original route.
         expect(
-          policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 70)),
+          policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 18)),
           isTrue,
         );
 
@@ -170,7 +226,7 @@ void main() {
         policy.reset();
 
         expect(
-          policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 70)),
+          policy.shouldAlert(update(maneuverIndex: 0, distanceToManeuverM: 18)),
           isTrue,
         );
       },
