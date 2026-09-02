@@ -207,6 +207,88 @@ void main() {
     );
   });
 
+  group('Task 2g: combined XP (exploration + landmark-visit)', () {
+    test('xpEarned is the SUM of inner\'s own XP and FinishedTrip.'
+        'visitXpEarned — not either alone', () async {
+      final recorder = build(
+        inner: (t) async => [_xpEvent('km', t.startedAt!, 32)],
+      );
+      await recorder.process(
+        FinishedTrip(
+          km: 3.2,
+          startedAt: trip.startedAt,
+          endedAt: trip.endedAt,
+          profile: RoutingProfile.walk,
+          visitXpEarned: 25,
+        ),
+      );
+
+      expect((await store.list()).single.xpEarned, closeTo(57, 1e-9));
+    });
+
+    test('visit XP alone (inner returned nothing) still records a real, '
+        'non-null total — a failed exploration run must not silently drop '
+        'landmark-visit XP that was already durably journaled', () async {
+      final recorder = build(inner: (t) async => const []);
+      await recorder.process(
+        FinishedTrip(
+          km: 3.2,
+          startedAt: trip.startedAt,
+          endedAt: trip.endedAt,
+          profile: RoutingProfile.walk,
+          visitXpEarned: 25,
+        ),
+      );
+
+      expect((await store.list()).single.xpEarned, closeTo(25, 1e-9));
+    });
+
+    test(
+      'no exploration XP and no visit XP is still recorded as null, never '
+      'zero (unchanged from before this trip carried visit XP at all)',
+      () async {
+        final recorder = build(inner: (t) async => const []);
+        await recorder.process(
+          FinishedTrip(
+            km: 3.2,
+            startedAt: trip.startedAt,
+            endedAt: trip.endedAt,
+            profile: RoutingProfile.walk,
+            // visitXpEarned left at its default (0).
+          ),
+        );
+
+        expect((await store.list()).single.xpEarned, isNull);
+      },
+    );
+
+    test('a concurrent sync merge during inner\'s call still cannot pollute '
+        'the combined total — the visit-XP half is immune the same way, by '
+        'construction (TripController never re-reads the journal for it '
+        'either — see GameVisitConsumer.consume\'s doc comment)', () async {
+      final recorder = build(
+        inner: (t) async {
+          final own = _xpEvent('own', t.startedAt!, 10);
+          await journal.append(own);
+          await journal.append(_xpEvent('remote-merge', t.startedAt!, 500));
+          return [own];
+        },
+      );
+      await recorder.process(
+        FinishedTrip(
+          km: 3.2,
+          startedAt: trip.startedAt,
+          endedAt: trip.endedAt,
+          profile: RoutingProfile.walk,
+          visitXpEarned: 25,
+        ),
+      );
+
+      // 10 (inner's own) + 25 (visit) = 35 — never 510+.
+      expect((await store.list()).single.xpEarned, closeTo(35, 1e-9));
+    });
+  });
+
   test('the track is peeked before inner deletes it, and inner still sees '
       'the file', () async {
     await trackFile.parent.create(recursive: true);

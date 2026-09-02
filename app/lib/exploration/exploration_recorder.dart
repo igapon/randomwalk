@@ -108,6 +108,23 @@ class FinishedTrip {
   final DateTime? endedAt;
   final RoutingProfile? profile;
 
+  /// Task 2g (owner brief, binding requirement from the 2f re-review): this
+  /// trip's own landmark-visit XP — the sum of `xp_earned` amounts among the
+  /// events `GameVisitConsumer.consume` itself appended across every call
+  /// `TripController` made for THIS trip (mid-trip landmark visits reach the
+  /// journal via a separate path from this class's own `xp_earned` events —
+  /// see [ExplorationRecorder]'s class doc comment — so without this field
+  /// the congratulations screen's XP figure silently missed it). Accumulated
+  /// in memory by `TripController` for the life of one trip (reset to 0 at
+  /// every `startTrip`/`resumeInterrupted`), never by re-reading `GameState`
+  /// — see `history/trip_history_recorder.dart`'s doc comment for why that
+  /// specific approach is unsafe against a concurrent sync merge. [Exploration
+  /// Recorder] itself never reads this — purely additive, like [startedAt]/
+  /// [endedAt]/[profile] — so every existing call site/test keeps compiling
+  /// unchanged; only `history/trip_history_recorder.dart`'s decorator adds it
+  /// to the exploration-XP sum it already computes.
+  final double visitXpEarned;
+
   const FinishedTrip({
     required this.km,
     this.isLoop = false,
@@ -115,6 +132,7 @@ class FinishedTrip {
     this.startedAt,
     this.endedAt,
     this.profile,
+    this.visitXpEarned = 0,
   });
 }
 

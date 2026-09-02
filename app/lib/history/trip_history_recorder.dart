@@ -30,6 +30,23 @@ import 'trip_history_store.dart';
 /// simple"): the `xp_earned` events [inner] itself returns from *this call*
 /// (see [ExplorationRecorder.process]'s return value).
 ///
+/// **Task 2g update (binding requirement from the 2f re-review)**: the
+/// stored `xpEarned` is this trip's TOTAL XP, not just [inner]'s own share.
+/// A second source exists that [inner] never sees: mid-trip landmark visits
+/// (`GameVisitConsumer`, `+25`/first visit) are journaled through a
+/// completely separate path — `TripController._maybeProcessGameVisits`,
+/// fired as each `TripSnapshot.pendingVisits` batch arrives, long before the
+/// trip ever stops — so a history row built from [inner]'s return value
+/// alone silently dropped every landmark's XP. `TripController` now
+/// accumulates this trip's own visit XP the exact same race-immune way
+/// [inner]'s own XP is summed here (see [FinishedTrip.visitXpEarned]'s doc
+/// comment: summed from what `GameVisitConsumer.consume` itself returned
+/// each call, never from re-reading `GameState`) and hands the running total
+/// to [FinishedTrip] at trip end; [_xpFrom] below adds it to [inner]'s own
+/// sum. Both halves are immune to the same concurrent-sync-merge race by the
+/// same construction — see this class's "Review fix round 1" doc comment
+/// just below — so combining them introduces no new race.
+///
 /// **Review fix round 1 (Critical 1)**: the first version of this class
 /// instead read `GameState.xp` before and after [inner] ran and stored the
 /// difference. That is unsafe in this codebase specifically:
@@ -104,13 +121,29 @@ class TripHistoryRecorder {
           distanceKm: trip.km,
           duration: duration,
           avgSpeedKmh: hours > 0 ? trip.km / hours : 0,
-          xpEarned: _xpFrom(appended),
+          xpEarned: _totalXpFrom(appended, trip.visitXpEarned),
           track: track,
         ),
       );
     } catch (e) {
       debugPrint('TripHistoryRecorder: failed to record trip, continuing: $e');
     }
+  }
+
+  /// This trip's TOTAL XP — the `xp_earned` amounts among the events [inner]
+  /// itself appended for this trip (see [_xpFrom]) PLUS [visitXp], this same
+  /// trip's own accumulated landmark-visit XP (Task 2g — see this class's
+  /// "Task 2g update" doc comment above and [FinishedTrip.visitXpEarned]).
+  ///
+  /// `null` only when BOTH halves are unknown/zero: [inner] failed before
+  /// durably committing anything (`_xpFrom` returns `null` — see its own doc
+  /// comment) AND no landmark visit earned XP this trip either. Either half
+  /// alone being known/non-zero is enough to report a real number — `null`
+  /// must never be conflated with "this trip earned nothing."
+  double? _totalXpFrom(List<GameEvent> appended, double visitXp) {
+    final explorationXp = _xpFrom(appended);
+    if (explorationXp == null && visitXp == 0) return null;
+    return (explorationXp ?? 0) + visitXp;
   }
 
   /// Sums the `xp_earned` amounts among the events [inner] itself appended
@@ -128,7 +161,9 @@ class TripHistoryRecorder {
   /// rather than "what it happened to bank," which depends on the player's
   /// energy level at whatever moment the reducer runs — a quantity this
   /// class has no race-free way to pin down anyway (see this class's own
-  /// doc comment on why a `GameState` read was dropped entirely).
+  /// doc comment on why a `GameState` read was dropped entirely). The same
+  /// reasoning applies to [FinishedTrip.visitXpEarned] — see that field's
+  /// doc comment.
   double? _xpFrom(List<GameEvent> appended) {
     if (appended.isEmpty) return null;
     var total = 0.0;
