@@ -128,7 +128,21 @@ class GameVisitConsumer {
   /// under-reward the walker has no way to notice or recover from, unlike a
   /// duplicate (which the reducers' own idempotency already absorbs, see
   /// this class's doc comment).
-  Future<void> consume(List<PendingVisit> visits) async {
+  ///
+  /// **Task 2g (owner brief)**: returns exactly the [GameEvent]s durably
+  /// appended across this call — `const []` if nothing was (an empty/
+  /// already-seen [visits], or a `readAll()` failure before any visit was
+  /// even attempted). Mirrors `ExplorationRecorder.process`'s own return
+  /// contract, and for the identical reason: `TripController` accumulates
+  /// this trip's own landmark-visit XP by summing the `xp_earned` amounts in
+  /// what THIS call returns, never by re-reading `GameState.xp` off the
+  /// journal — which a concurrent `SyncEngine.sync()` merge could pollute
+  /// with XP that has nothing to do with this trip (see
+  /// `history/trip_history_recorder.dart`'s doc comment for the identical
+  /// race this sidesteps for exploration XP). A visit lost to a transient
+  /// failure (see the per-visit `catch` below) contributes nothing to the
+  /// returned list, exactly as it contributes nothing to the journal.
+  Future<List<GameEvent>> consume(List<PendingVisit> visits) async {
     final toProcess = <PendingVisit>[];
     final keysToProcess = <String>[];
     for (final visit in visits) {
@@ -141,7 +155,7 @@ class GameVisitConsumer {
       keysToProcess.add(key);
       toProcess.add(visit);
     }
-    if (toProcess.isEmpty) return;
+    if (toProcess.isEmpty) return const [];
 
     GameState state;
     try {
@@ -152,13 +166,16 @@ class GameVisitConsumer {
       // `TripSnapshot.pendingVisits`) will simply retry this batch later —
       // nothing in `toProcess` was `_remember`ed, so that retry is not
       // blocked by this attempt having half-marked it seen.
-      return;
+      return const [];
     }
 
+    final appended = <GameEvent>[];
     for (var i = 0; i < toProcess.length; i++) {
       final visit = toProcess[i];
       try {
-        state = await _process(visit, state);
+        final result = await _process(visit, state);
+        state = result.state;
+        appended.addAll(result.events);
         // Only remembered once its events are durably appended — a visit
         // whose `_process` call throws stays un-remembered, so it is
         // retried (rather than silently lost) the next time the service
@@ -171,6 +188,7 @@ class GameVisitConsumer {
         // onto a partially-applied one.
       }
     }
+    return appended;
   }
 
   void _remember(String key) {
@@ -183,9 +201,13 @@ class GameVisitConsumer {
 
   /// Processes one [visit] against the already-known [before] state (the
   /// running fold from [consume], not a fresh read of the journal) and
-  /// returns the resulting state for [consume] to carry into the next visit
-  /// in the same batch.
-  Future<GameState> _process(PendingVisit visit, GameState before) async {
+  /// returns the resulting state (for [consume] to carry into the next visit
+  /// in the same batch) alongside exactly the events this call durably
+  /// appended to [journal] (Task 2g — see [consume]'s own doc comment).
+  Future<({GameState state, List<GameEvent> events})> _process(
+    PendingVisit visit,
+    GameState before,
+  ) async {
     final toAppend = <GameEvent>[];
 
     final payload = <String, dynamic>{
@@ -231,7 +253,7 @@ class GameVisitConsumer {
       after = reduceOne(after, event);
     }
     await _maybeAlert(visit, before: before, after: after);
-    return after;
+    return (state: after, events: toAppend);
   }
 
   /// Reveal-kind visits also reveal a [kLandmarkRevealRadiusM]-meter disc

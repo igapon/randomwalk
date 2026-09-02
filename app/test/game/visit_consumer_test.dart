@@ -461,6 +461,77 @@ void main() {
     );
   });
 
+  group('Task 2g: consume() return value (TripController XP accumulation)', () {
+    test('returns exactly the events durably appended this call', () async {
+      final consumer = buildConsumer();
+      final events = await consumer.consume([reveal()]);
+
+      expect(events.map((e) => e.type).toList(), [
+        GameEventTypes.landmarkVisited,
+        GameEventTypes.cellRevealed,
+        GameEventTypes.badgeUnlocked,
+        GameEventTypes.xpEarned,
+      ]);
+      // `GameEvent` has no `==` override, so compare structurally
+      // (`toJson`) rather than by identity — `journal.readAll()` parses
+      // fresh instances off disk, distinct objects from the ones `consume`
+      // itself returned in memory.
+      expect(
+        events.map((e) => e.toJson()).toList(),
+        (await journal.readAll()).map((e) => e.toJson()).toList(),
+      );
+    });
+
+    test('an all-already-seen batch returns an empty list', () async {
+      final consumer = buildConsumer();
+      final visit = coins();
+      await consumer.consume([visit]);
+
+      final second = await consumer.consume([visit]);
+      expect(second, isEmpty);
+    });
+
+    test(
+      'a cooldown-blocked revisit returns landmark_visited alone (no '
+      'xp_earned) — mirrors the journal, not a synthesized "nothing"',
+      () async {
+        final consumer = buildConsumer();
+        await consumer.consume([coins(ts: t0)]);
+
+        final events = await consumer.consume([
+          coins(ts: t0.add(const Duration(hours: 2))),
+        ]);
+
+        expect(events.map((e) => e.type).toList(), [
+          GameEventTypes.landmarkVisited,
+        ]);
+      },
+    );
+
+    test('a readAll() failure returns an empty list, never a partial/throwing '
+        'result', () async {
+      final flaky = FlakyReadJournal(journal.dir)..failNext = true;
+      final consumer = GameVisitConsumer(
+        journal: flaky,
+        newId: () => 'evt-${idCounter++}',
+      );
+      final events = await consumer.consume([reveal()]);
+      expect(events, isEmpty);
+    });
+
+    test('two distinct-poi visits in one batch both contribute their own '
+        'xp_earned events to the returned list', () async {
+      await drainEnergyTo(-75);
+      final consumer = buildConsumer();
+      final events = await consumer.consume([
+        coins(poiId: 'bank-a', ts: t0),
+        energy(poiId: 'cafe-b', ts: t0.add(const Duration(seconds: 1))),
+      ]);
+
+      expect(events.where((e) => e.type == GameEventTypes.xpEarned).length, 2);
+    });
+  });
+
   group('resilience', () {
     test('a throwing notify callback never stops the journal write', () async {
       final consumer = GameVisitConsumer(
