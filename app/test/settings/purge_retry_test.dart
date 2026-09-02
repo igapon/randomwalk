@@ -94,10 +94,20 @@ void main() {
     tripControllerProvider.overrideWith((ref) => trip),
   ];
 
+  /// Default `wait` is generous (not the usual 100 ms other test files use
+  /// for lighter taps) because every real `runLocalPurge` call in this file
+  /// now runs the full, heavier purge chain (journal/checkpoint/edges/
+  /// trip-history/trip-snapshot/track/sync-state — seven real I/O steps).
+  /// CI caught this directly: `a fully successful purge clears any prior
+  /// incomplete flag` flaked with a null `result` (the tap's `_Probe`
+  /// callback hadn't fired yet) under CI disk load with the old 100 ms
+  /// default — bumping the default here, rather than only the call sites
+  /// already known to need it, covers every current and future test in this
+  /// file against the same class of flake.
   Future<void> tapAndWait(
     WidgetTester tester,
     String text, {
-    Duration wait = const Duration(milliseconds: 100),
+    Duration wait = const Duration(milliseconds: 1000),
   }) async {
     await tester.runAsync(() async {
       await tester.tap(find.text(text));
@@ -247,20 +257,12 @@ void main() {
         findsOneWidget,
       );
 
-      // Fix the underlying problem, then retry. Same generous real-time
-      // budget account_screen_test.dart's equivalent purge tap needs — this
-      // one tap's `_retry` runs the exact same `runLocalPurge` call (now
-      // seven real I/O steps: journal/checkpoint/edges/trip-history/
-      // trip-snapshot/track/sync-state) before its own trailing `setState`
-      // (which is what actually hides this tile) ever fires; the default
-      // 100 ms isn't reliably enough real time for all of that to land
-      // before `pumpAndSettle` stops finding new frames to pump.
+      // Fix the underlying problem, then retry — tapAndWait's default wait
+      // (see its own doc comment) already budgets enough real time for this
+      // tap's `_retry` to run the full `runLocalPurge` chain before its
+      // trailing `setState` (which is what actually hides this tile) fires.
       await tester.runAsync(() => edgesFile.delete());
-      await tapAndWait(
-        tester,
-        'Réessayer la suppression des données locales',
-        wait: const Duration(milliseconds: 1000),
-      );
+      await tapAndWait(tester, 'Réessayer la suppression des données locales');
 
       expect(find.text('Données locales supprimées.'), findsOneWidget);
       expect(await PurgeRetryState().isIncomplete(), isFalse);
