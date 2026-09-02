@@ -221,12 +221,34 @@ Duration gpsSilenceThresholdFor(int distanceFilterM) {
 /// that looks like it is recording and measures nothing. [lastFixAt] is
 /// null before the first position ever arrives, in which case the clock
 /// runs from [recordingSince].
+///
+/// Fix round 2 (I2): the clock actually runs from the LATER of the two, not
+/// from [lastFixAt] whenever it happens to be non-null. On any real trip
+/// `lastFixAt` is non-null well before the first pause (`SessionController`
+/// sets it on every fix, and only nulls it in `start()`), so a naive
+/// `lastFixAt ?? recordingSince` never falls back to [recordingSince] at
+/// all once a trip has measured a single fix — meaning
+/// `TripTaskHandler._doReconcileStream`'s resume-time reset of
+/// `_recordingSince` (a fix for the exact same "stale verdict on resume"
+/// problem) had no effect in practice: the silence verdict kept comparing
+/// against the last *pre-pause* fix, potentially minutes old, at the exact
+/// moment the walker starts moving again. Taking the later of the two means
+/// a fresh [recordingSince] genuinely grants a new grace window after a
+/// resume, while still correctly reporting silence once [threshold] has
+/// elapsed past *that* moment too — a window, not a permanent exemption: a
+/// GPS that stays genuinely dead after the resume still surfaces silence
+/// once the threshold passes from the resume itself.
 bool isGpsSilent({
   required DateTime now,
   required DateTime? lastFixAt,
   required DateTime recordingSince,
   Duration threshold = kGpsSilenceThreshold,
-}) => now.difference(lastFixAt ?? recordingSince) > threshold;
+}) {
+  final anchor = (lastFixAt != null && lastFixAt.isAfter(recordingSince))
+      ? lastFixAt
+      : recordingSince;
+  return now.difference(anchor) > threshold;
+}
 
 /// Android foreground service (`flutter_foreground_task` 11.x) hosting a
 /// [SessionController] in its own isolate.
@@ -680,6 +702,21 @@ class TripTaskHandler extends TaskHandler {
       ChannelStepSensor.new;
 
   late final StepSensor _fallbackStepSensor = fallbackStepSensorFactory();
+
+  /// Builds the [SessionController] [onStart] drives the recording with.
+  /// A static, swappable field — same rationale as
+  /// [speakerFactory]/[motionChannelFactory]/[fallbackStepSensorFactory]:
+  /// this class is instantiated by `flutter_foreground_task` itself, so
+  /// there is no constructor to pass a fake into. `var`, not an explicitly
+  /// spelled-out function type, so it is inferred straight from
+  /// `SessionController.new` and a test override cannot drift out of sync
+  /// with that constructor's own signature. Fix round 2 (I2 test): lets a
+  /// test supply a fake `getPositionStream`/`getCurrentPosition` so a real
+  /// fix can flow through `SessionController` itself — setting `lastFixAt`
+  /// exactly as production does — rather than only ever driving the
+  /// service through [debugOnFix], which never touches `_session` at all.
+  @visibleForTesting
+  static var sessionControllerFactory = SessionController.new;
   bool _fallbackStepSensorStarted = false;
   int? _fallbackStepBaseline;
   DateTime? _lastFallbackStepPollAt;
@@ -916,7 +953,7 @@ class TripTaskHandler extends TaskHandler {
     _ttsEnabled =
         await FlutterForegroundTask.getData<bool>(key: _kTtsEnabledKey) ?? true;
 
-    final session = SessionController(
+    final session = sessionControllerFactory(
       store: _PassThroughDistanceStore(),
       checkPermissions: () async => true,
       // Banks what the recorder measured into the running total *before* it
@@ -1056,7 +1093,11 @@ class TripTaskHandler extends TaskHandler {
     // started is what keeps the notification from momentarily lying.
     final stillPaused = policy.isPaused;
     _lowPowerPaused = stillPaused;
-    final now = DateTime.now();
+    // `policy.now` (the same clock MotionPolicy's own thresholds use), not
+    // a second, separately-sourced `DateTime.now()` — see MotionPolicy.now's
+    // doc comment for why this class in particular must not introduce yet
+    // another clock into the mix.
+    final now = policy.now;
     if (!stillPaused) {
       // Fix round 1 — I2: a resume must not publish a stale `gpsSilent`
       // verdict off a `lastFixAt` that can be minutes old (the last safety
@@ -1160,9 +1201,19 @@ class TripTaskHandler extends TaskHandler {
     if (last != null && now.difference(last) < kFallbackStepPollInterval) {
       return;
     }
-    _lastFallbackStepPollAt = now;
     final count = await _fallbackStepSensor.read();
+    // Fix round 2 — I4: stamped only on a *successful* read, not
+    // unconditionally before it. The sensor listener registers
+    // asynchronously (`start()`, just above), so the very first poll of a
+    // pause spell can easily read null before it has reported anything —
+    // stamping the timestamp regardless would silently push the real
+    // baseline-establishing read out to a full [kFallbackStepPollInterval]
+    // later, doubling the documented worst-case latency (30 s baseline +
+    // 30 s delta check = 60 s, not the intended ~30 s). Leaving [last] null
+    // instead means this retries on the very next tick (~2 s in
+    // production) until the sensor actually answers.
     if (count == null) return;
+    _lastFallbackStepPollAt = now;
     final baseline = _fallbackStepBaseline;
     if (baseline == null) {
       _fallbackStepBaseline = count;

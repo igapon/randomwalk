@@ -4,10 +4,12 @@ import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:randomwalk/exploration/track_sampler.dart' show kTrackMaxPoints;
 import 'package:randomwalk/nav/nav_fields.dart';
 import 'package:randomwalk/nav/tts.dart';
 import 'package:randomwalk/session/recorder.dart' show GpsSample;
+import 'package:randomwalk/session/session_controller.dart';
 import 'package:randomwalk/tracking/adaptive_gps.dart';
 import 'package:randomwalk/tracking/motion_channel.dart';
 import 'package:randomwalk/tracking/nav_seed.dart';
@@ -144,6 +146,50 @@ void main() {
 
     test('the threshold is the documented one minute', () {
       expect(kGpsSilenceThreshold, const Duration(seconds: 60));
+    });
+
+    test('fix round 2 (I2): a recordingSince reset AFTER the last fix grants '
+        'a fresh grace window instead of being ignored', () {
+      // The bug: `lastFixAt ?? recordingSince` never falls back to
+      // recordingSince once a single fix has ever arrived, so resetting
+      // recordingSince on resume (the round-1 fix) had no effect on a
+      // real trip — lastFixAt, potentially minutes stale, always won.
+      final lastFixAt = DateTime.utc(2026, 8, 31, 9, 0);
+      final resumedAt = DateTime.utc(2026, 8, 31, 9, 5); // well after
+      expect(
+        isGpsSilent(
+          now: resumedAt.add(const Duration(seconds: 30)),
+          lastFixAt: lastFixAt,
+          recordingSince: resumedAt,
+        ),
+        isFalse,
+        reason:
+            'the fresh recordingSince must be the anchor, not the '
+            'stale (5 min old) lastFixAt',
+      );
+
+      // But it is a WINDOW, not a permanent exemption: once the
+      // threshold elapses past the resume moment itself with still no
+      // fresh fix, silence must surface again.
+      expect(
+        isGpsSilent(
+          now: resumedAt.add(const Duration(seconds: 61)),
+          lastFixAt: lastFixAt,
+          recordingSince: resumedAt,
+        ),
+        isTrue,
+      );
+
+      // And a lastFixAt genuinely AFTER recordingSince (the ordinary,
+      // non-resume case) is unaffected — same as before this fix.
+      expect(
+        isGpsSilent(
+          now: lastFixAt.add(const Duration(seconds: 30)),
+          lastFixAt: lastFixAt,
+          recordingSince: resumedAt.subtract(const Duration(minutes: 10)),
+        ),
+        isFalse,
+      );
     });
   });
 
@@ -1181,6 +1227,7 @@ void main() {
       TripTaskHandler.motionChannelFactory = MotionChannel.new;
       TripTaskHandler.motionClockFactory = DateTime.now;
       TripTaskHandler.fallbackStepSensorFactory = ChannelStepSensor.new;
+      TripTaskHandler.sessionControllerFactory = SessionController.new;
     });
 
     Future<void> seedPrefs({
@@ -1367,54 +1414,96 @@ void main() {
     });
 
     test(
-      'fix round 1 — I2: resume does not publish a stale gpsSilent verdict',
+      'fix round 2 — I2: resume does not publish a stale gpsSilent verdict '
+      '(re-pointed through a real, SessionController-delivered fix)',
       () async {
+        // Round 1's version of this test drove everything via debugOnFix,
+        // which calls straight into _onFix and never touches `_session` at
+        // all — so `_session.lastFixAt` stayed null for the whole test, and
+        // the assertion only ever exercised the (already-correct)
+        // recordingSince branch. A real trip's `lastFixAt` is set on every
+        // fix and only ever nulled in `start()`, so it is essentially
+        // always non-null well before a pause — this test now routes a
+        // real fix through a fake `SessionController` (via
+        // [TripTaskHandler.sessionControllerFactory]) to reproduce that.
+        final positionControllers = <StreamController<Position>>[];
+        Stream<Position> fakeStream(LocationSettings _) {
+          final c = StreamController<Position>();
+          positionControllers.add(c);
+          return c.stream;
+        }
+
+        TripTaskHandler.sessionControllerFactory =
+            ({
+              required store,
+              getPositionStream,
+              getClock,
+              checkPermissions,
+              getCurrentPosition,
+              locationSettings,
+              onSessionEnded,
+              onSessionError,
+              onFix,
+            }) => SessionController(
+              store: store,
+              getPositionStream: fakeStream,
+              // Same simulated clock `motionClockFactory` drives — so
+              // `lastFixAt` genuinely goes several (simulated) minutes
+              // stale while paused, not just milliseconds of real time.
+              getClock: () => now,
+              checkPermissions: checkPermissions,
+              getCurrentPosition: getCurrentPosition,
+              locationSettings: locationSettings,
+              onSessionEnded: onSessionEnded,
+              onSessionError: onSessionError,
+              onFix: onFix,
+            );
+
         await seedPrefs(routeBound: false);
         final handler = TripTaskHandler();
         await handler.onStart(now, TaskStarter.developer);
 
-        await handler.debugOnFix(
-          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
+        // A real, accurate fix — sets `_session.lastFixAt` exactly as a
+        // real trip would, and (via the same onFix hook) starts the
+        // fallback stillness timer.
+        positionControllers.single.add(
+          Position(
+            latitude: 46.5,
+            longitude: 6.6,
+            accuracy: 5,
+            speed: 0,
+            speedAccuracy: 0,
+            heading: 0,
+            headingAccuracy: 0,
+            timestamp: now,
+            altitudeAccuracy: 0,
+            altitude: 0,
+          ),
         );
+        await pumpEventQueue();
+
         now = now.add(const Duration(minutes: 3));
         handler.onRepeatEvent(now);
         await pollUntil(() => handler.debugLowPowerPaused);
 
         // Sit paused well past the ordinary 60 s silence threshold —
-        // `lastFixAt` (were it consulted) would read as several minutes
-        // stale by the time the walker moves again.
+        // `lastFixAt` is now several minutes stale on the shared clock.
         now = now.add(const Duration(minutes: 4));
         handler.onRepeatEvent(now);
         await Future<void>.delayed(const Duration(milliseconds: 100));
 
         // Movement resumes — the very publish that clears the pause must
         // not carry a stale gpsSilent verdict.
-        now = now.add(const Duration(seconds: 1));
-        await handler.debugOnFix(
-          GpsSample(
-            lat: 46.5009,
-            lon: 6.6,
-            accuracyM: 5,
-            speedMps: 1.2,
-            time: now,
-          ),
-        );
+        handler.onReceiveData({'steps': 1});
         await pollUntil(() => !handler.debugLowPowerPaused);
 
-        // Asserted against the live computation (`debugIsGpsSilentAt`), not
-        // the *persisted* snapshot: `ThrottledSnapshotWriter` coalesces
-        // writes on its own real-wall-clock 2 s window, which is unrelated
-        // to (and would make this assertion racy against) the low-power
-        // logic actually under test here. `_recordingSince` is reset with
-        // real `DateTime.now()` inside `_doReconcileStream`'s resume
-        // branch, so checking against real "now" here (rather than the
-        // test's simulated `now`) is the correct comparison.
         expect(
-          handler.debugIsGpsSilentAt(DateTime.now()),
+          handler.debugIsGpsSilentAt(now),
           isFalse,
           reason:
-              'the resume must not show a GPS-failure banner at the '
-              'exact moment the walker starts moving again',
+              'the resume must not show a GPS-failure banner at the exact '
+              'moment the walker starts moving again, even though the '
+              'pre-pause fix is now several minutes stale',
         );
       },
     );
@@ -1646,6 +1735,42 @@ void main() {
         await pollUntil(() => !handler.debugLowPowerPaused);
       });
 
+      test('fix round 2 — I4: a null first read (sensor not yet registered) '
+          'does not push the baseline out to a second 30 s interval', () async {
+        // Bug: _lastFallbackStepPollAt used to be stamped BEFORE reading
+        // the sensor, so a null first read (the listener registers
+        // asynchronously in start(), just above) silently rate-limited
+        // the real baseline-establishing read to a full interval later —
+        // doubling the documented worst-case latency to ~60 s.
+        final stepSensor = FakeStepSensor(value: 1000, nullReadsBeforeReady: 1);
+        TripTaskHandler.fallbackStepSensorFactory = () => stepSensor;
+
+        await seedPrefs(routeBound: false);
+        final handler = TripTaskHandler();
+        await handler.onStart(now, TaskStarter.developer);
+
+        await handler.debugOnFix(
+          GpsSample(lat: 46.5, lon: 6.6, accuracyM: 5, speedMps: 0, time: now),
+        );
+        now = now.add(const Duration(minutes: 3));
+        // Pause decided; the poll this same tick triggers reads null.
+        handler.onRepeatEvent(now);
+        await pollUntil(() => handler.debugLowPowerPaused);
+
+        // The very next tick, shortly after (not a full 30 s later),
+        // must retry and succeed in establishing the baseline.
+        now = now.add(const Duration(seconds: 2));
+        handler.onRepeatEvent(now);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Exactly one interval after THAT (not two) is enough to catch
+        // the step delta.
+        stepSensor.value = 1050;
+        now = now.add(TripTaskHandler.kFallbackStepPollInterval);
+        handler.onRepeatEvent(now);
+        await pollUntil(() => !handler.debugLowPowerPaused);
+      });
+
       test(
         'does not resume before the 30 s poll interval has elapsed',
         () async {
@@ -1666,19 +1791,21 @@ void main() {
             ),
           );
           now = now.add(const Duration(minutes: 3));
+          // Pause decided; the poll this same tick triggers establishes the
+          // baseline (1000) immediately — fix round 2 (I4) makes this
+          // reliable (previously a race with _doReconcileStream's own
+          // baseline reset could silently drop this first poll's stamp,
+          // only really taking effect one tick later — see that fix's own
+          // doc comment).
           handler.onRepeatEvent(now);
           await pollUntil(() => handler.debugLowPowerPaused);
-
-          now = now.add(const Duration(seconds: 1));
-          handler.onRepeatEvent(now); // establishes the baseline (1000)
-          await Future<void>.delayed(const Duration(milliseconds: 100));
 
           stepSensor.value = 1050;
           now = now.add(
             TripTaskHandler.kFallbackStepPollInterval -
                 const Duration(seconds: 1),
           );
-          handler.onRepeatEvent(now);
+          handler.onRepeatEvent(now); // 29 s after the baseline — not due yet
           await Future<void>.delayed(const Duration(milliseconds: 100));
           expect(handler.debugLowPowerPaused, isTrue);
         },
