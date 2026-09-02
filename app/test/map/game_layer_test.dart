@@ -18,9 +18,7 @@ void main() {
     });
 
     test('parses every valid key into its CellId', () {
-      final state = const GameState(
-        revealedCellKeys: {'3_4', '-1_2', '0_0'},
-      );
+      final state = const GameState(revealedCellKeys: {'3_4', '-1_2', '0_0'});
 
       expect(
         parseRevealedCells(state),

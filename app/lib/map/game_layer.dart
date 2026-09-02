@@ -109,7 +109,10 @@ class GameLayer {
           color: entry.value,
           filled: visited,
         );
-        await controller.addImage(poiIconId(entry.key, visited: visited), bytes);
+        await controller.addImage(
+          poiIconId(entry.key, visited: visited),
+          bytes,
+        );
       }
     }
     _iconsRegistered = true;
