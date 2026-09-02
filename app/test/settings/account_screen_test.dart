@@ -67,10 +67,14 @@ void main() {
   /// on to observe its result (same issue `auto_sync_test.dart` hit) —
   /// `runAsync` runs in the real zone, where a short real wait is enough
   /// for this test's in-memory/local-file work.
-  Future<void> tapAndWait(WidgetTester tester, String text) async {
+  Future<void> tapAndWait(
+    WidgetTester tester,
+    String text, {
+    Duration wait = const Duration(milliseconds: 100),
+  }) async {
     await tester.runAsync(() async {
       await tester.tap(find.text(text));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await Future<void>.delayed(wait);
     });
     await tester.pumpAndSettle();
   }
@@ -326,7 +330,17 @@ void main() {
           await tapAndWait(tester, 'Supprimer mon compte');
           await tapAndWait(tester, 'Continuer');
           await tapAndWait(tester, 'Supprimer définitivement');
-          await tapAndWait(tester, 'Supprimer aussi mes données');
+          // Longer wait than the default: this tap's async chain runs the
+          // full local purge (journal/checkpoint file deletes, an EdgesStore
+          // open+clear+close round trip, sync-state prefs deletion) before
+          // the snackbar appears — under load (observed on a CI runner) the
+          // default 100 ms budget isn't reliably enough for all of that
+          // real I/O to land before pumpAndSettle checks below.
+          await tapAndWait(
+            tester,
+            'Supprimer aussi mes données',
+            wait: const Duration(milliseconds: 500),
+          );
 
           expect(
             find.text('Compte et données locales supprimés.'),

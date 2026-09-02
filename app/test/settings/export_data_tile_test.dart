@@ -29,18 +29,6 @@ void main() {
   /// returning — same issue/fix as `account_screen_test.dart`'s
   /// `tapAndWait`: a fake-clock `pump`/`pumpAndSettle` alone doesn't
   /// observe an unawaited async method's result.
-  ///
-  /// NOTE (environment quirk, not a code issue): in this project's local
-  /// Windows sandbox specifically, this exact pattern has been observed to
-  /// hang the `flutter test` process on this file even though every piece
-  /// of `DataExporter`'s logic — verified in isolation, including calling
-  /// `DataExporter.exportAndShare` directly from a plain (non-`ListTile`)
-  /// widget with an identical `runAsync`+tap+`pumpAndSettle` shape — runs
-  /// correctly and fast. `account_screen_test.dart` uses the identical
-  /// helper successfully. If this file hangs locally, treat it the same as
-  /// this project's other documented Windows-local flakes (see
-  /// `task-6-report.md`) and confirm via CI rather than continuing to
-  /// debug the local sandbox.
   Future<void> tapExport(WidgetTester tester) async {
     await tester.runAsync(() async {
       await tester.tap(find.text('Exporter mes données'));
@@ -48,6 +36,31 @@ void main() {
     });
     await tester.pumpAndSettle();
   }
+
+  /// Reads back the exported file's JSON payload. **Must** run inside
+  /// `runAsync` — root cause of the CI hang this replaces a bare
+  /// `await file.readAsString()` for (see `task-6-report.md`'s corrected
+  /// writeup): any real `dart:io` await issued directly in a `testWidgets`
+  /// body, even one that never touches a fake `Timer`, only actually
+  /// resolves when driven from inside `tester.runAsync` — the two tests
+  /// that did this as a bare `await` (outside `runAsync`) hung for the
+  /// full 10-minute per-test framework timeout on CI (both Linux and,
+  /// consistent with that, locally on Windows — this was never an
+  /// environment-specific flake). The one test that never read the file
+  /// back (share-failure path) never hit this and always passed, which is
+  /// what pointed at the bare awaits specifically rather than `ListTile`/
+  /// `share_plus`/`sqflite`/`path_provider`, every one of which was ruled
+  /// out individually beforehand.
+  Future<Map<String, dynamic>> readExportedPayload(
+    WidgetTester tester,
+    ShareParams params,
+  ) => tester
+      .runAsync(() async {
+        final file = File(params.files!.single.path);
+        final content = await file.readAsString();
+        return jsonDecode(content) as Map<String, dynamic>;
+      })
+      .then((v) => v!);
 
   Future<void> pump(
     WidgetTester tester, {
@@ -104,11 +117,7 @@ void main() {
       await tapExport(tester);
 
       expect(captured, isNotNull);
-      final file = File(captured!.files!.single.path);
-      expect(await file.exists(), isTrue);
-
-      final payload =
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final payload = await readExportedPayload(tester, captured!);
       expect(payload['appVersion'], kAppVersion);
       expect(payload['account'], isNull);
       expect(payload['journal'], isEmpty);
@@ -134,9 +143,7 @@ void main() {
     );
     await tapExport(tester);
 
-    final file = File(captured!.files!.single.path);
-    final payload =
-        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    final payload = await readExportedPayload(tester, captured!);
     expect(payload['account'], {'uid': 'u1', 'email': 'a@b.ch'});
   });
 
