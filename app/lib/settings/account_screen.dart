@@ -219,13 +219,14 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
     final purgeAlso = await _confirmLocalPurge();
     if (purgeAlso == true) {
       // runLocalPurge (local_purge.dart) owns the app-support-directory
-      // derivation, the refuse-while-a-trip-is-recording guard (Task 6
-      // review round 1, I1), and PurgeRetryState bookkeeping — shared with
-      // PurgeRetryTile's own retry so both call sites agree on all three.
+      // derivation, the refuse-unless-idle guard (Task 6 review round 1
+      // I1, widened in round 2 to also cover TripState.interrupted), and
+      // PurgeRetryState bookkeeping — shared with PurgeRetryTile's own
+      // retry so both call sites agree on all three.
       final outcome = await runLocalPurge(ref, uid: deletedUid);
       if (mounted) {
         if (outcome.refusedTripActive) {
-          _showSnack('Termine ton trajet avant de supprimer les données.');
+          _showSnack(kPurgeRefusedTripActiveMessage);
         } else if (outcome.isFullSuccess) {
           _showSnack('Compte et données locales supprimés.');
         } else {

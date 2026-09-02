@@ -32,6 +32,20 @@ const _kFrenchStepLabels = {
 String frenchPurgeLabels(List<String> failures) =>
     failures.map((f) => _kFrenchStepLabels[f] ?? f).join(', ');
 
+/// The one refusal message [runLocalPurge] means for BOTH `TripState
+/// .recording` and `TripState.interrupted` (Task 6 review round 2, Important:
+/// an interrupted trip passed the original recording-only guard, and
+/// finishing it afterward — `_finalise` → `TripHistoryRecorder.process` —
+/// wrote the pre-purge trip straight back into the just-emptied
+/// `trip_history.db`/journal). A single shared constant, used verbatim by
+/// both call sites (`AccountScreen._deleteAccount`'s purge offer and
+/// [PurgeRetryTile]'s retry) and both their tests, so the copy can never
+/// drift between them again — round 2 also fixed a `tu`/`vous` register
+/// mix-up the re-review flagged; this app's copy is `vous` throughout.
+const kPurgeRefusedTripActiveMessage =
+    'Terminez ou abandonnez votre trajet en cours avant de supprimer les '
+    'données.';
+
 /// Deletes every piece of LOCAL game data this device holds: the game
 /// journal, its periodic checkpoint, the covered-edges store, trip history,
 /// any leftover in-progress track/snapshot files — plus, when [uid] is
@@ -280,21 +294,33 @@ class PurgeRunOutcome {
 /// [PurgeRetryState], and bumps [GameJournalSignal] so `gameStateProvider`
 /// re-replays against whatever the purge just emptied.
 ///
-/// **Refuses to run at all while a trip is recording** (Task 6 review round
-/// 1, Important I1): `trip_snapshot.json` is live state a running
-/// foreground service tick can rewrite at any moment, and deleting it out
-/// from under that service would corrupt the in-progress trip. Checked via
-/// [tripControllerProvider]'s own `isRecording` — the same signal every
-/// other trip-aware screen in this app already trusts — rather than
-/// re-reading `trip_snapshot.json` independently, which could not
-/// distinguish a genuinely live trip from a stale leftover the same way the
-/// app's one running [TripController] instance can.
+/// **Refuses to run at all unless the trip controller is [TripState.idle]**
+/// (Task 6 review round 1, Important I1; widened in review round 2):
+/// `trip_snapshot.json` is live state a running foreground service tick can
+/// rewrite at any moment, and deleting it out from under that service would
+/// corrupt the in-progress trip. `TripState.recording` alone isn't the whole
+/// story, though — round 2's re-review walked through `TripState
+/// .interrupted` (a trip whose process died mid-recording, parked behind the
+/// « Trajet interrompu » banner until the user resumes-and-finishes or
+/// abandons it) and found it passes a recording-only guard: purge the local
+/// data, then tap through to finish that interrupted trip, and
+/// `TripController._finalise` → `TripHistoryRecorder.process` writes the
+/// PRE-PURGE trip straight back into the just-emptied `trip_history.db` and
+/// appends fresh events to the just-emptied journal — silently reintroducing
+/// exactly what the purge just promised to remove. So this checks
+/// [tripControllerProvider]'s `isRecording` OR `isInterrupted` — the same
+/// signals every other trip-aware screen in this app already trusts —
+/// rather than re-reading `trip_snapshot.json` independently, which could
+/// not distinguish a genuinely live/pending trip from a stale leftover the
+/// way the app's one running [TripController] instance can.
 ///
 /// Both call sites needing this (`AccountScreen._deleteAccount`'s purge
 /// offer, and [PurgeRetryTile]'s retry) share it rather than duplicating the
-/// refuse-check/`PurgeRetryState` bookkeeping.
+/// refuse-check/`PurgeRetryState` bookkeeping, and both show
+/// [kPurgeRefusedTripActiveMessage] verbatim on refusal.
 Future<PurgeRunOutcome> runLocalPurge(WidgetRef ref, {String? uid}) async {
-  if (ref.read(tripControllerProvider).isRecording) {
+  final trip = ref.read(tripControllerProvider);
+  if (trip.isRecording || trip.isInterrupted) {
     return const PurgeRunOutcome.tripActive();
   }
   final journal = await ref.read(gameJournalProvider.future);
@@ -374,7 +400,7 @@ class _PurgeRetryTileState extends ConsumerState<PurgeRetryTile> {
 
   String _messageFor(PurgeRunOutcome outcome) {
     if (outcome.refusedTripActive) {
-      return 'Termine ton trajet avant de supprimer les données.';
+      return kPurgeRefusedTripActiveMessage;
     }
     if (outcome.isFullSuccess) return 'Données locales supprimées.';
     return "Certaines données locales n'ont pas pu être supprimées : "

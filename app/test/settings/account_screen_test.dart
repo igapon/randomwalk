@@ -8,12 +8,14 @@ import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/game/game_state_provider.dart';
 import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/settings/account_screen.dart';
+import 'package:randomwalk/settings/local_purge.dart';
 import 'package:randomwalk/sync/account_state.dart';
 import 'package:randomwalk/sync/backend.dart';
 import 'package:randomwalk/sync/providers.dart';
 import 'package:randomwalk/sync/sync_state_store.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
+import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/valhalla/models.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -47,13 +49,21 @@ void main() {
   });
 
   /// A minimal [TripController] for `_deleteAccount`'s `runLocalPurge` call
-  /// (Task 6 review round 1, I1) to read `isRecording` off — same fakes
-  /// `settings_screen_test.dart`'s own `buildTrip()` uses. Not recording by
-  /// default; [recording] lets the one test that needs the purge refused
-  /// actually start a trip first.
-  Future<TripController> buildTrip({bool recording = false}) async {
+  /// (Task 6 review round 1, I1; widened round 2 to also cover
+  /// `TripState.interrupted`) to read trip state off — same fakes
+  /// `settings_screen_test.dart`'s own `buildTrip()` uses. Idle by default;
+  /// [recording] starts a real trip, [interrupted] seeds a persisted
+  /// still-recording snapshot with the tracker's service NOT running
+  /// (`FakeTripTracker.running = false`) and calls `restore()` — the same
+  /// path `TripController.restore` takes for a trip whose process died
+  /// mid-recording (see that method's own dartdoc).
+  Future<TripController> buildTrip({
+    bool recording = false,
+    bool interrupted = false,
+  }) async {
+    final tracker = FakeTripTracker();
     final trip = TripController(
-      tracker: FakeTripTracker(),
+      tracker: tracker,
       routeStore: MemoryRouteStore(),
       totalStore: FakeTotalDistanceStore(),
       finalisedTrips: MemoryFinalisedTripMemory(),
@@ -66,7 +76,17 @@ void main() {
       persistProfile: (_) async {},
       loadProfile: () async => null,
     );
-    if (recording) await trip.startTrip();
+    if (recording) {
+      await trip.startTrip();
+    } else if (interrupted) {
+      tracker.persisted = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 30, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      tracker.running = false;
+      await trip.restore();
+    }
     return trip;
   }
 
@@ -443,12 +463,34 @@ void main() {
           await tapAndWait(tester, 'Supprimer définitivement');
           await tapAndWait(tester, 'Supprimer aussi mes données');
 
-          expect(
-            find.text('Termine ton trajet avant de supprimer les données.'),
-            findsOneWidget,
-          );
+          expect(find.text(kPurgeRefusedTripActiveMessage), findsOneWidget);
           // The account itself is still deleted server-side (that part
           // never depends on trip state) — only the local purge is refused.
+          expect(backend.deleteAccountCallCount, 1);
+        },
+      );
+
+      testWidgets(
+        'refuses to purge while a trip is merely interrupted too (Task 6 '
+        'review round 2) — finishing it afterward would write the '
+        'pre-purge trip straight back into the just-emptied stores',
+        (tester) async {
+          final backend = FakeSyncBackend();
+          final trip = await buildTrip(interrupted: true);
+          expect(trip.isInterrupted, isTrue);
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+            trip: trip,
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          await tapAndWait(tester, 'Continuer');
+          await tapAndWait(tester, 'Supprimer définitivement');
+          await tapAndWait(tester, 'Supprimer aussi mes données');
+
+          expect(find.text(kPurgeRefusedTripActiveMessage), findsOneWidget);
           expect(backend.deleteAccountCallCount, 1);
         },
       );

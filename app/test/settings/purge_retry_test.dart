@@ -8,7 +8,9 @@ import 'package:randomwalk/game/game_state_provider.dart';
 import 'package:randomwalk/settings/local_purge.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
+import 'package:randomwalk/tracking/trip_snapshot.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
+import 'package:randomwalk/valhalla/models.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -49,9 +51,13 @@ void main() {
 
   tearDown(() => deleteTempDirRetrying(tempDir));
 
-  Future<TripController> buildTrip({bool recording = false}) async {
+  Future<TripController> buildTrip({
+    bool recording = false,
+    bool interrupted = false,
+  }) async {
+    final tracker = FakeTripTracker();
     final trip = TripController(
-      tracker: FakeTripTracker(),
+      tracker: tracker,
       routeStore: MemoryRouteStore(),
       totalStore: FakeTotalDistanceStore(),
       finalisedTrips: MemoryFinalisedTripMemory(),
@@ -64,7 +70,20 @@ void main() {
       persistProfile: (_) async {},
       loadProfile: () async => null,
     );
-    if (recording) await trip.startTrip();
+    if (recording) {
+      await trip.startTrip();
+    } else if (interrupted) {
+      // Same path TripController.restore takes for a trip whose process
+      // died mid-recording: a persisted still-recording snapshot, but the
+      // service itself is no longer running.
+      tracker.persisted = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 30, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      tracker.running = false;
+      await trip.restore();
+    }
     return trip;
   }
 
@@ -93,6 +112,28 @@ void main() {
       '(Task 6 review round 1, I1)',
       (tester) async {
         final trip = await buildTrip(recording: true);
+        PurgeRunOutcome? result;
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: overridesFor(trip),
+            child: MaterialApp(home: _Probe(onResult: (o) => result = o)),
+          ),
+        );
+
+        await tapAndWait(tester, 'go');
+
+        expect(result!.refusedTripActive, isTrue);
+        expect(await PurgeRetryState().isIncomplete(), isFalse);
+      },
+    );
+
+    testWidgets(
+      'refuses while a trip is merely interrupted too (Task 6 review round '
+      '2) — resuming-and-finishing it afterward would write the pre-purge '
+      'trip straight back into the just-emptied stores',
+      (tester) async {
+        final trip = await buildTrip(interrupted: true);
+        expect(trip.isInterrupted, isTrue);
         PurgeRunOutcome? result;
         await tester.pumpWidget(
           ProviderScope(
@@ -227,6 +268,38 @@ void main() {
       expect(
         find.text('Réessayer la suppression des données locales'),
         findsNothing,
+      );
+    });
+
+    testWidgets('retrying while a trip is interrupted refuses with the shared '
+        'message and leaves the incomplete flag set (Task 6 review round 2)', (
+      tester,
+    ) async {
+      await PurgeRetryState().markIncomplete('u1');
+      final trip = await buildTrip(interrupted: true);
+      expect(trip.isInterrupted, isTrue);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overridesFor(trip),
+          child: const MaterialApp(home: Scaffold(body: PurgeRetryTile())),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Réessayer la suppression des données locales'),
+        findsOneWidget,
+      );
+
+      await tapAndWait(tester, 'Réessayer la suppression des données locales');
+
+      expect(find.text(kPurgeRefusedTripActiveMessage), findsOneWidget);
+      expect(await PurgeRetryState().isIncomplete(), isTrue);
+      // Still pending — the tile stays visible for a later retry.
+      expect(
+        find.text('Réessayer la suppression des données locales'),
+        findsOneWidget,
       );
     });
   });
