@@ -10,11 +10,22 @@ import 'package:randomwalk/settings/account_screen.dart';
 import 'package:randomwalk/sync/account_state.dart';
 import 'package:randomwalk/sync/backend.dart';
 import 'package:randomwalk/sync/providers.dart';
+import 'package:randomwalk/sync/sync_state_store.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../support/fake_sync_backend.dart';
 import '../support/temp_dir.dart';
 
 void main() {
+  // Task 6: the "Supprimer mon compte" flow's local-purge step opens an
+  // EdgesStore (`covered_edges.db`) — same ambient-factory pattern as
+  // `edges_store_test.dart`, needed here because these are otherwise
+  // widget, not sqflite, tests.
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
   late Directory tempDir;
 
   setUp(() async {
@@ -215,6 +226,144 @@ void main() {
         expect(find.text('Recevoir un code'), findsOneWidget);
       },
     );
+
+    group('Supprimer mon compte (Task 6)', () {
+      testWidgets(
+        'cancelling the first confirmation dialog calls nothing and leaves '
+        'the session untouched',
+        (tester) async {
+          final backend = FakeSyncBackend();
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          expect(find.text('Supprimer le compte ?'), findsOneWidget);
+          await tapAndWait(tester, 'Annuler');
+
+          expect(backend.deleteAccountCallCount, 0);
+          expect(find.text('Connecté'), findsOneWidget);
+        },
+      );
+
+      testWidgets(
+        'cancelling the second (final) confirmation dialog also calls '
+        'nothing',
+        (tester) async {
+          final backend = FakeSyncBackend();
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          await tapAndWait(tester, 'Continuer');
+          expect(find.text('Confirmation finale'), findsOneWidget);
+          await tapAndWait(tester, 'Annuler');
+
+          expect(backend.deleteAccountCallCount, 0);
+          expect(find.text('Connecté'), findsOneWidget);
+        },
+      );
+
+      testWidgets(
+        'confirming both dialogs calls deleteAccount() exactly once, then '
+        'signs out locally, then offers a local purge — declining it keeps '
+        'the local sync-state prefs untouched',
+        (tester) async {
+          final backend = FakeSyncBackend();
+          await PrefsSyncStateStore(
+            'u1',
+          ).write(const SyncCursorState(pushedIndex: 3));
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          await tapAndWait(tester, 'Continuer');
+          await tapAndWait(tester, 'Supprimer définitivement');
+
+          expect(backend.deleteAccountCallCount, 1);
+          // Local session cleared: back to the signedOut form.
+          expect(find.text('Recevoir un code'), findsOneWidget);
+          expect(
+            find.text('Supprimer aussi les données locales ?'),
+            findsOneWidget,
+          );
+
+          await tapAndWait(tester, 'Conserver mes données');
+
+          expect(
+            find.text(
+              'Compte supprimé. Vos données de jeu restent sur cet appareil.',
+            ),
+            findsOneWidget,
+          );
+          // Declining the purge leaves this uid's sync-state prefs alone.
+          expect((await PrefsSyncStateStore('u1').read()).pushedIndex, 3);
+        },
+      );
+
+      testWidgets(
+        'accepting the local-purge offer clears the deleted account\'s own '
+        'sync-state prefs keys',
+        (tester) async {
+          final backend = FakeSyncBackend();
+          await PrefsSyncStateStore(
+            'u1',
+          ).write(const SyncCursorState(pushedIndex: 3, pullCursor: 'c1'));
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          await tapAndWait(tester, 'Continuer');
+          await tapAndWait(tester, 'Supprimer définitivement');
+          await tapAndWait(tester, 'Supprimer aussi mes données');
+
+          expect(
+            find.text('Compte et données locales supprimés.'),
+            findsOneWidget,
+          );
+          final state = await PrefsSyncStateStore('u1').read();
+          expect(state.pushedIndex, 0);
+          expect(state.pullCursor, isNull);
+        },
+      );
+
+      testWidgets(
+        'a deleteAccount() failure surfaces a French error and leaves the '
+        'session signed in — nothing local is touched',
+        (tester) async {
+          final backend = FakeSyncBackend()
+            ..deleteAccountError = const SyncNetworkError('offline');
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          await tapAndWait(tester, 'Continuer');
+          await tapAndWait(tester, 'Supprimer définitivement');
+
+          expect(backend.deleteAccountCallCount, 1);
+          expect(find.text('Connecté'), findsOneWidget);
+          expect(find.text('Se déconnecter'), findsOneWidget);
+          expect(
+            find.textContaining("le compte n'a pas été supprimé"),
+            findsOneWidget,
+          );
+        },
+      );
+    });
   });
 }
 

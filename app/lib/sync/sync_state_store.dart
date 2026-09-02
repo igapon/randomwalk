@@ -161,4 +161,25 @@ class PrefsSyncStateStore implements SyncStateStore {
       await prefs.setString(_pullCursorKey, cursor);
     }
   }
+
+  /// Deletes every `shared_preferences` key this class ever writes for
+  /// [uid] — all four of [_pushedIndexKey]/[_catchupIdsKey]/
+  /// [_pullCursorKey]/[_knownSkippedLinesKey], keyed to that specific uid.
+  ///
+  /// Task 6's local-purge / account-deletion flow: without this, a deleted
+  /// account's checkpoint keys sit orphaned in `shared_preferences` forever
+  /// — never read again (no future sign-in can reuse a deleted uid), but
+  /// also never reclaimed. Deliberately a `static` method taking [uid]
+  /// explicitly, not an instance method on `this.uid`: the caller (the
+  /// account-deletion flow) is purging the *just-deleted* account's uid at
+  /// a point where [accountStateProvider] (`sync/providers.dart`) has
+  /// already been reset, so there is no live [PrefsSyncStateStore] instance
+  /// scoped to that uid left to call this on.
+  static Future<void> deleteFor(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('sync_pushed_index::$uid');
+    await prefs.remove('sync_pushed_catchup_ids::$uid');
+    await prefs.remove('sync_pull_cursor::$uid');
+    await prefs.remove('sync_known_skipped_lines::$uid');
+  }
 }

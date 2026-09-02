@@ -9,6 +9,7 @@ import '../trip/trip_controller.dart';
 import 'account_tile.dart';
 import 'alert_settings.dart';
 import 'battery_optimization.dart';
+import 'data_export.dart';
 import 'identity.dart';
 
 /// Player settings: editable pseudo, plus read-only identity and local
@@ -234,6 +235,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         const Divider(height: 32),
                         const TripHistorySettingsTile(),
                         const AboutDataTile(),
+                        const ExportDataTile(),
                         const AccountTile(),
                       ],
                     ),

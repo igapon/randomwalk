@@ -156,6 +156,17 @@ class FakeSyncBackend implements SyncBackend {
   Future<List<LeaderboardRow>> topProfiles({required int limit}) async =>
       const [];
 
+  /// How many times [deleteAccount] has been called — lets a test assert
+  /// the account-deletion flow actually invoked the RPC exactly once
+  /// (Task 6), without needing a full server-side account model.
+  int deleteAccountCallCount = 0;
+
+  /// When set, [deleteAccount] throws this instead of succeeding.
+  Object? deleteAccountError;
+
   @override
-  Future<void> deleteAccount() async {}
+  Future<void> deleteAccount() async {
+    deleteAccountCallCount++;
+    if (deleteAccountError != null) throw deleteAccountError!;
+  }
 }

@@ -125,6 +125,52 @@ void main() {
     });
   });
 
+  group('deleteFor (Task 6 local purge / account deletion)', () {
+    test('removes every persisted key for that uid — read() falls back to '
+        'the zero state afterward', () async {
+      await PrefsSyncStateStore('uid-a').write(
+        const SyncCursorState(
+          pushedIndex: 5,
+          pushedCatchupIds: {'a-1'},
+          pullCursor: 'a-cursor',
+          knownSkippedLines: 2,
+        ),
+      );
+
+      await PrefsSyncStateStore.deleteFor('uid-a');
+
+      final state = await PrefsSyncStateStore('uid-a').read();
+      expect(state.pushedIndex, 0);
+      expect(state.pushedCatchupIds, isEmpty);
+      expect(state.pullCursor, isNull);
+      expect(state.knownSkippedLines, 0);
+    });
+
+    test('never touches a different uid\'s checkpoint', () async {
+      await PrefsSyncStateStore(
+        'uid-a',
+      ).write(const SyncCursorState(pushedIndex: 5, pullCursor: 'a-cursor'));
+      await PrefsSyncStateStore(
+        'uid-b',
+      ).write(const SyncCursorState(pushedIndex: 9, pullCursor: 'b-cursor'));
+
+      await PrefsSyncStateStore.deleteFor('uid-a');
+
+      final b = await PrefsSyncStateStore('uid-b').read();
+      expect(b.pushedIndex, 9);
+      expect(b.pullCursor, 'b-cursor');
+    });
+
+    test(
+      'is safe to call for a uid that never had anything persisted',
+      () async {
+        await PrefsSyncStateStore.deleteFor('never-signed-in');
+        final state = await PrefsSyncStateStore('never-signed-in').read();
+        expect(state.pushedIndex, 0);
+      },
+    );
+  });
+
   group('SyncCursorState.copyWith', () {
     test('omitted fields are preserved', () {
       const state = SyncCursorState(

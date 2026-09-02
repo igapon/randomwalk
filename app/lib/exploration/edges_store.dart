@@ -93,5 +93,19 @@ class EdgesStore {
     return rows.isNotEmpty;
   }
 
+  /// Deletes every covered-edge row — Task 6's local-purge step ("edges").
+  ///
+  /// Safe to call even while another [EdgesStore.open] handle onto the same
+  /// path is live elsewhere in the process (`main.dart`'s `TripController`
+  /// keeps one open for the app's whole lifetime): `sqflite` reference-counts
+  /// its native connection per path within a process (see this class's own
+  /// dartdoc, and `main.dart`'s identical note for `TripHistoryStore`), so a
+  /// fresh [EdgesStore.open] call from the purge flow reuses that SAME
+  /// underlying connection rather than racing a second, independent one —
+  /// clearing the table this way can never leave the live handle holding a
+  /// stale/deleted file descriptor the way deleting `covered_edges.db`
+  /// out from under it could.
+  Future<void> clear() => _db.delete(_kTable);
+
   Future<void> close() => _db.close();
 }

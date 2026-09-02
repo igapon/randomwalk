@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../game/game_state_provider.dart';
 import '../leaderboard/repository.dart';
 import '../session/recorder.dart';
 import '../sync/account_state.dart';
@@ -10,6 +11,7 @@ import '../sync/auto_sync.dart';
 import '../sync/backend.dart';
 import '../sync/providers.dart';
 import 'identity.dart';
+import 'local_purge.dart';
 
 /// The account/sync screen (M5 Task 4): email → 6-digit OTP → signed in.
 ///
@@ -19,18 +21,23 @@ import 'identity.dart';
 /// branch below is a defensive fallback, not a state this screen is
 /// expected to actually render in production.
 ///
-/// Export/delete (Task 6) are deliberately NOT implemented here — the
-/// signedIn section below has no controls for them at all, per
-/// `task-4-brief.md`'s explicit "do NOT implement export/delete". The
-/// binding decision for when Task 6 builds them: after
-/// `SyncBackend.deleteAccount()`'s RPC succeeds, the flow must also call
-/// `signOut()` locally and reset `accountStateProvider` — see
-/// `task-4-report.md` for the full writeup. Fix round 1 (Task 4 review
-/// C2): `SyncStateStore`'s checkpoint is now scoped by uid
-/// (`PrefsSyncStateStore`, `sync/sync_state_store.dart`), so a re-signup
-/// after delete (a fresh uid) automatically starts from a clean sync
-/// checkpoint with no separate reset step required for that part — Task 6
-/// only still needs the `signOut()`/`accountStateProvider` reset above.
+/// Export (Task 6) deliberately lives on `SettingsScreen`, not here — see
+/// `data_export.dart`'s `ExportDataTile` doc comment for why (this screen
+/// is unreachable when `AccountPhase.unconfigured`, but local game data is
+/// exportable regardless of account state).
+///
+/// Account deletion (Task 6) IS implemented here (`_deleteAccount`), per the
+/// binding decision recorded by Task 4/5's reviews: after
+/// `SyncBackend.deleteAccount()`'s RPC succeeds, the flow calls `signOut()`
+/// locally and resets `accountStateProvider` (`_clearLocalSession`, shared
+/// with the plain "Se déconnecter" button), then separately OFFERS — never
+/// implies — an optional local purge (`local_purge.dart`'s
+/// `LocalDataPurge`, covering the journal/checkpoint/edges/track data plus
+/// this account's own `sync_state_store.dart` prefs keys). Fix round 1
+/// (Task 4 review C2): `SyncStateStore`'s checkpoint is scoped by uid
+/// (`PrefsSyncStateStore`), so a re-signup after delete (a fresh uid)
+/// automatically starts from a clean sync checkpoint even when the player
+/// declines the local purge.
 class AccountScreen extends ConsumerStatefulWidget {
   const AccountScreen({super.key});
 
@@ -141,17 +148,182 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
       _error = null;
     });
     try {
-      await ref.read(syncBackendProvider).signOut();
-    } catch (_) {
-      // Best-effort: still clear local state below even if the backend
-      // call itself failed (offline sign-out must still work locally).
+      await _clearLocalSession();
     } finally {
-      if (mounted) {
-        _setAccountState(_account.signOut());
-        setState(() => _busy = false);
-      }
+      if (mounted) setState(() => _busy = false);
     }
   }
+
+  /// The local half of both "Se déconnecter" and "Supprimer mon compte" —
+  /// asks the backend to end the session (best-effort: still clears local
+  /// state below even if that call itself fails, since an offline/already-
+  /// invalidated-by-`deleteAccount` sign-out must still work locally), then
+  /// resets [accountStateProvider] to `signedOut`. Requires
+  /// `AccountPhase.signedIn` (the only phase [AccountState.signOut] accepts
+  /// — see that method's dartdoc), which both call sites already are.
+  Future<void> _clearLocalSession() async {
+    try {
+      await ref.read(syncBackendProvider).signOut();
+    } catch (_) {
+      // See doc comment above.
+    } finally {
+      if (mounted) _setAccountState(_account.signOut());
+    }
+  }
+
+  /// "Supprimer mon compte" — Task 6's binding flow:
+  /// 1. Two sequential French confirmation dialogs, each cancellable
+  ///    (`_confirmDeleteStep1`/`_confirmDeleteStep2`) — "confirmation
+  ///    double" per `task-6-brief.md`.
+  /// 2. `SyncBackend.deleteAccount()` — the server-side cascade (Task 2's
+  ///    `delete_account` RPC). A failure here stops the flow entirely and
+  ///    surfaces a French error; nothing local is touched (game-never-
+  ///    blocks: a failed deletion must leave the player's session and data
+  ///    exactly as they were, not half-torn-down).
+  /// 3. On success: `_clearLocalSession()` — the pre-made Task 4/5 binding
+  ///    decision (see this class's own dartdoc).
+  /// 4. A THIRD, separate dialog (`_confirmLocalPurge`) offers — never
+  ///    implies — deleting this device's own local game data too
+  ///    (`LocalDataPurge`). Declining leaves every local file untouched:
+  ///    account deletion and local purge are deliberately independent
+  ///    decisions (local-first data belongs to the device owner).
+  Future<void> _deleteAccount() async {
+    if (!(await _confirmDeleteStep1() ?? false)) return;
+    if (!mounted) return;
+    if (!(await _confirmDeleteStep2() ?? false)) return;
+    if (!mounted) return;
+
+    final deletedUid = _account.uid;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref.read(syncBackendProvider).deleteAccount();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = _deleteErrorMessage(e);
+        });
+      }
+      return;
+    }
+
+    await _clearLocalSession();
+    if (mounted) setState(() => _busy = false);
+    if (!mounted) return;
+
+    final purgeAlso = await _confirmLocalPurge();
+    if (purgeAlso == true) {
+      // Derives the app-support directory from the journal's own location
+      // (`journal.dir` is `'<app-support>/game'`) rather than calling
+      // `path_provider` a second time — matches `DataExporter`'s identical
+      // trick for the edges-store path, and is what makes this reachable
+      // through `gameJournalProvider`'s existing test override instead of
+      // needing a separate `path_provider` platform-channel mock.
+      final journal = await ref.read(gameJournalProvider.future);
+      final failures = await LocalDataPurge(
+        journal.dir.parent,
+      ).purge(uid: deletedUid);
+      // Re-replay gameStateProvider now that the journal/checkpoint files
+      // it reads may be gone — the standard "journal changed" signal (see
+      // GameJournalSignal's own dartdoc), which the game layer already
+      // listens to for every other journal mutation.
+      GameJournalSignal.instance.bump();
+      if (mounted) {
+        _showSnack(
+          failures.isEmpty
+              ? 'Compte et données locales supprimés.'
+              : "Compte supprimé. Certaines données locales n'ont pas pu "
+                    'être supprimées.',
+        );
+      }
+    } else if (mounted) {
+      _showSnack(
+        'Compte supprimé. Vos données de jeu restent sur cet appareil.',
+      );
+    }
+  }
+
+  void _showSnack(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<bool?> _confirmDeleteStep1() => showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Supprimer le compte ?'),
+      content: const Text(
+        'La suppression de votre compte est effectuée côté serveur : votre '
+        'profil, votre position au classement et votre historique '
+        "synchronisé seront effacés et ne pourront pas être récupérés. Vos "
+        'données de jeu restent sur cet appareil ; vous pourrez choisir de '
+        'les supprimer aussi à une étape suivante.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Annuler'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Continuer'),
+        ),
+      ],
+    ),
+  );
+
+  Future<bool?> _confirmDeleteStep2() => showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Confirmation finale'),
+      content: const Text(
+        'Dernière confirmation : la suppression du compte est immédiate et '
+        'irréversible. Voulez-vous vraiment continuer ?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Annuler'),
+        ),
+        TextButton(
+          style: TextButton.styleFrom(
+            foregroundColor: Theme.of(context).colorScheme.error,
+          ),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Supprimer définitivement'),
+        ),
+      ],
+    ),
+  );
+
+  Future<bool?> _confirmLocalPurge() => showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Supprimer aussi les données locales ?'),
+      content: const Text(
+        'Votre compte vient d\'être supprimé côté serveur. Vos données de '
+        'jeu (parcours, XP, badges, zones explorées) restent sur cet '
+        "appareil, car RandomWalk fonctionne aussi hors connexion. Vous "
+        'pouvez choisir de les supprimer maintenant : cette suppression '
+        'locale est, elle aussi, irréversible.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Conserver mes données'),
+        ),
+        TextButton(
+          style: TextButton.styleFrom(
+            foregroundColor: Theme.of(context).colorScheme.error,
+          ),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Supprimer aussi mes données'),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _manualSync() async {
     setState(() => _busy = true);
@@ -190,8 +362,10 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
             AccountPhase.signedIn => _SignedInBody(
               email: account.email,
               busy: _busy,
+              error: _error,
               onSync: _manualSync,
               onSignOut: _signOut,
+              onDelete: _deleteAccount,
             ),
           },
         ),
@@ -208,6 +382,19 @@ String _authErrorMessage(Object error) {
     return 'Connexion impossible. Réessayez plus tard.';
   }
   return "Une erreur inattendue s'est produite.";
+}
+
+/// French copy for a [SyncBackend.deleteAccount] failure — deliberately
+/// distinct wording from [_authErrorMessage]: this is never "your code was
+/// wrong", it's "the deletion itself didn't go through", so the player
+/// knows their account (and local session) are untouched and it's safe to
+/// retry.
+String _deleteErrorMessage(Object error) {
+  if (error is SyncNetworkError) {
+    return 'Connexion impossible : le compte n\'a pas été supprimé. '
+        'Réessayez plus tard.';
+  }
+  return "La suppression du compte a échoué. Réessayez plus tard.";
 }
 
 class _UnconfiguredBody extends StatelessWidget {
@@ -324,14 +511,18 @@ class _SignedInBody extends ConsumerWidget {
   const _SignedInBody({
     required this.email,
     required this.busy,
+    required this.error,
     required this.onSync,
     required this.onSignOut,
+    required this.onDelete,
   });
 
   final String? email;
   final bool busy;
+  final String? error;
   final VoidCallback onSync;
   final VoidCallback onSignOut;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -365,6 +556,21 @@ class _SignedInBody extends ConsumerWidget {
           child: TextButton(
             onPressed: busy ? null : onSignOut,
             child: const Text('Se déconnecter'),
+          ),
+        ),
+        const Divider(height: 32),
+        if (error != null) _ErrorText(error!),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: busy ? null : onDelete,
+            icon: busy
+                ? const _ButtonSpinner()
+                : const Icon(Icons.delete_forever_outlined),
+            label: const Text('Supprimer mon compte'),
           ),
         ),
       ],
