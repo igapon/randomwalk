@@ -37,30 +37,14 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// Reads back the exported file's JSON payload. **Must** run inside
-  /// `runAsync` — root cause of the CI hang this replaces a bare
-  /// `await file.readAsString()` for (see `task-6-report.md`'s corrected
-  /// writeup): any real `dart:io` await issued directly in a `testWidgets`
-  /// body, even one that never touches a fake `Timer`, only actually
-  /// resolves when driven from inside `tester.runAsync` — the two tests
-  /// that did this as a bare `await` (outside `runAsync`) hung for the
-  /// full 10-minute per-test framework timeout on CI (both Linux and,
-  /// consistent with that, locally on Windows — this was never an
-  /// environment-specific flake). The one test that never read the file
-  /// back (share-failure path) never hit this and always passed, which is
-  /// what pointed at the bare awaits specifically rather than `ListTile`/
-  /// `share_plus`/`sqflite`/`path_provider`, every one of which was ruled
-  /// out individually beforehand.
-  Future<Map<String, dynamic>> readExportedPayload(
-    WidgetTester tester,
-    ShareParams params,
-  ) => tester
-      .runAsync(() async {
-        final file = File(params.files!.single.path);
-        final content = await file.readAsString();
-        return jsonDecode(content) as Map<String, dynamic>;
-      })
-      .then((v) => v!);
+  /// Runs [action] inside `runAsync` — every real `dart:io` check these
+  /// tests make after [tapExport] has to go through this: a bare `await`
+  /// issued directly in a `testWidgets` body never resolves (the CI-fix
+  /// commit's root cause — see that commit's `task-6-report.md` writeup),
+  /// regardless of whether it happens inside the same `runAsync` call the
+  /// tap used or, as here, a fresh one afterward.
+  Future<T> real<T>(WidgetTester tester, Future<T> Function() action) =>
+      tester.runAsync(action).then((v) => v as T);
 
   Future<void> pump(
     WidgetTester tester, {
@@ -89,6 +73,14 @@ void main() {
   /// comments) — `edges_store_test.dart`/`local_purge_test.dart` cover the
   /// real `EdgesStore`, and `data_export_test.dart` covers the payload
   /// shape directly.
+  ///
+  /// [share] is invoked from *inside* `DataExporter.exportAndShare`'s own
+  /// async chain — before Task 6 review round 1's I3 fix deletes the temp
+  /// file in a `finally` right after — so a caller that needs the file's
+  /// content (not just its path) must read it here, synchronously with the
+  /// share call, rather than after [tapExport] returns: by then the file is
+  /// already gone (see the "cleans up" group below, which asserts exactly
+  /// that).
   DataExporter exporterWith({
     required Future<ShareResult> Function(ShareParams) share,
   }) => DataExporter(
@@ -97,14 +89,22 @@ void main() {
     tempDirResolver: () async => tempDir,
   );
 
+  /// Reads back an export file's JSON content — only ever safe to call
+  /// *from inside* an injected `share` callback (see [exporterWith]'s own
+  /// doc comment), never after [tapExport] has returned.
+  Future<Map<String, dynamic>> payloadOf(ShareParams params) async {
+    final content = await File(params.files!.single.path).readAsString();
+    return jsonDecode(content) as Map<String, dynamic>;
+  }
+
   testWidgets(
     'is reachable and works with no account configured at all — export is '
     'local-first, per task-6-brief.md',
     (tester) async {
-      ShareParams? captured;
+      Map<String, dynamic>? payload;
       final exporter = exporterWith(
         share: (params) async {
-          captured = params;
+          payload = await payloadOf(params);
           return const ShareResult('ok', ShareResultStatus.success);
         },
       );
@@ -116,22 +116,21 @@ void main() {
       );
       await tapExport(tester);
 
-      expect(captured, isNotNull);
-      final payload = await readExportedPayload(tester, captured!);
-      expect(payload['appVersion'], kAppVersion);
-      expect(payload['account'], isNull);
-      expect(payload['journal'], isEmpty);
-      expect(payload['edgesCoveredCount'], 0);
+      expect(payload, isNotNull);
+      expect(payload!['appVersion'], kAppVersion);
+      expect(payload!['account'], isNull);
+      expect(payload!['journal'], isEmpty);
+      expect(payload!['edgesCoveredCount'], 0);
     },
   );
 
   testWidgets('includes the account uid/email in the payload once signed in', (
     tester,
   ) async {
-    ShareParams? captured;
+    Map<String, dynamic>? payload;
     final exporter = exporterWith(
       share: (params) async {
-        captured = params;
+        payload = await payloadOf(params);
         return const ShareResult('ok', ShareResultStatus.success);
       },
     );
@@ -143,8 +142,7 @@ void main() {
     );
     await tapExport(tester);
 
-    final payload = await readExportedPayload(tester, captured!);
-    expect(payload['account'], {'uid': 'u1', 'email': 'a@b.ch'});
+    expect(payload!['account'], {'uid': 'u1', 'email': 'a@b.ch'});
   });
 
   testWidgets(
@@ -164,4 +162,76 @@ void main() {
       );
     },
   );
+
+  group('cleans up the temp export file (Task 6 review round 1, I3)', () {
+    testWidgets('the export file is gone once the share has completed', (
+      tester,
+    ) async {
+      ShareParams? captured;
+      final exporter = exporterWith(
+        share: (params) async {
+          captured = params;
+          return const ShareResult('ok', ShareResultStatus.success);
+        },
+      );
+
+      await pump(tester, exporter: exporter);
+      await tapExport(tester);
+
+      final path = captured!.files!.single.path;
+      expect(await real(tester, () => File(path).exists()), isFalse);
+    });
+
+    testWidgets(
+      'the export file is deleted even when the share itself fails — a '
+      'failed share must not leak a permanent copy either',
+      (tester) async {
+        String? writtenPath;
+        final exporter = DataExporter(
+          share: (params) async {
+            writtenPath = params.files!.single.path;
+            throw Exception('boom');
+          },
+          edgesCounter: (_) async => 0,
+          tempDirResolver: () async => tempDir,
+        );
+
+        await pump(tester, exporter: exporter);
+        await tapExport(tester);
+
+        expect(writtenPath, isNotNull);
+        expect(await real(tester, () => File(writtenPath!).exists()), isFalse);
+      },
+    );
+
+    testWidgets(
+      'sweeps a leftover export file from a previous run before writing '
+      'its own — the backstop for the process dying between a write and '
+      'its own delete',
+      (tester) async {
+        final leftover = File('${tempDir.path}/randomwalk_export_old.json');
+        await real(tester, () async {
+          await leftover.writeAsString('{"stale": true}');
+        });
+
+        ShareParams? captured;
+        final exporter = exporterWith(
+          share: (params) async {
+            captured = params;
+            return const ShareResult('ok', ShareResultStatus.success);
+          },
+        );
+
+        await pump(tester, exporter: exporter);
+        await tapExport(tester);
+
+        expect(await real(tester, () => leftover.exists()), isFalse);
+        // The new export's own file is cleaned up too, per the group above.
+        expect(
+          await real(tester, () => File(captured!.files!.single.path).exists()),
+          isFalse,
+        );
+      },
+    );
+  });
 }

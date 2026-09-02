@@ -6,15 +6,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/game/game_state_provider.dart';
+import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/settings/account_screen.dart';
 import 'package:randomwalk/sync/account_state.dart';
 import 'package:randomwalk/sync/backend.dart';
 import 'package:randomwalk/sync/providers.dart';
 import 'package:randomwalk/sync/sync_state_store.dart';
+import 'package:randomwalk/tracking/permissions.dart';
+import 'package:randomwalk/tracking/steps.dart';
+import 'package:randomwalk/trip/trip_controller.dart';
+import 'package:randomwalk/valhalla/models.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../support/fake_sync_backend.dart';
 import '../support/temp_dir.dart';
+import '../support/trip_fakes.dart';
 
 void main() {
   // Task 6: the "Supprimer mon compte" flow's local-purge step opens an
@@ -40,11 +46,37 @@ void main() {
     await deleteTempDirRetrying(tempDir);
   });
 
+  /// A minimal [TripController] for `_deleteAccount`'s `runLocalPurge` call
+  /// (Task 6 review round 1, I1) to read `isRecording` off — same fakes
+  /// `settings_screen_test.dart`'s own `buildTrip()` uses. Not recording by
+  /// default; [recording] lets the one test that needs the purge refused
+  /// actually start a trip first.
+  Future<TripController> buildTrip({bool recording = false}) async {
+    final trip = TripController(
+      tracker: FakeTripTracker(),
+      routeStore: MemoryRouteStore(),
+      totalStore: FakeTotalDistanceStore(),
+      finalisedTrips: MemoryFinalisedTripMemory(),
+      ensurePermissions: () async => const TripPermissions(
+        outcome: TripPermissionOutcome.ready,
+        mode: TrackingMode.background,
+      ),
+      createStepCounter: (seed) =>
+          SessionStepCounter(FakeStepSensor(), seed: seed),
+      persistProfile: (_) async {},
+      loadProfile: () async => null,
+    );
+    if (recording) await trip.startTrip();
+    return trip;
+  }
+
   Future<void> pump(
     WidgetTester tester, {
     required FakeSyncBackend backend,
     required AccountState account,
+    TripController? trip,
   }) async {
+    final resolvedTrip = trip ?? await buildTrip();
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -53,6 +85,7 @@ void main() {
           gameJournalProvider.overrideWith(
             (ref) async => GameJournal(Directory('${tempDir.path}/journal')),
           ),
+          tripControllerProvider.overrideWith((ref) => resolvedTrip),
         ],
         child: const MaterialApp(home: AccountScreen()),
       ),
@@ -315,12 +348,42 @@ void main() {
 
       testWidgets(
         'accepting the local-purge offer clears the deleted account\'s own '
-        'sync-state prefs keys',
+        'sync-state prefs keys and deletes trip history (Task 6 review '
+        'round 1 Critical: the dialog promises "parcours" are removed)',
         (tester) async {
           final backend = FakeSyncBackend();
           await PrefsSyncStateStore(
             'u1',
           ).write(const SyncCursorState(pushedIndex: 3, pullCursor: 'c1'));
+          // A trip in history — the exact gap Task 6 review round 1 flagged
+          // Critical: the confirmation dialog says "parcours" are removed,
+          // but nothing ever purged this store. Real `dart:io`/sqlite work,
+          // so it has to run inside `runAsync` — a bare await here is the
+          // exact "never completes" trap the CI-fix commit's report writeup
+          // documents (see export_data_tile_test.dart's own note).
+          // `LocalDataPurge`'s appSupportDir is `journal.dir.parent` (=
+          // tempDir here, since gameJournalProvider is overridden to
+          // `Directory('${tempDir.path}/journal')` below) — trip_history.db
+          // is a SIBLING of the `game/` journal dir, matching main.dart's
+          // real wiring (`${dir.path}/trip_history.db`), not inside it.
+          final tripHistoryPath = '${tempDir.path}/trip_history.db';
+          await tester.runAsync(() async {
+            final tripHistoryStore = await TripHistoryStore.open(
+              tripHistoryPath,
+            );
+            await tripHistoryStore.record(
+              TripHistoryEntry(
+                startedAt: DateTime.utc(2026, 8, 30, 9),
+                endedAt: DateTime.utc(2026, 8, 30, 9, 30),
+                profile: RoutingProfile.walk,
+                distanceKm: 2.5,
+                duration: const Duration(minutes: 30),
+                avgSpeedKmh: 5,
+              ),
+            );
+            await tripHistoryStore.close();
+          });
+
           await pump(
             tester,
             backend: backend,
@@ -332,14 +395,15 @@ void main() {
           await tapAndWait(tester, 'Supprimer définitivement');
           // Longer wait than the default: this tap's async chain runs the
           // full local purge (journal/checkpoint file deletes, an EdgesStore
-          // open+clear+close round trip, sync-state prefs deletion) before
-          // the snackbar appears — under load (observed on a CI runner) the
-          // default 100 ms budget isn't reliably enough for all of that
-          // real I/O to land before pumpAndSettle checks below.
+          // open+clear+close round trip, trip history's own open+deleteAll+
+          // close+file-delete, trip-snapshot delete, sync-state prefs
+          // deletion) before the snackbar appears — under load (observed on
+          // a CI runner) the default 100 ms budget isn't reliably enough for
+          // all of that real I/O to land before pumpAndSettle checks below.
           await tapAndWait(
             tester,
             'Supprimer aussi mes données',
-            wait: const Duration(milliseconds: 500),
+            wait: const Duration(milliseconds: 1000),
           );
 
           expect(
@@ -349,6 +413,43 @@ void main() {
           final state = await PrefsSyncStateStore('u1').read();
           expect(state.pushedIndex, 0);
           expect(state.pullCursor, isNull);
+
+          // Real dart:io/sqlite again — see the matching note above.
+          await tester.runAsync(() async {
+            expect(await File(tripHistoryPath).exists(), isFalse);
+            final reopened = await TripHistoryStore.open(tripHistoryPath);
+            expect(await reopened.list(), isEmpty);
+            await reopened.close();
+          });
+        },
+      );
+
+      testWidgets(
+        'refuses to purge while a trip is recording (Task 6 review round 1 '
+        'I1) — deleting live trip state under a running service would '
+        'corrupt it',
+        (tester) async {
+          final backend = FakeSyncBackend();
+          final trip = await buildTrip(recording: true);
+          await pump(
+            tester,
+            backend: backend,
+            account: const AccountState.signedOut().signedIn('u1', 'a@b.ch'),
+            trip: trip,
+          );
+
+          await tapAndWait(tester, 'Supprimer mon compte');
+          await tapAndWait(tester, 'Continuer');
+          await tapAndWait(tester, 'Supprimer définitivement');
+          await tapAndWait(tester, 'Supprimer aussi mes données');
+
+          expect(
+            find.text('Termine ton trajet avant de supprimer les données.'),
+            findsOneWidget,
+          );
+          // The account itself is still deleted server-side (that part
+          // never depends on trip state) — only the local purge is refused.
+          expect(backend.deleteAccountCallCount, 1);
         },
       );
 

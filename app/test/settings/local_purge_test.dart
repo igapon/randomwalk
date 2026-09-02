@@ -3,8 +3,10 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:randomwalk/exploration/edges_store.dart';
+import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/settings/local_purge.dart';
 import 'package:randomwalk/sync/sync_state_store.dart';
+import 'package:randomwalk/valhalla/models.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../support/temp_dir.dart';
@@ -115,6 +117,110 @@ void main() {
       expect(failures, contains('edges'));
       expect(await journal.exists(), isFalse);
       expect(await checkpoint.exists(), isFalse);
+    });
+
+    group('trip history (Task 6 review round 1, Critical)', () {
+      test('clears every row AND deletes the trip_history.db file itself — '
+          'the confirmation dialog promises "parcours" are removed from '
+          'disk, not just emptied', () async {
+        final path = '${dir.path}/trip_history.db';
+        final store = await TripHistoryStore.open(path);
+        await store.record(
+          TripHistoryEntry(
+            startedAt: DateTime.utc(2026, 8, 30, 9),
+            endedAt: DateTime.utc(2026, 8, 30, 9, 30),
+            profile: RoutingProfile.walk,
+            distanceKm: 2.5,
+            duration: const Duration(minutes: 30),
+            avgSpeedKmh: 5,
+          ),
+        );
+        await store.close();
+
+        final failures = await LocalDataPurge(dir).purge();
+
+        expect(failures, isEmpty);
+        expect(await File(path).exists(), isFalse);
+        final reopened = await TripHistoryStore.open(path);
+        expect(await reopened.list(), isEmpty);
+        await reopened.close();
+      });
+
+      test(
+        'is a no-op, not a failure, when no trip was ever recorded',
+        () async {
+          final failures = await LocalDataPurge(dir).purge();
+          expect(failures, isEmpty);
+          expect(await File('${dir.path}/trip_history.db').exists(), isFalse);
+        },
+      );
+    });
+
+    group('trip snapshot (Task 6 review round 1, Important I1)', () {
+      test(
+        'deletes trip_snapshot.json — same category as active_track.jsonl',
+        () async {
+          final snapshot = await writeFile('trip_snapshot.json', '{}');
+          await LocalDataPurge(dir).purge();
+          expect(await snapshot.exists(), isFalse);
+        },
+      );
+
+      test('is a no-op when no trip snapshot exists', () async {
+        final failures = await LocalDataPurge(dir).purge();
+        expect(failures, isEmpty);
+      });
+    });
+  });
+
+  group('frenchPurgeLabels', () {
+    test('renders known failure labels in French', () {
+      expect(
+        frenchPurgeLabels(['edges', 'trip-history']),
+        'zones explorées, historique des parcours',
+      );
+    });
+
+    test('falls back to the raw label for an unrecognized one', () {
+      expect(frenchPurgeLabels(['mystery-step']), 'mystery-step');
+    });
+
+    test('is empty for no failures', () {
+      expect(frenchPurgeLabels(const []), '');
+    });
+  });
+
+  group('PurgeRetryState (Task 6 review round 1, Important I2)', () {
+    test('starts incomplete: false, with no pending uid', () async {
+      final state = PurgeRetryState();
+      expect(await state.isIncomplete(), isFalse);
+      expect(await state.pendingUid(), isNull);
+    });
+
+    test('markIncomplete then isIncomplete/pendingUid round-trip', () async {
+      final state = PurgeRetryState();
+      await state.markIncomplete('u1');
+      expect(await state.isIncomplete(), isTrue);
+      expect(await state.pendingUid(), 'u1');
+    });
+
+    test(
+      'markIncomplete with a null uid clears any previously-pending one',
+      () async {
+        final state = PurgeRetryState();
+        await state.markIncomplete('u1');
+        await state.markIncomplete(null);
+        expect(await state.isIncomplete(), isTrue);
+        expect(await state.pendingUid(), isNull);
+      },
+    );
+
+    test('clear() resets both isIncomplete and pendingUid', () async {
+      final state = PurgeRetryState();
+      await state.markIncomplete('u1');
+      await state.clear();
+      expect(await state.isIncomplete(), isFalse);
+      expect(await state.pendingUid(), isNull);
     });
   });
 }

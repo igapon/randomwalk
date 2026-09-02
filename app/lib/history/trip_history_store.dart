@@ -223,6 +223,20 @@ class TripHistoryStore {
     }
   }
 
+  /// Deletes every recorded trip — Task 6 review round 1's Critical finding:
+  /// the local-purge flow's confirmation dialog promises "parcours" (trips)
+  /// are removed, and this store held every full GPS trace un-purged.
+  ///
+  /// `LocalDataPurge` (`settings/local_purge.dart`) pairs this with an
+  /// outright deletion of the `trip_history.db` file itself, unlike
+  /// `EdgesStore.clear()`'s table-only clear: this row-clear runs FIRST so
+  /// [list] reads back empty even in the (documented, accepted) edge case
+  /// where `main.dart`'s `TripHistoryRecorder` keeps a second `TripHistoryStore`
+  /// handle open for the app's whole lifetime and the file deletion that
+  /// follows can't fully dislodge it — see `LocalDataPurge`'s own dartdoc for
+  /// the full reasoning.
+  Future<void> deleteAll() => _db.delete(_kTable);
+
   Future<void> close() => _db.close();
 }
 

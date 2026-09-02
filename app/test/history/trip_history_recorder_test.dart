@@ -27,6 +27,9 @@ class ThrowingTripHistoryStore implements TripHistoryStore {
   Future<TripHistoryEntry?> fetchById(int id) async => null;
 
   @override
+  Future<void> deleteAll() async {}
+
+  @override
   Future<void> close() async {}
 }
 

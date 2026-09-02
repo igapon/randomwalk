@@ -22,6 +22,11 @@ import 'identity.dart';
 /// changes.**
 const kAppVersion = '1.0.0+1';
 
+/// Filename prefix every export writes (`<prefix><epoch-ms>.json`) — shared
+/// between the writer and [DataExporter]'s own leftover sweep so the sweep
+/// only ever touches files this class itself created.
+const _kExportFilePrefix = 'randomwalk_export_';
+
 /// Builds the JSON payload [DataExporter.exportAndShare] writes to a file
 /// and hands to the OS share sheet — factored out as a pure function (no
 /// `dart:io`, no Riverpod, no `share_plus`) so its exact shape can be
@@ -111,6 +116,20 @@ class DataExporter {
   /// single call site and is the one place that decides how to surface a
   /// failure to the player (a snackbar, never a crash — "game-never-blocks"
   /// applies to export too, just enforced one layer up).
+  ///
+  /// **Cleans up after itself (Task 6 review round 1, Important I3).** The
+  /// export file is written into the OS cache/temp directory
+  /// ([_tempDirResolver], `path_provider`'s `getTemporaryDirectory()` by
+  /// default — never the app-support directory, so nothing here is a
+  /// permanent copy by construction) and deleted again once [_share]
+  /// settles, success or failure alike (`try`/`finally`: a share-sheet
+  /// failure must not leak a copy of the user's exported personal data any
+  /// more than a successful share should). As a backstop for the one case
+  /// that can't go through this method's own cleanup — the process dying
+  /// between the write and the delete — every call also sweeps any
+  /// `$_kExportFilePrefix*.json` leftovers from a previous run before
+  /// writing its own file, so at most one export's worth of temp data can
+  /// ever accumulate.
   Future<void> exportAndShare(WidgetRef ref) async {
     final identity = await ref.read(identityStoreProvider).get();
     final totalKm = await TotalDistanceStore().totalKm();
@@ -142,21 +161,56 @@ class DataExporter {
     );
 
     final tempDir = await _tempDirResolver();
+    await _sweepLeftoverExports(tempDir);
+
     final file = File(
-      '${tempDir.path}/randomwalk_export_'
+      '${tempDir.path}/$_kExportFilePrefix'
       '${DateTime.now().millisecondsSinceEpoch}.json',
     );
     await file.writeAsString(
       const JsonEncoder.withIndent('  ').convert(payload),
     );
 
-    await _share(
-      ShareParams(
-        files: [XFile(file.path, mimeType: 'application/json')],
-        subject: 'Export RandomWalk',
-        text: 'Export de mes données RandomWalk',
-      ),
-    );
+    try {
+      await _share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'application/json')],
+          subject: 'Export RandomWalk',
+          text: 'Export de mes données RandomWalk',
+        ),
+      );
+    } finally {
+      // Best-effort: this file has done its job either way — a failed
+      // delete here just means the next export's own sweep (below) picks
+      // it up.
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// Deletes any `$_kExportFilePrefix*.json` file already sitting in
+  /// [tempDir] — a previous export's temp file that [exportAndShare]'s own
+  /// `finally` couldn't clean up (the process died between the write and
+  /// the delete being the only realistic way that happens). Best-effort and
+  /// silent: a sweep failure must never block the export it's guarding.
+  Future<void> _sweepLeftoverExports(Directory tempDir) async {
+    try {
+      await for (final entity in tempDir.list()) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.last;
+        if (name.startsWith(_kExportFilePrefix) && name.endsWith('.json')) {
+          try {
+            await entity.delete();
+          } catch (_) {
+            // Best-effort per-file too: one stuck leftover must not stop
+            // the rest of the sweep, let alone the export itself.
+          }
+        }
+      }
+    } catch (_) {
+      // tempDir itself unreadable/missing — nothing to sweep.
+    }
   }
 }
 

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../game/game_state_provider.dart';
 import '../leaderboard/repository.dart';
 import '../session/recorder.dart';
 import '../sync/account_state.dart';
@@ -31,9 +30,12 @@ import 'local_purge.dart';
 /// `SyncBackend.deleteAccount()`'s RPC succeeds, the flow calls `signOut()`
 /// locally and resets `accountStateProvider` (`_clearLocalSession`, shared
 /// with the plain "Se déconnecter" button), then separately OFFERS — never
-/// implies — an optional local purge (`local_purge.dart`'s
-/// `LocalDataPurge`, covering the journal/checkpoint/edges/track data plus
-/// this account's own `sync_state_store.dart` prefs keys). Fix round 1
+/// implies — an optional local purge, run via `local_purge.dart`'s
+/// `runLocalPurge` (which refuses to run at all while a trip is recording —
+/// see its own dartdoc — and shares its `PurgeRetryState` bookkeeping with
+/// `Réglages`'s `PurgeRetryTile`, review round 1's answer to a partial
+/// failure otherwise having no way back in). See `LocalDataPurge`'s own
+/// dartdoc for the full, binding purge inventory. Fix round 1
 /// (Task 4 review C2): `SyncStateStore`'s checkpoint is scoped by uid
 /// (`PrefsSyncStateStore`), so a re-signup after delete (a fresh uid)
 /// automatically starts from a clean sync checkpoint even when the player
@@ -216,28 +218,23 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
 
     final purgeAlso = await _confirmLocalPurge();
     if (purgeAlso == true) {
-      // Derives the app-support directory from the journal's own location
-      // (`journal.dir` is `'<app-support>/game'`) rather than calling
-      // `path_provider` a second time — matches `DataExporter`'s identical
-      // trick for the edges-store path, and is what makes this reachable
-      // through `gameJournalProvider`'s existing test override instead of
-      // needing a separate `path_provider` platform-channel mock.
-      final journal = await ref.read(gameJournalProvider.future);
-      final failures = await LocalDataPurge(
-        journal.dir.parent,
-      ).purge(uid: deletedUid);
-      // Re-replay gameStateProvider now that the journal/checkpoint files
-      // it reads may be gone — the standard "journal changed" signal (see
-      // GameJournalSignal's own dartdoc), which the game layer already
-      // listens to for every other journal mutation.
-      GameJournalSignal.instance.bump();
+      // runLocalPurge (local_purge.dart) owns the app-support-directory
+      // derivation, the refuse-while-a-trip-is-recording guard (Task 6
+      // review round 1, I1), and PurgeRetryState bookkeeping — shared with
+      // PurgeRetryTile's own retry so both call sites agree on all three.
+      final outcome = await runLocalPurge(ref, uid: deletedUid);
       if (mounted) {
-        _showSnack(
-          failures.isEmpty
-              ? 'Compte et données locales supprimés.'
-              : "Compte supprimé. Certaines données locales n'ont pas pu "
-                    'être supprimées.',
-        );
+        if (outcome.refusedTripActive) {
+          _showSnack('Termine ton trajet avant de supprimer les données.');
+        } else if (outcome.isFullSuccess) {
+          _showSnack('Compte et données locales supprimés.');
+        } else {
+          _showSnack(
+            "Compte supprimé. Certaines données locales n'ont pas pu être "
+            'supprimées : ${frenchPurgeLabels(outcome.failures)}. '
+            'Réessayez depuis Réglages.',
+          );
+        }
       }
     } else if (mounted) {
       _showSnack(
