@@ -62,14 +62,32 @@ const _kPoiColorsByKind = {
 };
 
 class GameLayer {
-  GameLayer({FogLayer? fog}) : _fog = fog ?? FogLayer();
+  GameLayer({FogLayer? fog}) : _fog = fog ?? FogLayer() {
+    _fogCoalescer = _newFogCoalescer();
+  }
 
   final FogLayer _fog;
+
+  /// Task 2l review fix round 1: single-flight/latest-wins coalescing
+  /// around the (`compute()`-backed, potentially hundreds-of-ms) fog
+  /// regeneration — see [SingleFlightCoalescer]'s own doc comment for the
+  /// bug this fixes. `late` (not `final`): [reset] swaps in a brand new
+  /// instance rather than mutating this one in place.
+  late SingleFlightCoalescer<Set<CellId>, MapLibreMapController> _fogCoalescer;
+
+  SingleFlightCoalescer<Set<CellId>, MapLibreMapController>
+  _newFogCoalescer() => SingleFlightCoalescer(regen: _runFogRegen);
 
   bool _iconsRegistered = false;
   List<Symbol> _landmarkSymbols = const [];
   DateTime? _lastFogGen;
   int _lastRevealedVersion = -1;
+
+  /// Whatever `clock` the most recent [refresh] call was given — read by
+  /// [_runFogRegen] to stamp [_lastFogGen], since that closure is bound
+  /// once (at construction/[reset] time) and so cannot close over any one
+  /// call's own `clock` parameter directly.
+  DateTime Function() _clock = DateTime.now;
 
   /// Whether the fog/halo layers are currently painted visible — mirrors
   /// the last [setVisible] call (defaults true, matching the "couche
@@ -89,6 +107,12 @@ class GameLayer {
     _landmarkSymbols = const [];
     _lastFogGen = null;
     _lastRevealedVersion = -1;
+    // A brand new coalescer rather than resetting the old one in place: a
+    // regen already in flight against the OLD (about-to-be-disposed)
+    // controller is simply abandoned here — when it eventually resolves it
+    // mutates an object nothing references any more, never this fresh one,
+    // so it can't wedge or race the new controller's own first regen.
+    _fogCoalescer = _newFogCoalescer();
   }
 
   /// Call once from `onStyleLoadedCallback` (must run after the style has
@@ -163,26 +187,49 @@ class GameLayer {
     if (store != null) await _refreshLandmarks(controller, store, state);
   }
 
+  /// Task 2l review fix round 1: [shouldRegenFog]'s own throttle is only
+  /// even consulted when nothing is currently in flight — while a regen IS
+  /// in flight, every trigger goes straight to [_fogCoalescer], which
+  /// decides for itself whether this is a genuine change worth queuing
+  /// (see [SingleFlightCoalescer]'s doc comment). Consulting
+  /// [shouldRegenFog] unconditionally here (the pre-fix behavior) is
+  /// exactly what let concurrent triggers each see "never generated yet"
+  /// and spawn their own redundant `compute()` isolate.
   Future<void> _refreshFog(
     MapLibreMapController controller,
     GameState state,
     DateTime Function() clock,
   ) async {
-    final now = clock();
+    _clock = clock;
     final revealedVersion = state.revealedCellKeys.length;
-    final regen = shouldRegenFog(
-      lastGen: _lastFogGen,
-      now: now,
-      lastRevealedVersion: _lastRevealedVersion,
-      revealedVersion: revealedVersion,
-    );
-    if (!regen) return;
-    try {
-      await _fog.update(controller, revealed: parseRevealedCells(state));
-    } catch (_) {
-      return;
+    if (!_fogCoalescer.isInFlight) {
+      final regen = shouldRegenFog(
+        lastGen: _lastFogGen,
+        now: clock(),
+        lastRevealedVersion: _lastRevealedVersion,
+        revealedVersion: revealedVersion,
+      );
+      if (!regen) return;
     }
-    _lastFogGen = now;
+    await _fogCoalescer.request(
+      parseRevealedCells(state),
+      revealedVersion,
+      controller,
+    );
+  }
+
+  /// The coalescer's `regen` callback — the actual (slow) fog rebuild.
+  /// Errors are swallowed by [SingleFlightCoalescer._run] itself (matching
+  /// this method's pre-2l-review-fix `try/catch`), so [_lastFogGen]/
+  /// [_lastRevealedVersion] simply stay stale on failure, same as before —
+  /// a later genuine trigger retries.
+  Future<void> _runFogRegen(
+    Set<CellId> revealed,
+    int revealedVersion,
+    MapLibreMapController controller,
+  ) async {
+    await _fog.update(controller, revealed: revealed);
+    _lastFogGen = _clock();
     _lastRevealedVersion = revealedVersion;
   }
 
