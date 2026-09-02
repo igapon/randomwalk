@@ -7,6 +7,9 @@ import 'package:randomwalk/map/wizard_defaults_store.dart';
 import 'package:randomwalk/map/wizard_destination_flow.dart';
 import 'package:randomwalk/map/wizard_home_screen.dart';
 import 'package:randomwalk/map/wizard_promenade_screen.dart';
+import 'package:randomwalk/theme/theme.dart';
+import 'package:randomwalk/theme/tokens.dart';
+import 'package:randomwalk/theme/waymark_glyph.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
@@ -35,7 +38,11 @@ void main() {
         SessionStepCounter(FakeStepSensor(), seed: seed),
   );
 
-  Future<void> pump(WidgetTester tester, {TripHistoryEntry? latestTrip}) async {
+  Future<void> pump(
+    WidgetTester tester, {
+    TripHistoryEntry? latestTrip,
+    ThemeData? theme,
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -43,6 +50,7 @@ void main() {
           tripHistoryLatestProvider.overrideWith((ref) async => latestTrip),
         ],
         child: MaterialApp(
+          theme: theme,
           home: Scaffold(
             body: WizardHomeScreen(onEnterMap: ([h]) => entered.add(h)),
           ),
@@ -70,6 +78,42 @@ void main() {
       expect(find.text('Explorer la carte'), findsOneWidget);
       expect(find.text('Repartir'), findsNothing);
     });
+
+    // Review fix round 1 (Important #2): the Destination card's icon used to
+    // hardcode `AppColors.ink`, near-invisible on dark theme's
+    // `primaryContainer` (`yellowPaleDark`). Two separate `testWidgets` —
+    // matching this project's own established pattern for light/dark
+    // assertions (see `map_screen_widgets_test.dart`'s `NavArrivedCard`/
+    // `RecenterButton` groups) — rather than two `pumpWidget` calls inside
+    // one test, which does not reliably re-resolve `Theme.of(context)`
+    // through this widget tree's `ConsumerWidget`/`ProviderScope` layering.
+    WaymarkDiamond destinationIcon(WidgetTester tester) => tester
+        .widgetList<WaymarkDiamond>(find.byType(WaymarkDiamond))
+        .firstWhere((w) => w.size == 28);
+
+    testWidgets('light theme: icon color resolves from onPrimaryContainer', (
+      tester,
+    ) async {
+      await pump(tester, theme: AppTheme.light);
+      expect(
+        destinationIcon(tester).color,
+        AppTheme.light.colorScheme.onPrimaryContainer,
+      );
+    });
+
+    testWidgets(
+      'dark theme: icon color resolves from onPrimaryContainer, not the '
+      'hardcoded AppColors.ink regression',
+      (tester) async {
+        await pump(tester, theme: AppTheme.dark);
+        final color = destinationIcon(tester).color;
+        expect(color, AppTheme.dark.colorScheme.onPrimaryContainer);
+        // The specific regression this pins: `AppColors.ink` (near-black) is
+        // what the hardcoded color used to be, sitting on dark theme's
+        // brown-gold `primaryContainer` at near-invisible contrast.
+        expect(color, isNot(equals(AppColors.ink)));
+      },
+    );
 
     testWidgets('shows Repartir with the last trip\'s own summary', (
       tester,

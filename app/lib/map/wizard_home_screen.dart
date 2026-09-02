@@ -95,7 +95,15 @@ class WizardHomeScreen extends ConsumerWidget {
             _WizardBigCard(
               title: 'Destination',
               subtitle: 'Choisissez une adresse à atteindre',
-              icon: const WaymarkDiamond(size: 28, color: AppColors.ink),
+              // Review fix round 1 (Important #2): theme-aware, matching the
+              // Promenade card's own `onSecondaryContainer` right below —
+              // the hardcoded `AppColors.ink` this replaced was near-
+              // invisible on dark theme's `primaryContainer`
+              // (`yellowPaleDark`, a dark brown-gold).
+              icon: WaymarkDiamond(
+                size: 28,
+                color: theme.colorScheme.onPrimaryContainer,
+              ),
               iconBackground: theme.colorScheme.primaryContainer,
               onTap: () => _openDestination(context),
             ),

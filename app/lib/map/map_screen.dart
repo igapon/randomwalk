@@ -1716,34 +1716,60 @@ class MapScreenState extends ConsumerState<MapScreen> {
       trackingReleased: _trackingReleased,
     );
 
+    // Fix-round-1, point 2: Android's system back gesture/button during
+    // fullscreen candidate selection used to fall through to the OS
+    // (backgrounding the app instead of leaving selection) since nothing
+    // on this screen intercepted it. Blocking `canPop` whenever there is
+    // something to back out of first — candidates on screen, or a
+    // « Proposer » request still in flight — makes back == leave
+    // selection == the same ✕ the chip row/spinner already offer, and
+    // only a real "no candidates, nothing planning" state actually pops
+    // the route (or exits the app).
+    //
+    // Fix-round-2: driven through [shouldInterceptBackForCandidates]
+    // rather than these two flags raw — a recording that starts while
+    // either is still true must free `canPop` in this very same frame,
+    // not one frame later once the post-frame cancel/clear effects above
+    // have actually run, or back reads as silently swallowed by a plan
+    // the walker can no longer see behind the recording pill.
+    final interceptForCandidates = shouldInterceptBackForCandidates(
+      hasCandidates: candidateResult != null,
+      candidatePlanning: _candidatePlanning,
+      isRecording: trip.isRecording,
+    );
+    // Task 2i review fix round 1 (Important #1): a system back press on the
+    // free map — reached via `CarteTabRoot` (`widget.onExitToWizard` is
+    // only ever non-null there — see its own doc comment) with no
+    // candidate session claiming the back press already — used to fall
+    // straight through this screen's own (only) `PopScope` and out through
+    // the app's root route, which Flutter's default Android back handling
+    // reads as `SystemNavigator.pop()`: the app closed instead of
+    // returning to the wizard home, exactly the risk the brief calls out.
+    // Candidate selection still wins outright (`interceptForCandidates`
+    // first) — this is the SAME `PopScope` as above, not a second one
+    // registered on the same route, which is what keeps the two concerns
+    // from firing on each other's back presses (a second, independently
+    // gated `PopScope` at `CarteTabRoot` was tried and rejected — see the
+    // task-2i report's "Known limitation" — because both would be notified
+    // of every blocked pop regardless of which one's own `canPop` asked
+    // for the block).
+    final interceptForWizardExit = shouldInterceptBackForWizardExit(
+      interceptedForCandidates: interceptForCandidates,
+      hasWizardExit: widget.onExitToWizard != null,
+    );
+
     return PopScope(
-      // Fix-round-1, point 2: Android's system back gesture/button during
-      // fullscreen candidate selection used to fall through to the OS
-      // (backgrounding the app instead of leaving selection) since nothing
-      // on this screen intercepted it. Blocking `canPop` whenever there is
-      // something to back out of first — candidates on screen, or a
-      // « Proposer » request still in flight — makes back == leave
-      // selection == the same ✕ the chip row/spinner already offer, and
-      // only a real "no candidates, nothing planning" state actually pops
-      // the route (or exits the app).
-      //
-      // Fix-round-2: driven through [shouldInterceptBackForCandidates]
-      // rather than these two flags raw — a recording that starts while
-      // either is still true must free `canPop` in this very same frame,
-      // not one frame later once the post-frame cancel/clear effects above
-      // have actually run, or back reads as silently swallowed by a plan
-      // the walker can no longer see behind the recording pill.
-      canPop: !shouldInterceptBackForCandidates(
-        hasCandidates: candidateResult != null,
-        candidatePlanning: _candidatePlanning,
-        isRecording: trip.isRecording,
-      ),
+      canPop: !interceptForCandidates && !interceptForWizardExit,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_candidatePlanning) {
-          _cancelCandidatePlanning();
-        } else {
-          _clearCandidates();
+        if (interceptForCandidates) {
+          if (_candidatePlanning) {
+            _cancelCandidatePlanning();
+          } else {
+            _clearCandidates();
+          }
+        } else if (interceptForWizardExit) {
+          widget.onExitToWizard!();
         }
       },
       child: Scaffold(

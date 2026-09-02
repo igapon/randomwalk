@@ -361,6 +361,32 @@ bool shouldInterceptBackForCandidates({
   required bool isRecording,
 }) => !isRecording && (hasCandidates || candidatePlanning);
 
+/// Task 2i review fix round 1 (Important #1): whether `MapScreen`'s single
+/// `PopScope` should redirect a blocked back press to `onExitToWizard`
+/// (back on the free map returns to the wizard home) instead of letting it
+/// fall through to the app's root route and exit — the failure mode the
+/// brief specifically calls out, since `CarteTabRoot` swaps the wizard and
+/// `MapScreen` in place with no navigator boundary between them.
+///
+/// [interceptedForCandidates] always wins outright: a back press during
+/// candidate selection (or a `Proposer` still in flight) must close that
+/// session and nothing else, exactly as [shouldInterceptBackForCandidates]
+/// already decides — this function only ever adds a *second* reason to
+/// block the same single `PopScope`, never a competing one, which is what
+/// keeps this fix from needing (or colliding with) a second `PopScope`
+/// registered on the same route.
+///
+/// [hasWizardExit] is `MapScreen.onExitToWizard != null` — `true` only when
+/// this screen was reached through `CarteTabRoot` and a trip is neither
+/// recording nor interrupted (see that field's own doc comment); `false`
+/// for every pre-task-2i call site (including every existing test), so
+/// this always returns `false` there and back keeps its original,
+/// unchanged "pop the route / exit the app" behavior.
+bool shouldInterceptBackForWizardExit({
+  required bool interceptedForCandidates,
+  required bool hasWizardExit,
+}) => !interceptedForCandidates && hasWizardExit;
+
 /// « Distance · 5,0 km ▸ » / « Durée · 1 h 30 ▸ » / « Explorer · 5,0 km ▸ »
 /// — the plan-target panel's collapsed line (task-8 brief point 2). Uses the
 /// renamed « Distance » label (point 3) even though [PlanMode.loop] is the
