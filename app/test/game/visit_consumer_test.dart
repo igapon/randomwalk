@@ -341,16 +341,18 @@ void main() {
       expect(alerts.single, contains('Point de repère'));
     });
 
-    test('landmark_visited omits the subkind key when the POI has none',
-        () async {
-      final consumer = buildConsumer();
-      await consumer.consume([culture(subkind: null)]);
+    test(
+      'landmark_visited omits the subkind key when the POI has none',
+      () async {
+        final consumer = buildConsumer();
+        await consumer.consume([culture(subkind: null)]);
 
-      final visited = (await journal.readAll()).firstWhere(
-        (e) => e.type == GameEventTypes.landmarkVisited,
-      );
-      expect(visited.payload.containsKey('subkind'), isFalse);
-    });
+        final visited = (await journal.readAll()).firstWhere(
+          (e) => e.type == GameEventTypes.landmarkVisited,
+        );
+        expect(visited.payload.containsKey('subkind'), isFalse);
+      },
+    );
 
     test('a revisit to the same culture landmark (no new cells, no xp, no '
         'refill) stays silent', () async {
@@ -385,9 +387,7 @@ void main() {
       final before = reduceAll(await journal.readAll()).energy;
       expect(before, lessThan(100)); // sanity: not clamp-masked.
 
-      await consumer.consume([
-        culture(ts: t0.add(const Duration(days: 30))),
-      ]);
+      await consumer.consume([culture(ts: t0.add(const Duration(days: 30)))]);
       final after = reduceAll(await journal.readAll()).energy;
 
       expect(after, before); // no farming by revisiting.

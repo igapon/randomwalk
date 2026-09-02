@@ -161,40 +161,26 @@ void main() {
   });
 
   group('PoiStore.load', () {
-    test(
-      'loads a gzipped fixture: count reflects only the LIVE kinds (Task '
-      '2k: reveal + culture — the coins/energy entries parse fine but are '
-      'excluded from the index, see the next test)',
-      () async {
-        final dir = await Directory.systemTemp.createTemp('pois');
-        final file = await writeFixture(
-          dir,
-          name: 'pois.json.gz',
-          gzipped: true,
-        );
-        final store = await PoiStore.load(file);
-        expect(store.count, 2); // church (reveal) + museum (culture).
-      },
-    );
+    test('loads a gzipped fixture: count reflects only the LIVE kinds (Task '
+        '2k: reveal + culture — the coins/energy entries parse fine but are '
+        'excluded from the index, see the next test)', () async {
+      final dir = await Directory.systemTemp.createTemp('pois');
+      final file = await writeFixture(dir, name: 'pois.json.gz', gzipped: true);
+      final store = await PoiStore.load(file);
+      expect(store.count, 2); // church (reveal) + museum (culture).
+    });
 
-    test(
-      'Task 2k: coins/energy entries in the fixture never surface via '
-      'near(), even though they are well within range',
-      () async {
-        final dir = await Directory.systemTemp.createTemp('pois');
-        final file = await writeFixture(
-          dir,
-          name: 'pois.json.gz',
-          gzipped: true,
-        );
-        final store = await PoiStore.load(file);
-        final nearby = store.near(churchLat, churchLon, 500);
-        final ids = nearby.map((p) => p.id).toSet();
-        expect(ids, {'node/1', 'node/4'}); // church + museum only.
-        expect(ids.contains('node/2'), isFalse); // bank: retired.
-        expect(ids.contains('node/3'), isFalse); // cafe: retired (and far).
-      },
-    );
+    test('Task 2k: coins/energy entries in the fixture never surface via '
+        'near(), even though they are well within range', () async {
+      final dir = await Directory.systemTemp.createTemp('pois');
+      final file = await writeFixture(dir, name: 'pois.json.gz', gzipped: true);
+      final store = await PoiStore.load(file);
+      final nearby = store.near(churchLat, churchLon, 500);
+      final ids = nearby.map((p) => p.id).toSet();
+      expect(ids, {'node/1', 'node/4'}); // church + museum only.
+      expect(ids.contains('node/2'), isFalse); // bank: retired.
+      expect(ids.contains('node/3'), isFalse); // cafe: retired (and far).
+    });
 
     test(
       'a plain (non-gzipped) file fails gzip decode -> PoiStore.empty',
