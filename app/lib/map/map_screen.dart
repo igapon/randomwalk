@@ -18,6 +18,9 @@ import '../coverage/manifest.dart' show DatasetVersionMismatch;
 import '../exploration/explore_planner.dart';
 import '../game/game_state_provider.dart';
 import '../game/grid.dart' show corridorCells;
+import '../game/poi_loader.dart' show poisStoreProvider;
+import '../game/pois.dart' show PoiStore;
+import '../game/reducers.dart' show GameState;
 import '../loop/loop_planner.dart';
 import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
@@ -31,6 +34,8 @@ import '../trip/trip_controller.dart';
 import '../trip/trip_messages.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/models.dart';
+import 'game_layer.dart';
+import 'game_layer_toggle_store.dart';
 
 const kMapStyleUrlLight = 'https://tiles.openfreemap.org/styles/liberty';
 // OpenFreeMap's dark style — see task-12 brief: the map follows the app's
@@ -76,6 +81,17 @@ class MapScreen extends ConsumerStatefulWidget {
 class MapScreenState extends ConsumerState<MapScreen> {
   MapLibreMapController? controller;
   bool _iconsRegistered = false;
+
+  /// Task 2j: fog + POIs + exploration bearings on the main map — the exact
+  /// same wiring `AdventureScreen` uses (`map/game_layer.dart`), gated by
+  /// the "couche Aventure" toggle below. [_gameLayerEnabled] starts at the
+  /// documented default (ON — the game is the product's own identity) and
+  /// is immediately corrected by [_loadGameLayerEnabled] once the persisted
+  /// choice has loaded, same pattern `_loadPlanMode` already uses for
+  /// `PlanModeStore`.
+  final _gameLayer = GameLayer();
+  bool _gameLayerEnabled = kGameLayerEnabledDefault;
+  final _gameLayerStore = GameLayerToggleStore();
 
   // Native handles for what is currently drawn. These are the only pieces
   // of map state that legitimately live in the widget: they belong to one
@@ -212,6 +228,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
     unawaited(_checkExistingLocationPermission());
     unawaited(_loadPlanMode());
     unawaited(_refreshSpeedKmh());
+    unawaited(_loadGameLayerEnabled());
     // Task 2i: the trip-start wizard already collected everything this
     // needs — see [_runAutoPlan]'s own doc comment for why this runs
     // alongside (not instead of) the two loads above rather than reusing
@@ -338,12 +355,91 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // replan had already happened before this remount (a theme flip
     // mid-navigation, say).
     _lastDrawnRouteShapeEnc = null;
+    // Task 2j: same story as every other native handle above — the fog
+    // source/layers and landmark symbols the old controller held are gone
+    // with it; `_installGameLayer` (called from `_onStyleLoaded` below)
+    // installs them fresh on the new one.
+    _gameLayer.reset();
   }
 
   Future<void> _onStyleLoaded() async {
     await _registerWaymarkIcons();
+    await _installGameLayer();
     await _redrawAfterRemount();
     if (_candidateResult != null) await _drawCandidateLines();
+  }
+
+  /// Task 2j: (re)installs the "couche Aventure" (fog + POIs) on the current
+  /// native map instance, then applies whatever the toggle's last-known
+  /// state is and redraws its content — the same install-then-restore
+  /// sequence [_onMapCreated]/[_installGameLayer]'s callers already run for
+  /// the route overlays, needed for the identical reason: a brightness flip
+  /// remounts `MapLibreMap` under a fresh `ValueKey(styleUrl)` (see
+  /// [_onMapCreated]'s own doc comment), which silently drops every custom
+  /// source/layer this screen had installed — including a fog layer the
+  /// walker had explicitly hidden, which must come back hidden, not
+  /// reset to visible.
+  Future<void> _installGameLayer() async {
+    final c = controller;
+    if (c == null || !mounted) return;
+    try {
+      await _gameLayer.install(c, brightness: Theme.of(context).brightness);
+      await _gameLayer.setVisible(c, _gameLayerEnabled);
+    } catch (_) {
+      // Game never blocks the tool: a style/layer failure just means no fog
+      // is drawn this session, not a crash.
+    }
+    _refreshGameLayer();
+  }
+
+  /// Loads the persisted "couche Aventure" choice — called once from
+  /// [initState], same pattern [_loadPlanMode] already uses for
+  /// `PlanModeStore`. If the map has already finished its first style load
+  /// by the time this resolves (the common case: this is a fast
+  /// SharedPreferences read racing a much slower native map/style load),
+  /// [_installGameLayer] hasn't necessarily run with the correct value yet
+  /// — [_setGameLayerVisible] below reapplies it directly rather than
+  /// waiting for a style reload that may never happen this session.
+  Future<void> _loadGameLayerEnabled() async {
+    final enabled = await _gameLayerStore.load();
+    if (!mounted || enabled == _gameLayerEnabled) return;
+    setState(() => _gameLayerEnabled = enabled);
+    await _setGameLayerVisible(enabled);
+  }
+
+  /// The toggle button's own handler — flips [_gameLayerEnabled], persists
+  /// it (so it survives a cold start, same as [PlanModeStore]/the trip
+  /// profile), and applies it to whatever native map instance currently
+  /// exists.
+  Future<void> _toggleGameLayer() async {
+    final enabled = !_gameLayerEnabled;
+    setState(() => _gameLayerEnabled = enabled);
+    unawaited(_gameLayerStore.save(enabled));
+    await _setGameLayerVisible(enabled);
+  }
+
+  Future<void> _setGameLayerVisible(bool enabled) async {
+    final c = controller;
+    if (c == null) return;
+    await _gameLayer.setVisible(c, enabled);
+    if (enabled) _refreshGameLayer();
+  }
+
+  /// Regenerates the fog geometry and redraws the nearest landmark symbols
+  /// for the current viewport — a no-op while the layer is turned off (fog
+  /// hidden via `setLayerVisibility`, so there is nothing to spend work
+  /// redrawing) or before [gameStateProvider] has resolved at least once.
+  /// Called from `onCameraIdle` (viewport-dependent, like
+  /// `AdventureScreen`'s own `_refreshMapContent`) and via [build]'s
+  /// `ref.listen` on [gameStateProvider]/[poisStoreProvider].
+  void _refreshGameLayer() {
+    if (!_gameLayerEnabled) return;
+    final c = controller;
+    if (c == null) return;
+    final state = ref.read(gameStateProvider).valueOrNull;
+    if (state == null) return;
+    final store = ref.read(poisStoreProvider).valueOrNull;
+    unawaited(_gameLayer.refresh(c, state: state, store: store));
   }
 
   /// Re-adds whatever route/markers/camera-follow the app state says are
@@ -1482,6 +1578,19 @@ class MapScreenState extends ConsumerState<MapScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    // Task 2j: re-runs the game-layer refresh whenever the underlying data
+    // changes, e.g. a trip ends / a visit is recorded while this screen is
+    // on screen — mirrors `AdventureScreen`'s own identical `ref.listen`
+    // pair. `ref.listen` rather than `ref.watch`: nothing here needs
+    // `build()` itself to re-run on new game data, only the imperative,
+    // side-effecting map redraw `_refreshGameLayer` performs.
+    ref.listen<AsyncValue<GameState>>(gameStateProvider, (_, __) {
+      _refreshGameLayer();
+    });
+    ref.listen<AsyncValue<PoiStore>>(poisStoreProvider, (_, __) {
+      _refreshGameLayer();
+    });
+
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final trip = ref.watch(tripControllerProvider);
     _statsTicker.sync(trip.isRecording);
@@ -1592,8 +1701,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
         onStart: _startRouteTrip,
       );
     } else {
-      // Final review item 3: the « Démarrer » pill (a free session — no
-      // route, no target) is shown in *every* plan mode, not only Itinéraire.
+      // Final review item 3: the « Enregistrer » pill (a free session — no
+      // route, no target — task 2j renaming) is shown in *every* plan mode,
+      // not only Itinéraire.
       // The owner's one-tap rule is about the app, not about which planning
       // panel happens to be selected: a walker who opened Distance, thought
       // better of it and just wants to start walking must not have to switch
@@ -1793,6 +1903,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
               // Device-QA addendum, point 3: any user gesture releases the
               // camera from following the walker during navigation.
               onCameraTrackingDismissed: _onCameraTrackingDismissed,
+              // Task 2j: landmark symbols are viewport-dependent (same as
+              // `AdventureScreen`'s own `onCameraIdle`) — the fog itself is
+              // not (see `game_layer.dart`'s `_refreshFog`), so panning alone
+              // never triggers fog work, only a landmark redraw.
+              onCameraIdle: _refreshGameLayer,
             ),
             Positioned(
               top: 0,
@@ -1833,7 +1948,7 @@ class MapScreenState extends ConsumerState<MapScreen> {
                       const SizedBox(height: 6),
                     ],
                     // A row of its own above the bottom banner (not
-                    // overlapping it, e.g. the full-width "Démarrer" pill) —
+                    // overlapping it, e.g. the full-width "Enregistrer" pill) —
                     // see task-8 brief point 7.
                     const MapAttribution(),
                     const SizedBox(height: 6),
@@ -1850,6 +1965,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Task 2j: always reachable, guided trip or not — the walker's
+              // own choice of whether the fog/POI layer shows persists
+              // (`GameLayerToggleStore`) and is otherwise independent of
+              // navigation state.
+              GameLayerToggleButton(
+                enabled: _gameLayerEnabled,
+                onPressed: _toggleGameLayer,
+              ),
+              const SizedBox(height: 12),
               if (showRecenter) ...[
                 RecenterButton(onPressed: _recenterOnTrack),
                 const SizedBox(height: 12),
@@ -2463,6 +2587,43 @@ class RecenterButton extends StatelessWidget {
   );
 }
 
+/// Task 2j: the "couche Aventure" toggle — fog-of-war + landmark POIs +
+/// exploration bearings, merged onto the main map (`map/game_layer.dart`).
+/// Diamond/losange iconography matching the app's waymark identity: filled
+/// when the layer is showing, outlined when hidden — the same filled/
+/// outline convention [WaymarkDiamond] already uses for the A/B route
+/// markers. Public, like [RecenterButton]/[MapAttribution], so it can be
+/// pumped directly in a widget test — `MapScreen` itself owns a real
+/// `MapLibreMapController` and cannot be (see this file's own doc comment
+/// on why).
+class GameLayerToggleButton extends StatelessWidget {
+  const GameLayerToggleButton({
+    super.key,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  /// Whether the layer is currently shown — drives both the icon (filled vs.
+  /// outlined diamond) and the tooltip (which names the action the NEXT tap
+  /// performs, matching [RecenterButton]'s own always-imperative phrasing).
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => FloatingActionButton(
+    heroTag: 'gameLayerToggle',
+    onPressed: onPressed,
+    tooltip: enabled
+        ? 'Désactiver la couche Aventure'
+        : 'Activer la couche Aventure',
+    child: WaymarkDiamond(
+      size: 16,
+      filled: enabled,
+      color: Theme.of(context).colorScheme.onPrimaryContainer,
+    ),
+  );
+}
+
 /// Route result card (T9): the primary action is the yellow "Démarrer
 /// l'itinéraire" pill (right), "✕" (clear) is secondary.
 class _ResultBanner extends StatelessWidget {
@@ -2524,7 +2685,7 @@ class _ResultBanner extends StatelessWidget {
 /// OpenFreeMap's and OpenStreetMap's usage terms. Sits in its own row above
 /// the bottom banner (see the `Column` in [MapScreenState.build]) rather
 /// than literally overlapping it, so it never collides with the full-width
-/// "Démarrer" pill. The fuller "OpenStreetMap © contributors (ODbL) ·
+/// "Enregistrer" pill. The fuller "OpenStreetMap © contributors (ODbL) ·
 /// OpenFreeMap · Valhalla" explanation lives in Settings → "À propos des
 /// données" (see `AboutDataTile`), reachable independently of the map.
 /// Public (not `_`-prefixed) so it can be pumped in isolation — see
@@ -2562,7 +2723,14 @@ class _WizardExitButton extends StatelessWidget {
   );
 }
 
-/// Idle, no route planned: the plain one-tap "Démarrer" pill.
+/// Idle, no route planned: the plain one-tap "Enregistrer" pill — free
+/// tracking (task 2j, owner request): starts the foreground service in free
+/// mode (exploration/game events active, no route) via
+/// [MapScreenState._startFreeTrip], exactly like a guided trip's own start
+/// otherwise (same permission flow, notification, low-power mode), except
+/// manual stop only — [TripController]'s Task 2g auto-finish only ever fires
+/// for a route-bound trip (`_isAutoFinishSignal` requires `routeBound`),
+/// which a free trip never is.
 class _StartPill extends StatelessWidget {
   const _StartPill({required this.onStart});
   final VoidCallback onStart;
@@ -2573,7 +2741,12 @@ class _StartPill extends StatelessWidget {
     child: ElevatedButton.icon(
       onPressed: onStart,
       icon: const WaymarkDiamond(size: 14, color: AppColors.ink),
-      label: const Text('Démarrer'),
+      // Task 2j (owner request): a free session — no route, no target —
+      // is exactly the "je me balade et je révèle la carte" free-tracking
+      // mode the brief asks for; renamed from "Démarrer" to the brief's
+      // own wording so the recording action reads distinctly from a
+      // guided trip's "Démarrer l'itinéraire" (`_ResultBanner`, below).
+      label: const Text('Enregistrer'),
     ),
   );
 }

@@ -6,20 +6,16 @@ import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../game/game_state_provider.dart';
-import '../game/grid.dart';
-import '../game/pois.dart';
+import '../game/grid.dart' show cellIdFor, quartierCompletion;
 import '../game/poi_loader.dart';
+import '../game/pois.dart' show PoiStore;
 import '../game/reducers.dart';
-import '../map/fog_layer.dart';
+import '../map/game_layer.dart';
 import '../map/initial_camera.dart' show resolveInitialCameraCenter;
 import '../map/map_screen.dart' show kMapStyleUrlLight, kMapStyleUrlDark;
-import '../nav/polyline_math.dart' show metersBetween;
 import '../theme/tokens.dart';
-import '../theme/waymark_glyph.dart';
 import 'badge_labels.dart';
-import 'fog_regen.dart';
 import 'hud_format.dart';
-import 'poi_symbols.dart';
 
 /// True when nothing in [state] shows any sign of play yet — no ground
 /// covered, no cells revealed, no landmark ever visited.
@@ -36,16 +32,12 @@ bool isAdventureEmpty(GameState state) =>
     state.cellsRevealed == 0 &&
     state.landmarksVisited == 0;
 
-Set<CellId> _parseRevealedCells(GameState state) => {
-  for (final key in state.revealedCellKeys)
-    if (CellId.parseKey(key) case final parsed?) parsed,
-};
-
 /// The 4th tab: a dedicated fog-of-war map (revealed corridor/landmark
 /// discs, unrevealed ground drawn as a soft, theme-tinted "papier non
-/// exploré" veil — see `map/fog_layer.dart`), the
-/// landmark diamonds around the current viewport, and a compact HUD that
-/// opens the badges/stats sheet.
+/// exploré" veil), the landmark diamonds around the current viewport, and a
+/// compact HUD that opens the badges/stats sheet — the fog+landmark wiring
+/// itself lives in `map/game_layer.dart` (Task 2j), shared verbatim with
+/// `MapScreen`'s own "couche Aventure" toggle.
 ///
 /// Owns its own [MapLibreMapController] — like `MapScreen`, this cannot be
 /// widget-tested directly (native platform view); see `adventure_screen_
@@ -61,14 +53,13 @@ class AdventureScreen extends ConsumerStatefulWidget {
 
 class _AdventureScreenState extends ConsumerState<AdventureScreen> {
   MapLibreMapController? _controller;
-  bool _iconsRegistered = false;
-  List<Symbol> _landmarkSymbols = const [];
 
-  /// The reusable fog-of-war component (`map/fog_layer.dart`) — same
-  /// builder/paint config Task 2j will reuse for the main map.
-  final _fog = FogLayer();
-  DateTime? _lastFogGen;
-  int _lastRevealedVersion = -1;
+  /// Task 2j: the fog+landmark wiring shared verbatim with `MapScreen`'s own
+  /// "couche Aventure" toggle — see `map/game_layer.dart`. This tab always
+  /// shows it (no toggle here: Aventure IS the game screen), so [GameLayer.
+  /// visible] is simply left at its default `true` for the life of this
+  /// State.
+  final _gameLayer = GameLayer();
 
   /// Injectable purely so a future test could pin the clock; production
   /// never overrides it.
@@ -150,18 +141,14 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
 
   void _onMapCreated(MapLibreMapController c) {
     _controller = c;
-    _iconsRegistered = false;
-    _landmarkSymbols = const [];
-    _lastFogGen = null;
-    _lastRevealedVersion = -1;
+    _gameLayer.reset();
   }
 
   Future<void> _onStyleLoaded() async {
     final controller = _controller;
     try {
-      await _registerIcons();
       if (controller != null && mounted) {
-        await _fog.install(
+        await _gameLayer.install(
           controller,
           brightness: Theme.of(context).brightness,
         );
@@ -173,122 +160,19 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
     _refreshMapContent();
   }
 
-  Future<void> _registerIcons() async {
-    if (_iconsRegistered || _controller == null) return;
-    const colorsByKind = {
-      PoiKind.reveal: AppColors.yellow,
-      PoiKind.coins: AppColors.hydro,
-      PoiKind.energy: AppColors.terre,
-    };
-    for (final entry in colorsByKind.entries) {
-      for (final visited in const [true, false]) {
-        final bytes = await waymarkDiamondPng(
-          sizePx: 32,
-          color: entry.value,
-          filled: visited,
-        );
-        await _controller?.addImage(
-          poiIconId(entry.key, visited: visited),
-          bytes,
-        );
-      }
-    }
-    _iconsRegistered = true;
-  }
-
   /// Fired on every camera-idle (post-pan/zoom) and once right after the
   /// gameState/PoiStore providers first resolve — `unawaited` since neither
-  /// caller can usefully wait on it, and both refreshes are independently
-  /// best-effort (see their own try/catch).
+  /// caller can usefully wait on it, and [GameLayer.refresh] is itself
+  /// best-effort (see its own try/catch on each half).
   void _refreshMapContent() {
+    final controller = _controller;
+    if (controller == null) return;
     final state = ref.read(gameStateProvider).valueOrNull;
+    if (state == null) return;
     final store = ref.read(poisStoreProvider).valueOrNull;
-    if (state != null) unawaited(_refreshFog(state));
-    if (state != null && store != null) {
-      unawaited(_refreshLandmarks(store, state));
-    }
-  }
-
-  /// Regenerates the fog geometry when (and only when) the revealed cell
-  /// set has actually changed — see `fog_regen.dart`'s doc comment for why
-  /// this no longer reads the camera/viewport at all (Task 2h: that
-  /// coupling was the root cause of "fog of war ... changes when i move
-  /// the map"). Still invoked from `onCameraIdle` (see [build]) alongside
-  /// [_refreshLandmarks], which genuinely IS viewport-dependent — but
-  /// [shouldRegenFog] declines every one of those calls unless the
-  /// revealed set moved too, so panning triggers no fog work at all.
-  Future<void> _refreshFog(GameState state) async {
-    final controller = _controller;
-    if (controller == null) return;
-    final now = clock();
-    final revealedVersion = state.revealedCellKeys.length;
-    final regen = shouldRegenFog(
-      lastGen: _lastFogGen,
-      now: now,
-      lastRevealedVersion: _lastRevealedVersion,
-      revealedVersion: revealedVersion,
+    unawaited(
+      _gameLayer.refresh(controller, state: state, store: store, clock: clock),
     );
-    if (!regen) return;
-
-    try {
-      await _fog.update(controller, revealed: _parseRevealedCells(state));
-    } catch (_) {
-      // Best-effort — a failed redraw just leaves the previous fog on
-      // screen one cycle longer.
-      return;
-    }
-    _lastFogGen = now;
-    _lastRevealedVersion = revealedVersion;
-  }
-
-  Future<void> _refreshLandmarks(PoiStore store, GameState state) async {
-    final controller = _controller;
-    if (controller == null) return;
-    final LatLngBounds bounds;
-    try {
-      bounds = await controller.getVisibleRegion();
-    } catch (_) {
-      return;
-    }
-    final centerLat =
-        (bounds.southwest.latitude + bounds.northeast.latitude) / 2;
-    final centerLon =
-        (bounds.southwest.longitude + bounds.northeast.longitude) / 2;
-    // Generous radius covering the whole viewport (center-to-corner) plus a
-    // margin, so `nearestPois`'s own cap — not this radius — is what
-    // actually bounds how many symbols get drawn.
-    final radiusM =
-        metersBetween(
-              centerLat,
-              centerLon,
-              bounds.northeast.latitude,
-              bounds.northeast.longitude,
-            ) *
-            1.2 +
-        200;
-    final nearby = store.near(centerLat, centerLon, radiusM);
-    final capped = nearestPois(nearby, centerLat, centerLon);
-    final specs = buildPoiSymbolSpecs(capped, state.visitedPoiIds);
-
-    try {
-      if (_landmarkSymbols.isNotEmpty) {
-        await controller.removeSymbols(_landmarkSymbols);
-        _landmarkSymbols = const [];
-      }
-      if (specs.isNotEmpty) {
-        _landmarkSymbols = await controller.addSymbols([
-          for (final s in specs)
-            SymbolOptions(
-              geometry: LatLng(s.poi.lat, s.poi.lon),
-              iconImage: s.iconId,
-              iconSize: 0.6,
-            ),
-        ]);
-      }
-    } catch (_) {
-      // Landmarks are decoration on top of the fog — never worth crashing
-      // the tab over.
-    }
   }
 
   void _openBadgesSheet(GameState state) {
@@ -297,7 +181,7 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
         ? 0.0
         : quartierCompletion(
             cellIdFor(center.latitude, center.longitude),
-            _parseRevealedCells(state),
+            parseRevealedCells(state),
           );
     showModalBottomSheet<void>(
       context: context,
