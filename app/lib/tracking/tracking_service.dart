@@ -748,6 +748,28 @@ class TripTaskHandler extends TaskHandler {
   /// notification that is on its way out.
   bool _stopped = false;
 
+  /// Task 2g (owner brief): whether this incarnation has already tried to
+  /// auto-finish the trip at arrival — set the moment [_onNavFix] first sees
+  /// [NavFields.arrived] turn true, so a walker standing at the destination
+  /// for several more fixes (Android's teardown is asynchronous; it does not
+  /// necessarily happen before the very next fix) never queues a second
+  /// `stopService()`/notification. Also gates [_publish] (see its own doc
+  /// comment) so nothing published after this point can clobber the final,
+  /// `status: idle` marker [_autoFinishOnArrival] writes.
+  bool _autoFinishTriggered = false;
+
+  /// Calls `FlutterForegroundTask.stopService()` — extracted into a
+  /// swappable static field, same rationale/testing pattern as
+  /// [speakerFactory]/[motionChannelFactory]/[fallbackStepSensorFactory]:
+  /// this class is instantiated by `flutter_foreground_task` itself, so
+  /// there is no constructor to inject a fake stop call into. Tests
+  /// reassign it to observe/count calls without a real Android foreground
+  /// service; reset it in `tearDown`.
+  @visibleForTesting
+  static Future<void> Function() stopServiceCall = () async {
+    await FlutterForegroundTask.stopService();
+  };
+
   /// The notification line last published, so a fix that does not change
   /// what the guidance *says* costs nothing (see [_publish]).
   String? _lastNotificationText;
@@ -1153,6 +1175,11 @@ class TripTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
+    // Task 2g: once auto-finish has latched, this trip is over — none of
+    // the session-restart/motion-policy/fallback-step machinery below has
+    // anything left to do, and [_publish] itself refuses to write anyway
+    // (see its own doc comment); returning here just skips the wasted work.
+    if (_autoFinishTriggered) return;
     // A GPS stream error ends the underlying session (see
     // SessionController._finishSession). In the foreground that meant the
     // trip was over; for a background recorder it usually means a transient
@@ -1242,7 +1269,12 @@ class TripTaskHandler extends TaskHandler {
   /// the alternative is a snapshot (route polyline included) crossing the
   /// isolate boundary for every fix of the walk.
   void _publish(DateTime now, {required bool periodic}) {
-    if (_stopped) return;
+    // Task 2g: once auto-finish has been triggered, [_autoFinishOnArrival]
+    // owns the one remaining write (the final, `status: idle` snapshot) —
+    // any fix or repeat-event still in flight behind it must not publish a
+    // fresh `status: recording` snapshot that would overwrite it before the
+    // service actually tears down.
+    if (_stopped || _autoFinishTriggered) return;
     final snapshot = _snapshotAt(now);
     if (snapshot == null) return;
     final text = _notificationText(snapshot, now);
@@ -1283,6 +1315,10 @@ class TripTaskHandler extends TaskHandler {
   /// instead, and only needs a safety fix fed explicitly (see
   /// [_applyMotionAction]'s `MotionAction.takeSafetyFix` case).
   Future<void> _onFix(GpsSample sample) async {
+    // Task 2g: once auto-finish has latched the trip is over — no further
+    // track sampling, visit detection or navigation has anything left to
+    // record for it (see [_autoFinishOnArrival]'s own doc comment).
+    if (_stopped || _autoFinishTriggered) return;
     _lastFixLatLon = (sample.lat, sample.lon);
     if (!_nativeMotionAvailable) {
       final action = _stillnessTracker?.onFix(sample.lat, sample.lon);
@@ -1425,11 +1461,13 @@ class TripTaskHandler extends TaskHandler {
 
   /// One accepted GPS fix, run through turn-by-turn navigation.
   ///
-  /// Deliberately swallows everything: guidance is an addition to a
-  /// recording trip, never a way to end one.
+  /// Deliberately swallows everything: a guidance failure is never a way to
+  /// end a recording trip. Reaching the destination genuinely IS one, though
+  /// (Task 2g, owner brief) — see [_autoFinishOnArrival], fired from here the
+  /// moment [NavFields.arrived] first turns true.
   Future<void> _onNavFix(GpsSample sample) async {
     final nav = _nav;
-    if (nav == null || _navBusy || _stopped) return;
+    if (nav == null || _navBusy || _stopped || _autoFinishTriggered) return;
     _navBusy = true;
     try {
       _navFields = await nav.onFix(
@@ -1447,10 +1485,78 @@ class TripTaskHandler extends TaskHandler {
       // a fix whose replan outlived the teardown must not raise from a
       // callback nothing is left to await.
       _publish(DateTime.now(), periodic: false);
+      // Task 2g: fired once, on the tick guidance first reports arrival —
+      // the SAME latch (progress floor + left-arrival-radius-once) that
+      // already drives the "Arrivé !" alert above, no new heuristic. Set
+      // BEFORE the fire-and-forget call below (not inside it) so a second
+      // fix landing before that call's first `await` ever suspends it is
+      // still guarded — `unawaited` does not make this call synchronous,
+      // but setting the flag here does not depend on it being one.
+      if ((_navFields?.arrived ?? false) && !_autoFinishTriggered) {
+        _autoFinishTriggered = true;
+        unawaited(_autoFinishOnArrival());
+      }
     } catch (_) {
       return;
     } finally {
       _navBusy = false;
+    }
+  }
+
+  /// Task 2g (owner brief): a guided trip (A→B or loop) that has just
+  /// latched arrival stops itself exactly as a manual "Terminer" would —
+  /// same foreground-service teardown, and a final snapshot
+  /// `TripController` reconciles through the exact same finalisation
+  /// pipeline a manual stop uses (live, if the UI is attached — see
+  /// `TripController._onTrackerSnapshot` — or off disk at its next
+  /// `restore()`, since the foreground service survives the app being
+  /// backgrounded OR its whole task being swiped away — `_configure`'s
+  /// `stopWithTask: false` — so this must not depend on any UI being
+  /// alive).
+  ///
+  /// Free (unguided) trips can never reach this: `_nav`/`_navFields` are
+  /// only ever non-null for a route-bound trip in the first place (see
+  /// `_nav`'s own doc comment), and [_onNavFix] — the only caller — already
+  /// returns immediately when `_nav == null`.
+  ///
+  /// Fired with `unawaited` from [_onNavFix]; [_autoFinishTriggered] is set
+  /// by the caller BEFORE this runs, so a walker lingering at the
+  /// destination for several more fixes while this is still in flight never
+  /// queues a second attempt — and [_publish] itself refuses to publish
+  /// anything once that flag is set, so nothing here races a later fix's
+  /// own `status: recording` write.
+  ///
+  /// Wrapped in its own try/catch — same "swallow everything" philosophy as
+  /// [_onNavFix] itself: a failed self-stop attempt must never propagate as
+  /// an unhandled error out of this `unawaited` call. A trip that fails to
+  /// auto-finish here still ends normally the moment the walker taps
+  /// "Terminer".
+  Future<void> _autoFinishOnArrival() async {
+    try {
+      if (_stopped) return;
+      // The final, arrived snapshot — flushed unconditionally (not just
+      // [_writer]'s own throttled `submit`), since [stopServiceCall] below
+      // tears this isolate down and there is no later tick left to flush a
+      // pending write. `status: idle` is what tells `TripController` (live,
+      // or off disk at the next `restore()`) that this trip is over and
+      // ready for finalisation, rather than debris to discard — see
+      // `TripController.restore`'s own doc comment on this.
+      final snapshot = _snapshotAt(
+        DateTime.now(),
+      )?.copyWith(status: TripStatus.idle);
+      if (snapshot != null) {
+        await _writer?.submit(snapshot);
+        await _writer?.flush();
+        FlutterForegroundTask.sendDataToMain(jsonEncode(snapshot.toJson()));
+      }
+      // Same notification machinery every maneuver alert already uses
+      // (`_postAlertNotification`) — festive copy, replacing whatever
+      // "Arrivé !" alert `_maybeAlert` already posted a moment earlier this
+      // same tick (both share `_kAlertNotificationId`).
+      await _postAlertNotification('Arrivé ! Bravo 🎉');
+      await stopServiceCall();
+    } catch (_) {
+      // See this method's own doc comment.
     }
   }
 

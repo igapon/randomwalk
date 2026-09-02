@@ -582,6 +582,201 @@ void main() {
     });
   });
 
+  group('TripTaskHandler — Task 2g auto-finish at arrival', () {
+    late Directory tempDir;
+
+    setUpAll(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('rw_auto_finish_test');
+    });
+
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
+      // Restore the real (unmocked) call — see `stopServiceCall`'s own doc
+      // comment for why this is a swappable static field at all.
+      TripTaskHandler.stopServiceCall = () async {
+        await FlutterForegroundTask.stopService();
+      };
+    });
+
+    /// Seeds a genuine restart already near the destination with the
+    /// arrival latch pre-armed (`navLeftArrivalRadius: true`) — same shape
+    /// the "arrival latch survives a restart" group above uses — so a
+    /// single fix right at the route's end latches arrival immediately.
+    Future<String> seedArrivingTrip() async {
+      final snapshotPath = '${tempDir.path}/snapshot.json';
+      final route = fakeRoute();
+      final onDisk = TripSnapshot(
+        status: TripStatus.recording,
+        distanceKm: 1.0,
+        steps: 1500,
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        updatedAt: DateTime.utc(2026, 8, 31, 9, 20),
+        profile: RoutingProfile.walk,
+        routeBound: true,
+      ).copyWith(nav: const NavFields(leftArrivalRadius: true));
+      await File(snapshotPath).writeAsString(jsonEncode(onDisk.toJson()));
+
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: true,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
+        '$_prefsPrefix'
+            'randomwalk_nav_seed': jsonEncode(
+          NavSeed(
+            route: route,
+            destLat: route.shape.last.$1,
+            destLon: route.shape.last.$2,
+            profile: RoutingProfile.walk,
+            tileDirPath: null,
+          ).toJson(),
+        ),
+      });
+      return snapshotPath;
+    }
+
+    Future<TripSnapshot?> pollUntilIdle(String snapshotPath) async {
+      TripSnapshot? persisted;
+      for (var i = 0; i < 25 && persisted?.isRecording != false; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+      }
+      return persisted;
+    }
+
+    test(
+      'a guided trip that latches arrival stops itself exactly once, '
+      'with a final status:idle snapshot the UI can reconcile through',
+      () async {
+        var stopCalls = 0;
+        TripTaskHandler.stopServiceCall = () async => stopCalls++;
+
+        final snapshotPath = await seedArrivingTrip();
+        final route = fakeRoute();
+        final handler = TripTaskHandler();
+        await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9, 20),
+          TaskStarter.developer,
+        );
+
+        final end = route.shape.last;
+        await handler.debugOnFix(
+          GpsSample(
+            lat: end.$1,
+            lon: end.$2,
+            accuracyM: 5,
+            speedMps: 0.5,
+            time: DateTime.utc(2026, 8, 31, 9, 20, 5),
+          ),
+        );
+
+        final persisted = await pollUntilIdle(snapshotPath);
+        expect(persisted?.isRecording, isFalse);
+        expect(persisted?.navArrived, isTrue);
+        expect(persisted?.routeBound, isTrue);
+
+        // stopServiceCall() runs AFTER the final snapshot write (see
+        // `_autoFinishOnArrival`'s own doc comment on that ordering) — poll
+        // for it separately rather than assuming it has already landed the
+        // instant the snapshot itself does.
+        for (var i = 0; i < 25 && stopCalls == 0; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        expect(stopCalls, 1);
+
+        // A second fix at the same spot — Android's teardown is asynchronous
+        // and does not necessarily happen before the very next fix arrives —
+        // must not queue a second stop attempt.
+        await handler.debugOnFix(
+          GpsSample(
+            lat: end.$1,
+            lon: end.$2,
+            accuracyM: 5,
+            speedMps: 0.5,
+            time: DateTime.utc(2026, 8, 31, 9, 20, 7),
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(stopCalls, 1);
+      },
+    );
+
+    test('a free (unguided) trip never auto-finishes, no matter how many '
+        'fixes it sees', () async {
+      var stopCalls = 0;
+      TripTaskHandler.stopServiceCall = () async => stopCalls++;
+
+      final snapshotPath = '${tempDir.path}/snapshot_free.json';
+      final seed = TripSnapshot.starting(
+        startedAt: DateTime.utc(2026, 8, 31, 9),
+        profile: RoutingProfile.walk,
+        routeBound: false,
+      );
+      SharedPreferences.setMockInitialValues({
+        '$_prefsPrefix'
+            'randomwalk_seed_snapshot': jsonEncode(
+          seed.toJson(),
+        ),
+        '$_prefsPrefix'
+                'randomwalk_snapshot_path':
+            snapshotPath,
+        '$_prefsPrefix'
+                'randomwalk_tts_enabled':
+            true,
+        '$_prefsPrefix'
+                'randomwalk_haptics_enabled':
+            true,
+        // No nav seed at all — a free trip never builds a follower.
+      });
+
+      final handler = TripTaskHandler();
+      await handler.onStart(
+        DateTime.utc(2026, 8, 31, 9),
+        TaskStarter.developer,
+      );
+
+      for (var i = 0; i < 5; i++) {
+        await handler.debugOnFix(
+          GpsSample(
+            lat: 46.5 + i * 0.001,
+            lon: 6.6,
+            accuracyM: 5,
+            speedMps: 1.0,
+            time: DateTime.utc(2026, 8, 31, 9, 0, i),
+          ),
+        );
+      }
+      // A free trip never touches `_publish` via `_onNavFix` at all (no
+      // `_nav` to guide) — the periodic tick is what actually persists a
+      // snapshot in production; drive it once so there is something on
+      // disk to assert `isRecording` against.
+      handler.onRepeatEvent(DateTime.utc(2026, 8, 31, 9, 0, 5));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(stopCalls, 0);
+      final persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+      expect(persisted?.isRecording, isTrue);
+    });
+  });
+
   group('TripTaskHandler.onStart — M4 track sampling', () {
     late Directory tempDir;
 
