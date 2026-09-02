@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../game/game_state_provider.dart';
@@ -11,7 +12,7 @@ import '../game/pois.dart';
 import '../game/poi_loader.dart';
 import '../game/reducers.dart';
 import '../game/reveal.dart';
-import '../map/initial_camera.dart' show kDefaultCameraCenter;
+import '../map/initial_camera.dart' show resolveInitialCameraCenter;
 import '../map/map_screen.dart' show kMapStyleUrlLight, kMapStyleUrlDark;
 import '../nav/polyline_math.dart' show metersBetween;
 import '../theme/tokens.dart';
@@ -78,6 +79,80 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
   /// Injectable purely so a future test could pin the clock; production
   /// never overrides it.
   DateTime Function() clock = DateTime.now;
+
+  /// Resolved once at startup — see [_resolveInitialCamera] — before the map
+  /// is built at all: last-known position when there is one, else Geneva.
+  /// Null while that resolution is still in flight.
+  ///
+  /// Task 2e item 1 (owner device-QA: "le mode aventure ne dévoile pas la
+  /// carte de la ou j'ai été et ne montre pas ma position"): before this
+  /// fix, [MapLibreMap] below hard-coded `kDefaultCameraCenter` (Geneva) as
+  /// its `initialCameraPosition` regardless of where the walker actually
+  /// was — a real walk anywhere else opened this tab looking at ground the
+  /// walker had never explored (all-ink fog, correctly nothing revealed
+  /// there) with no blue dot to say where they actually were, which reads
+  /// exactly as "fog doesn't reveal, position missing". [MapScreen] already
+  /// resolves this correctly (`_resolveInitialCamera`); this reuses the
+  /// exact same [resolveInitialCameraCenter] helper — the "même source" the
+  /// brief asks for — rather than inventing a second way to do it.
+  LatLng? _initialCameraCenter;
+
+  /// Mirrors `MapLibreMap.myLocationEnabled` — see [MapScreenState]'s field
+  /// of the same name for the full rationale (never unconditionally true,
+  /// only flipped once permission is actually known to be granted). Also
+  /// part of the Task 2e item 1 fix: this tab previously never enabled the
+  /// location layer at all, so the walker's position never appeared on the
+  /// Aventure map — "réutiliser la même source" as the main map's blue dot.
+  bool _myLocationEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_resolveInitialCamera());
+    unawaited(_checkExistingLocationPermission());
+  }
+
+  /// Last-known position (no permission prompt) when there is one, else
+  /// Geneva — see [resolveInitialCameraCenter]. Awaited before the map is
+  /// ever built (see [build]): `initialCameraPosition` is only read once, at
+  /// native platform-view creation, so there is no way to correct it after
+  /// the fact short of moving the camera again.
+  Future<void> _resolveInitialCamera() async {
+    final center = await resolveInitialCameraCenter(() async {
+      final pos = await Geolocator.getLastKnownPosition();
+      return pos == null ? null : (pos.latitude, pos.longitude);
+    });
+    if (!mounted) return;
+    setState(() => _initialCameraCenter = center);
+  }
+
+  /// A passive, no-prompt read of whatever permission state already exists
+  /// (e.g. granted from the main map, or a previous session) so the location
+  /// dot can appear the moment this tab opens, without this tab ever running
+  /// its own permission-request flow — that flow belongs to starting a trip
+  /// (`TripController`/`TripPermissionCoordinator`), not to browsing fog.
+  Future<void> _checkExistingLocationPermission() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse) {
+        _enableMyLocation();
+      }
+    } catch (_) {
+      // Nothing to enable yet; permission granted later (from the main map's
+      // own flow) simply never reaches this tab until it is reopened, same
+      // as any other cold read — not worth chasing with a live listener.
+    }
+  }
+
+  /// Flips `MapLibreMap.myLocationEnabled` on. A no-op past the first call —
+  /// same rationale as `MapScreenState._enableMyLocation`: the native
+  /// location component is never asked to enable itself before permission is
+  /// actually known to be granted.
+  void _enableMyLocation() {
+    if (_myLocationEnabled || !mounted) return;
+    setState(() => _myLocationEnabled = true);
+  }
 
   void _onMapCreated(MapLibreMapController c) {
     _controller = c;
@@ -264,6 +339,14 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final initialCenter = _initialCameraCenter;
+    if (initialCenter == null) {
+      // Resolving the initial camera (last-known position, else Geneva —
+      // see [_resolveInitialCamera]) is normally sub-frame fast; this only
+      // ever shows for the handful of milliseconds that takes.
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     // Re-runs the map refreshes whenever the underlying data changes, e.g. a
     // trip ends / a visit is recorded while this tab is on screen (the
     // journal replay itself already runs off the frame path inside
@@ -292,11 +375,13 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
           MapLibreMap(
             key: ValueKey(styleUrl),
             styleString: styleUrl,
-            initialCameraPosition: const CameraPosition(
-              target: kDefaultCameraCenter,
+            initialCameraPosition: CameraPosition(
+              target: initialCenter,
               zoom: 14,
             ),
             trackCameraPosition: true,
+            myLocationEnabled: _myLocationEnabled,
+            myLocationTrackingMode: MyLocationTrackingMode.none,
             attributionButtonPosition: AttributionButtonPosition.bottomLeft,
             onMapCreated: _onMapCreated,
             onStyleLoadedCallback: _onStyleLoaded,
