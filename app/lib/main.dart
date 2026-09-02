@@ -12,6 +12,8 @@ import 'package:randomwalk/exploration/exploration_recorder.dart';
 import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/game/game_state_provider.dart';
 import 'package:randomwalk/game/visit_consumer.dart';
+import 'package:randomwalk/history/trip_history_recorder.dart';
+import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/map/boot_preload.dart';
@@ -113,7 +115,24 @@ Future<TripController> _buildTripController() async {
       // Riverpod read (no ProviderScope exists yet at this call site).
       onJournalChanged: GameJournalSignal.instance.bump,
     );
-    processTripExploration = recorder.process;
+    // Task 2f (local trip history): decorates the exploration hook rather
+    // than adding a second `TripController` dependency — see
+    // `TripHistoryRecorder`'s own doc comment. Opens its own store handle
+    // at the same path `history/trip_history_store.dart`'s
+    // `tripHistoryStoreProvider` independently resolves for the UI (sqflite
+    // shares one underlying connection per path within a process); a
+    // failure opening it here disables trip history for this run exactly
+    // like `EdgesStore.open` failing disables the rest of the game layer —
+    // never the app failing to start.
+    final tripHistoryStore = await TripHistoryStore.open(
+      '${dir.path}/trip_history.db',
+    );
+    processTripExploration = TripHistoryRecorder(
+      store: tripHistoryStore,
+      journal: journal,
+      trackFile: File('${dir.path}/active_track.jsonl'),
+      inner: recorder.process,
+    ).process;
     // Shares `journal` with the recorder above — one `game_events.jsonl`,
     // appended to by whichever of the two fires for a given trip (landmark
     // visits mid-trip via this consumer, trip-level km/cells/loop XP and

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../history/trip_history_screen.dart';
 import '../nav/tts.dart';
 import '../session/recorder.dart';
 import '../tracking/device_channel.dart';
@@ -231,6 +232,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           },
                         ),
                         const Divider(height: 32),
+                        const TripHistorySettingsTile(),
                         const AboutDataTile(),
                         const AccountTile(),
                       ],

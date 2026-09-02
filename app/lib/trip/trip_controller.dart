@@ -573,6 +573,12 @@ class TripController extends ChangeNotifier {
             km: distanceKm,
             isLoop: _activeRoute?.isLoop ?? false,
             navArrived: snapshot.navArrived,
+            // Task 2f (local trip history): carried purely for whatever
+            // decorator main.dart wraps around this hook — see
+            // FinishedTrip's own doc comment.
+            startedAt: snapshot.startedAt,
+            endedAt: _clock(),
+            profile: snapshot.profile,
           ),
         ).catchError((e) {
           debugPrint(

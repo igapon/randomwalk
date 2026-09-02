@@ -9,6 +9,7 @@ import '../game/grid.dart';
 import '../game/reducers.dart';
 import '../nav/polyline_math.dart';
 import '../valhalla/engine.dart';
+import '../valhalla/models.dart';
 import 'edges_store.dart';
 import 'matcher.dart';
 import 'track_sampler.dart';
@@ -94,10 +95,26 @@ class FinishedTrip {
   /// `loop_completed` needs both.
   final bool navArrived;
 
+  /// Task 2f (local trip history): when this trip started/ended and which
+  /// profile it recorded with. [ExplorationRecorder] itself never reads
+  /// these three — they exist purely so a decorator wrapped around whatever
+  /// `processTripExploration` hook is wired (see
+  /// `history/trip_history_recorder.dart`) can write a per-trip history
+  /// summary without `TripController` or this class needing to know that
+  /// store exists. Optional and defaulted so every existing call site/test
+  /// keeps compiling unchanged; `TripController._finalise` (the only
+  /// production caller) always supplies them.
+  final DateTime? startedAt;
+  final DateTime? endedAt;
+  final RoutingProfile? profile;
+
   const FinishedTrip({
     required this.km,
     this.isLoop = false,
     this.navArrived = false,
+    this.startedAt,
+    this.endedAt,
+    this.profile,
   });
 }
 

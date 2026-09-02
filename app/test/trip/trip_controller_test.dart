@@ -778,6 +778,30 @@ void main() {
       expect(calls.single.navArrived, isTrue);
     });
 
+    test(
+      'Task 2f: the same call also carries startedAt/endedAt/profile, for '
+      'whatever history-recording decorator main.dart wraps the hook in',
+      () async {
+        final calls = <FinishedTrip>[];
+        final trip = build(processTripExploration: (t) async => calls.add(t));
+        // No `tracker.emit` here on purpose: the fake service snapshot
+        // (`recordingSnapshot`) hardcodes `profile: walk`, which would mask
+        // whichever profile `startTrip` actually launched with. Stopping
+        // right on the trip's own seed snapshot (`TripSnapshot.starting`,
+        // built from `startTrip`'s own `profile` argument) isolates exactly
+        // what this test is about.
+        await trip.startTrip(profile: RoutingProfile.bike);
+
+        await trip.stopTrip();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(calls, hasLength(1));
+        expect(calls.single.startedAt, now);
+        expect(calls.single.endedAt, now);
+        expect(calls.single.profile, RoutingProfile.bike);
+      },
+    );
+
     test('a throwing/never-completing exploration hook never delays or '
         'breaks trip finalisation', () async {
       totals.total = 10;
