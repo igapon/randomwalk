@@ -262,6 +262,27 @@ class TripSnapshot {
   /// this is true).
   final bool lowPowerPaused;
 
+  /// Task 2g fix round 1 (Important 2): this trip's own accumulated
+  /// landmark-visit XP, as last pushed by the UI isolate
+  /// (`TripController.publishVisitXp` → `TripTracker.publishVisitXp` →
+  /// `TripTaskHandler.onReceiveData`'s `visitXp` key) — mirrors exactly how
+  /// [steps] rides the snapshot in the other direction (the UI samples the
+  /// hardware sensor; the service has no Activity of its own). Rides the
+  /// snapshot for the same reason: only the service is the sole writer of
+  /// `snapshot.json` for the life of a trip (every periodic tick and nav fix
+  /// republishes its own `_snapshotAt()`), so a value that lives only in the
+  /// UI's own in-memory accumulator is silently lost the moment that
+  /// process dies — cold restore, or the ordinary "swipe the app away, the
+  /// service keeps recording, come back later" flow this app's foreground
+  /// service (`stopWithTask: false`) is explicitly built to support. Once
+  /// pushed, the service carries it forward on every subsequent publish
+  /// (`_snapshotAt`) exactly like [steps], so it survives a restart too.
+  ///
+  /// Backward-compat default `0` for a snapshot written before this field
+  /// existed (`fromJson`) — indistinguishable from "no visit XP yet" for a
+  /// trip genuinely 0, which is the correct reading either way.
+  final double visitXpEarned;
+
   const TripSnapshot({
     required this.status,
     required this.distanceKm,
@@ -283,6 +304,7 @@ class TripSnapshot {
     this.navLeftArrivalRadius = false,
     this.pendingVisits = const [],
     this.lowPowerPaused = false,
+    this.visitXpEarned = 0,
   });
 
   /// A trip that is about to start: zeroed, or — when resuming an
@@ -329,6 +351,7 @@ class TripSnapshot {
     NavFields? nav,
     List<PendingVisit>? pendingVisits,
     bool? lowPowerPaused,
+    double? visitXpEarned,
   }) => TripSnapshot(
     status: status ?? this.status,
     distanceKm: distanceKm ?? this.distanceKm,
@@ -340,6 +363,7 @@ class TripSnapshot {
     gpsSilent: gpsSilent ?? this.gpsSilent,
     pendingVisits: pendingVisits ?? this.pendingVisits,
     lowPowerPaused: lowPowerPaused ?? this.lowPowerPaused,
+    visitXpEarned: visitXpEarned ?? this.visitXpEarned,
     navInstruction: nav == null ? navInstruction : nav.instruction,
     navDistanceToManeuverM: nav == null
         ? navDistanceToManeuverM
@@ -380,6 +404,7 @@ class TripSnapshot {
     if (pendingVisits.isNotEmpty)
       'pendingVisits': pendingVisits.map((v) => v.toJson()).toList(),
     if (lowPowerPaused) 'lowPowerPaused': lowPowerPaused,
+    if (visitXpEarned != 0) 'visitXpEarned': visitXpEarned,
   };
 
   factory TripSnapshot.fromJson(Map<String, dynamic> j) => TripSnapshot(
@@ -420,6 +445,8 @@ class TripSnapshot {
             .toList() ??
         const [],
     lowPowerPaused: j['lowPowerPaused'] as bool? ?? false,
+    // Backward-compat default — see this field's own doc comment.
+    visitXpEarned: (j['visitXpEarned'] as num?)?.toDouble() ?? 0,
   );
 }
 

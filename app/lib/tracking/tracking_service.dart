@@ -92,6 +92,15 @@ abstract class TripTracker {
   /// persisted snapshot too.
   Future<void> publishSteps(int steps);
 
+  /// Task 2g fix round 1 (Important 2): hands the tracker this trip's
+  /// current TOTAL accumulated landmark-visit XP (the UI isolate is the
+  /// only one that ever runs `GameVisitConsumer` — see `TripSnapshot
+  /// .visitXpEarned`'s own doc comment for why this needs to ride the
+  /// snapshot the same way [publishSteps] does, just in the same
+  /// direction). A no-op while nothing is recording, same as
+  /// [updateAlertSettings].
+  Future<void> publishVisitXp(double totalVisitXp);
+
   /// Pushes a changed « Guidage vocal »/« Vibrations et alertes » setting
   /// into an already-running service, so flipping a toggle mid-trip takes
   /// effect on the very next maneuver alert instead of waiting for the trip
@@ -418,6 +427,12 @@ class ForegroundServiceTripTracker implements TripTracker {
   }
 
   @override
+  Future<void> publishVisitXp(double totalVisitXp) async {
+    if (!await isRunning()) return;
+    FlutterForegroundTask.sendDataToTask({'visitXp': totalVisitXp});
+  }
+
+  @override
   Future<void> updateAlertSettings({
     required bool ttsEnabled,
     required bool hapticsEnabled,
@@ -549,6 +564,15 @@ class TripTaskHandler extends TaskHandler {
   ThrottledSnapshotWriter? _writer;
   TripSnapshot? _seed;
   int _steps = 0;
+
+  /// Task 2g fix round 1 (Important 2): this trip's own accumulated
+  /// landmark-visit XP, as last pushed by the UI isolate — see
+  /// `TripSnapshot.visitXpEarned`'s own doc comment. Seeded from the
+  /// resumed/seed snapshot in [onStart] (mirrors [_steps]), updated by
+  /// [onReceiveData]'s `visitXp` key, and folded into every [_snapshotAt]
+  /// the same way [_steps] is — so, like steps, it survives a restart via
+  /// whatever was last persisted to disk.
+  double _visitXpEarned = 0;
   DateTime? _recordingSince;
 
   /// Turn-by-turn state, for route-bound trips only. Null for a free trip,
@@ -891,6 +915,11 @@ class TripTaskHandler extends TaskHandler {
     final seed = withoutNavigation(resumed);
     _seed = seed;
     _steps = seed.steps;
+    // Task 2g fix round 1 (Important 2): mirrors [_steps] just above — a
+    // genuine restart carries forward whatever visit XP total the UI last
+    // pushed and the previous incarnation persisted, rather than resetting
+    // to 0 (see `TripSnapshot.visitXpEarned`'s own doc comment).
+    _visitXpEarned = seed.visitXpEarned;
     // Fix round 1 (Task 5 review, item 4): carries the previous incarnation's
     // already-detected-but-maybe-never-consumed visits into this one, rather
     // than starting `_pendingVisits`/`_visitedThisTrip` empty. `seed` is
@@ -1735,6 +1764,13 @@ class TripTaskHandler extends TaskHandler {
       }
       _steps = newSteps;
     }
+    // Task 2g fix round 1 (Important 2): the UI hands us its own running
+    // total, not a delta — it is the sole party that ever runs
+    // `GameVisitConsumer`, so it is the one already holding the correct
+    // sum; this just overwrites, mirroring `_steps` just above.
+    if (data['visitXp'] is num) {
+      _visitXpEarned = (data['visitXp'] as num).toDouble();
+    }
     if (data['hapticsEnabled'] is bool) {
       _hapticsEnabled = data['hapticsEnabled'] as bool;
     }
@@ -1758,8 +1794,24 @@ class TripTaskHandler extends TaskHandler {
     // Before the final flush, so an in-flight replan completing during the
     // teardown cannot submit a snapshot after it.
     _stopped = true;
-    final snapshot = _snapshotAt(timestamp);
-    if (snapshot != null) await _writer?.submit(snapshot);
+    // Task 2g fix round 1 (Critical 1): once auto-finish has already
+    // written and flushed the final `status: idle` marker
+    // (`_autoFinishOnArrival`), this normal teardown snapshot must NOT be
+    // resubmitted. `_snapshotAt` always derives `status` from `_seed`,
+    // which is never touched to say anything but `recording` — so doing
+    // this unconditionally overwrote the idle marker on every single
+    // auto-finish (this is the ONE teardown path `_publish`'s own
+    // `_autoFinishTriggered` guard cannot reach, since `onDestroy` calls
+    // `_writer.submit` directly rather than going through `_publish`),
+    // silently breaking the poll-fallback and cold-restore reconciliation
+    // paths (both require `!isRecording`) for every killed-process arrival.
+    if (!_autoFinishTriggered) {
+      final snapshot = _snapshotAt(timestamp);
+      if (snapshot != null) await _writer?.submit(snapshot);
+    }
+    // Safe either way: `_autoFinishOnArrival`'s own `flush()` already
+    // cleared `_pendingSnapshot`, so this is a no-op when nothing new was
+    // submitted above.
     await _writer?.flush();
     await _session?.dispose();
     _session = null;
@@ -1923,6 +1975,7 @@ class TripTaskHandler extends TaskHandler {
       nav: _navFields,
       pendingVisits: List.unmodifiable(_pendingVisits),
       lowPowerPaused: _lowPowerPaused,
+      visitXpEarned: _visitXpEarned,
     );
   }
 }

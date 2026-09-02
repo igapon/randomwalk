@@ -13,9 +13,11 @@ import 'package:randomwalk/session/session_controller.dart';
 import 'package:randomwalk/tracking/adaptive_gps.dart';
 import 'package:randomwalk/tracking/motion_channel.dart';
 import 'package:randomwalk/tracking/nav_seed.dart';
+import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart';
+import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/valhalla/models.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -716,6 +718,98 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 50));
         expect(stopCalls, 1);
+      },
+    );
+
+    test('Critical 1 regression: the REAL onDestroy teardown (not stubbed '
+        'away) must not overwrite the final status:idle marker back to '
+        'recording', () async {
+      final snapshotPath = await seedArrivingTrip();
+      final route = fakeRoute();
+      final handler = TripTaskHandler();
+      await handler.onStart(
+        DateTime.utc(2026, 8, 31, 9, 20),
+        TaskStarter.developer,
+      );
+
+      final end = route.shape.last;
+      await handler.debugOnFix(
+        GpsSample(
+          lat: end.$1,
+          lon: end.$2,
+          accuracyM: 5,
+          speedMps: 0.5,
+          time: DateTime.utc(2026, 8, 31, 9, 20, 5),
+        ),
+      );
+      await pollUntilIdle(snapshotPath);
+
+      // The real teardown Android actually drives after stopService()
+      // resolves — called directly here, NOT stubbed away (unlike
+      // `stopServiceCall` in the tests above). Before the fix, this
+      // unconditionally re-submitted a fresh `_snapshotAt()` — always
+      // `status: recording`, since `_seed`'s own status field is never
+      // touched — clobbering the idle marker `_autoFinishOnArrival` had
+      // just written and flushed, which silently blinded the poll
+      // fallback and cold-restore reconciliation (both require
+      // `!isRecording`) on every single auto-finish.
+      await handler.onDestroy(DateTime.utc(2026, 8, 31, 9, 20, 6), false);
+
+      final persisted = await FileTripSnapshotStore(File(snapshotPath)).read();
+      expect(persisted?.isRecording, isFalse);
+      expect(persisted?.navArrived, isTrue);
+      expect(persisted?.routeBound, isTrue);
+    });
+
+    test(
+      'Critical 1 regression, end to end: the real snapshot a genuine '
+      'auto-finish + onDestroy leaves on disk is what makes a cold '
+      "TripController.restore() celebrate, not the interrupted-trip banner",
+      () async {
+        final snapshotPath = await seedArrivingTrip();
+        final route = fakeRoute();
+        final handler = TripTaskHandler();
+        await handler.onStart(
+          DateTime.utc(2026, 8, 31, 9, 20),
+          TaskStarter.developer,
+        );
+        final end = route.shape.last;
+        await handler.debugOnFix(
+          GpsSample(
+            lat: end.$1,
+            lon: end.$2,
+            accuracyM: 5,
+            speedMps: 0.5,
+            time: DateTime.utc(2026, 8, 31, 9, 20, 5),
+          ),
+        );
+        await pollUntilIdle(snapshotPath);
+        // The real teardown — same as the regression test just above —
+        // this is what proves the producer (the service) and the
+        // consumer (TripController.restore()) actually agree, rather than
+        // a hand-built snapshot standing in for the service's own output.
+        await handler.onDestroy(DateTime.utc(2026, 8, 31, 9, 20, 6), false);
+
+        final totals = FakeTotalDistanceStore();
+        final banked = MemoryFinalisedTripMemory();
+        final trip = TripController(
+          tracker: ForegroundServiceTripTracker(File(snapshotPath)),
+          routeStore: MemoryRouteStore(),
+          totalStore: totals,
+          finalisedTrips: banked,
+          ensurePermissions: () async => const TripPermissions(
+            outcome: TripPermissionOutcome.ready,
+            mode: TrackingMode.background,
+            stepsAvailable: true,
+          ),
+        );
+
+        await trip.restore();
+
+        expect(trip.state, TripState.idle);
+        expect(trip.isInterrupted, isFalse);
+        expect(totals.total, greaterThan(0));
+        expect(await banked.pendingCelebration(), isNotNull);
       },
     );
 
