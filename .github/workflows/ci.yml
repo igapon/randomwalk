@@ -61,7 +61,23 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      # Two-attempt pattern: GitHub-hosted runners intermittently kill this
+      # job BEFORE any test runs (corrupt emulator SDK download, "adb:
+      # device offline" at boot) — ~1 run in 3 some nights. A second
+      # attempt boots a fresh emulator; a genuine test failure fails both
+      # attempts and the job stays red.
       - uses: reactivecircus/android-emulator-runner@v2
+        id: emulator-attempt-1
+        continue-on-error: true
+        with:
+          api-level: 34
+          arch: x86_64
+          working-directory: app
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: flutter test integration_test/routing_test.dart
+      - uses: reactivecircus/android-emulator-runner@v2
+        if: steps.emulator-attempt-1.outcome == 'failure'
         with:
           api-level: 34
           arch: x86_64
