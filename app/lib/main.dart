@@ -129,7 +129,6 @@ Future<TripController> _buildTripController() async {
     );
     processTripExploration = TripHistoryRecorder(
       store: tripHistoryStore,
-      journal: journal,
       trackFile: File('${dir.path}/active_track.jsonl'),
       inner: recorder.process,
     ).process;

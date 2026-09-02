@@ -20,12 +20,14 @@ void main() {
   );
 
   TripHistoryEntry entry({
+    int? id = 1,
     DateTime? startedAt,
     RoutingProfile profile = RoutingProfile.walk,
     double distanceKm = 4.2,
     Duration duration = const Duration(minutes: 42),
     double? xpEarned,
   }) => TripHistoryEntry(
+    id: id,
     startedAt: startedAt ?? DateTime(2026, 8, 30, 9),
     endedAt: (startedAt ?? DateTime(2026, 8, 30, 9)).add(duration),
     profile: profile,
@@ -33,7 +35,10 @@ void main() {
     duration: duration,
     avgSpeedKmh: 6,
     xpEarned: xpEarned,
-    track: const [(46.2, 6.1), (46.21, 6.11)],
+    // The list screen only ever holds a summary entry in memory (review fix
+    // round 1, Critical 2 — `TripHistoryStore.list` never selects `track`);
+    // deliberately omitted here so these tests can't accidentally depend on
+    // a track the real list screen would never actually have.
   );
 
   group('TripHistoryEmptyState', () {
@@ -88,12 +93,20 @@ void main() {
       expect(find.textContaining('XP'), findsNothing);
     });
 
-    testWidgets('tapping a tile is wired to open the detail screen', (
-      tester,
-    ) async {
-      await tester.pumpWidget(app(TripHistoryTile(entry: entry())));
+    testWidgets('tapping a tile with an id is wired to open the detail '
+        'screen', (tester) async {
+      await tester.pumpWidget(app(TripHistoryTile(entry: entry(id: 42))));
       final inkWell = tester.widget<InkWell>(find.byType(InkWell));
       expect(inkWell.onTap, isNotNull);
+    });
+
+    testWidgets('a tile whose entry has no id (never happens for a real row) '
+        'disables the tap rather than navigating with a bad id', (
+      tester,
+    ) async {
+      await tester.pumpWidget(app(TripHistoryTile(entry: entry(id: null))));
+      final inkWell = tester.widget<InkWell>(find.byType(InkWell));
+      expect(inkWell.onTap, isNull);
     });
   });
 

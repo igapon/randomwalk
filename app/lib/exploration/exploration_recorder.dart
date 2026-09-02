@@ -177,11 +177,29 @@ class ExplorationRecorder {
   /// step already guarding itself (see the per-step doc comments below), so
   /// this is a deliberate belt-and-braces final backstop rather than the
   /// only thing standing between a bug here and a broken trip flow.
-  Future<void> process(FinishedTrip trip) async {
+  ///
+  /// Returns exactly the events THIS call appended to [journal] — `const
+  /// []` if anything failed before `journal.appendAll` durably committed
+  /// (including a throwing `appendAll` itself, since nothing landed then).
+  /// Task 2f review fix round 1 (Critical 1): `history/trip_history_
+  /// recorder.dart` used to compute a trip's XP by reading `GameState.xp`
+  /// before and after this call and diffing — which silently absorbed any
+  /// remote `xp_earned` event `SyncEngine.sync()` merged into this same
+  /// journal in that window (`sync_engine.dart`'s own doc comment: "the
+  /// journal is not exclusively this engine's to write"), since
+  /// `TripController._finalise` fires both `processTripExploration` and the
+  /// post-trip auto-sync trigger unawaited, racing each other. Returning
+  /// the exact event list built here — never re-reading the journal to
+  /// figure out what "this trip's" contribution was — makes that race
+  /// impossible by construction: a caller summing `xp_earned` amounts out
+  /// of this return value sees only what this call itself produced,
+  /// regardless of what anyone else appends concurrently.
+  Future<List<GameEvent>> process(FinishedTrip trip) async {
     try {
-      await _run(trip);
+      return await _run(trip);
     } catch (e) {
       debugPrint('ExplorationRecorder: failed, continuing: $e');
+      return const [];
     }
   }
 
@@ -213,7 +231,7 @@ class ExplorationRecorder {
   /// containing `'T'` or `'Z'` outright (see its own doc comment) precisely
   /// to keep timezone/DST semantics out of what is meant to be a pure
   /// calendar-day fact.
-  Future<void> _run(FinishedTrip trip) async {
+  Future<List<GameEvent>> _run(FinishedTrip trip) async {
     final now = _clock();
     final shape = await _readAndClearTrack();
     final events = <GameEvent>[
@@ -260,6 +278,7 @@ class ExplorationRecorder {
     } catch (_) {
       // A misbehaving listener must never take down trip finalisation.
     }
+    return events;
   }
 
   /// Map-matches [shape] (best-effort — see [engineProvider]'s doc comment)

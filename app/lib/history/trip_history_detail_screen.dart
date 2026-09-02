@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../adventure/hud_format.dart' show formatWholeNumber;
@@ -12,26 +13,42 @@ import 'trip_history_store.dart';
 /// card over it (brief §2: "détail avec la trace affichée sur une carte +
 /// stats").
 ///
+/// Takes an [id], not a [TripHistoryEntry] — review fix round 1 (Critical
+/// 2): the list screen's `TripHistoryTile` only ever holds a summary entry
+/// (no track — see `TripHistoryStore.list`'s doc comment), so this screen
+/// fetches its own full row, track included, via [tripHistoryDetailProvider]
+/// once it's actually opened, rather than the list screen loading every
+/// trip's track just so whichever one gets tapped already has it in memory.
+///
 /// Like `AdventureScreen`/`MapScreen`, this owns a real
 /// `MapLibreMapController` (a platform view) and cannot be widget-tested at
 /// all — see those screens' own doc comments for the same limitation. Only
 /// [TripHistoryStats] (the pure stats card) is pumped directly in
 /// `trip_history_screen_test.dart`.
-class TripHistoryDetailScreen extends StatefulWidget {
-  const TripHistoryDetailScreen({super.key, required this.entry});
+class TripHistoryDetailScreen extends ConsumerStatefulWidget {
+  const TripHistoryDetailScreen({super.key, required this.id});
 
-  final TripHistoryEntry entry;
+  final int id;
 
   @override
-  State<TripHistoryDetailScreen> createState() =>
+  ConsumerState<TripHistoryDetailScreen> createState() =>
       _TripHistoryDetailScreenState();
 }
 
-class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen> {
+class _TripHistoryDetailScreenState
+    extends ConsumerState<TripHistoryDetailScreen> {
   MapLibreMapController? _controller;
 
+  /// Cached from the last `data` build so [_onStyleLoaded] — a MapLibre
+  /// callback with no async/provider access of its own — can read the
+  /// already-resolved entry. Safe: the `MapLibreMap` widget below (whose
+  /// style-loaded callback this is) is only ever built once [ref.watch]
+  /// has resolved to `data`, so this is never null by the time MapLibre can
+  /// actually call it.
+  TripHistoryEntry? _entry;
+
   Future<void> _onStyleLoaded() async {
-    final track = widget.entry.track;
+    final track = _entry?.track ?? const [];
     if (track.length < 2) return;
     final geometry = [for (final (lat, lon) in track) LatLng(lat, lon)];
     try {
@@ -84,7 +101,39 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final entry = widget.entry;
+    final entryAsync = ref.watch(tripHistoryDetailProvider(widget.id));
+    return entryAsync.when(
+      loading: () =>
+          const Scaffold(body: Center(child: CircularProgressIndicator())),
+      // Best-effort like every other local-store read in this feature: a
+      // provider-level failure reads as "not found", never an error screen.
+      error: (_, __) => const _TripNotFoundScaffold(),
+      data: (entry) {
+        if (entry == null) return const _TripNotFoundScaffold();
+        _entry = entry;
+        return _DetailScaffold(
+          entry: entry,
+          onMapCreated: (c) => _controller = c,
+          onStyleLoaded: _onStyleLoaded,
+        );
+      },
+    );
+  }
+}
+
+class _DetailScaffold extends StatelessWidget {
+  const _DetailScaffold({
+    required this.entry,
+    required this.onMapCreated,
+    required this.onStyleLoaded,
+  });
+
+  final TripHistoryEntry entry;
+  final void Function(MapLibreMapController) onMapCreated;
+  final Future<void> Function() onStyleLoaded;
+
+  @override
+  Widget build(BuildContext context) {
     final brightness = Theme.of(context).brightness;
     final styleUrl = brightness == Brightness.dark
         ? kMapStyleUrlDark
@@ -107,8 +156,8 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen> {
                 zoom: 13,
               ),
               attributionButtonPosition: AttributionButtonPosition.bottomLeft,
-              onMapCreated: (c) => _controller = c,
-              onStyleLoadedCallback: _onStyleLoaded,
+              onMapCreated: onMapCreated,
+              onStyleLoadedCallback: onStyleLoaded,
             )
           else
             const _NoTrackPlaceholder(),
@@ -125,6 +174,19 @@ class _TripHistoryDetailScreenState extends State<TripHistoryDetailScreen> {
       ),
     );
   }
+}
+
+/// Shown when [tripHistoryDetailProvider] resolves to `null` (the row was
+/// deleted or is corrupt) or fails outright — this trip simply isn't
+/// openable any more, distinctly from "still loading".
+class _TripNotFoundScaffold extends StatelessWidget {
+  const _TripNotFoundScaffold();
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Trajet')),
+    body: const Center(child: Text('Ce trajet est introuvable.')),
+  );
 }
 
 class _NoTrackPlaceholder extends StatelessWidget {

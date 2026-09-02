@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import '../exploration/exploration_recorder.dart' show FinishedTrip;
 import '../exploration/track_sampler.dart';
 import '../game/events.dart';
-import '../game/reducers.dart';
 import '../valhalla/models.dart';
 import 'trip_history_store.dart';
 
@@ -28,13 +27,22 @@ import 'trip_history_store.dart';
 ///
 /// **XP source** (brief: "les événements du journal sur la fenêtre du
 /// trajet, ou le GameState avant/après — choisir la source la plus
-/// simple"): [GameState] read before and after [inner] runs. [inner] is
-/// exactly the call that appends this trip's own `xp_earned` events (km,
-/// newly-revealed cells, loop bonus — see `ExplorationRecorder._run`), so
-/// the XP delta across that one call is this trip's XP, with no need to tag
-/// or filter individual journal entries by type. Read failures (a corrupt
-/// or momentarily-unreadable journal) make the recorded [TripHistoryEntry.
-/// xpEarned] `null` rather than a wrong number — see [_xp].
+/// simple"): the `xp_earned` events [inner] itself returns from *this call*
+/// (see [ExplorationRecorder.process]'s return value).
+///
+/// **Review fix round 1 (Critical 1)**: the first version of this class
+/// instead read `GameState.xp` before and after [inner] ran and stored the
+/// difference. That is unsafe in this codebase specifically:
+/// `TripController._finalise` fires `processTripExploration` *and* the
+/// post-trip auto-sync trigger unawaited from the same call
+/// (`main.dart`'s `_onSessionEnded` → `runAutoSync`), so `SyncEngine.sync()`
+/// can merge remote `xp_earned` events into the very same `GameJournal` in
+/// the window between the two reads — polluting this trip's recorded XP
+/// with XP that has nothing to do with it (`sync_engine.dart`'s own doc
+/// comment: "the journal is not exclusively this engine's to write").
+/// Summing the events [inner] *returns* rather than re-reading the journal
+/// sidesteps that race by construction: whatever anyone else appends
+/// concurrently is simply never consulted.
 ///
 /// **Timing**: the history row (including XP) is written only after
 /// [inner] finishes, since XP genuinely is not known before then — the same
@@ -45,7 +53,6 @@ import 'trip_history_store.dart';
 /// what this means for Task 2g's congratulations screen.
 class TripHistoryRecorder {
   final TripHistoryStore store;
-  final GameJournal journal;
 
   /// Same file `tracking_service.dart`'s `TripTaskHandler` appends the live
   /// trip's sampled points to, and the same file [inner] (the real
@@ -55,29 +62,30 @@ class TripHistoryRecorder {
   /// (peek, then run [inner]) is what makes that safe rather than a race.
   final File trackFile;
 
-  final Future<void> Function(FinishedTrip trip) inner;
+  /// In production, `ExplorationRecorder.process` — returns exactly the
+  /// events that one call appended to the game journal (`const []` if
+  /// nothing durably landed), which is what makes [process] immune to a
+  /// concurrent journal writer (see this class's own doc comment).
+  final Future<List<GameEvent>> Function(FinishedTrip trip) inner;
 
   TripHistoryRecorder({
     required this.store,
-    required this.journal,
     required this.trackFile,
     required this.inner,
   });
 
-  /// Never throws: every step is independently best-effort (see [_peekTrack]
-  /// and [_xp]), and the final [TripHistoryStore.record] call — the only
-  /// step that could still throw (a full disk, a wedged sqlite handle) — is
-  /// itself wrapped, so a broken history store costs this trip its history
-  /// row, never its exploration processing (brief §4: "échec d'écriture
-  /// silencieux").
+  /// Never throws: every step is independently best-effort (see
+  /// [_peekTrack] and [_xpFrom]), and the final [TripHistoryStore.record]
+  /// call — the only step that could still throw (a full disk, a wedged
+  /// sqlite handle) — is itself wrapped, so a broken history store costs
+  /// this trip its history row, never its exploration processing (brief
+  /// §4: "échec d'écriture silencieux").
   Future<void> process(FinishedTrip trip) async {
     final track = await _peekTrack();
-    final xpBefore = await _xp();
 
-    await inner(trip);
+    final appended = await inner(trip);
 
     try {
-      final xpAfter = await _xp();
       // `TripController._finalise` (the only production caller) always
       // supplies both timestamps; the fallbacks below only matter for a
       // hand-built `FinishedTrip` (e.g. a test) that omits them.
@@ -96,9 +104,7 @@ class TripHistoryRecorder {
           distanceKm: trip.km,
           duration: duration,
           avgSpeedKmh: hours > 0 ? trip.km / hours : 0,
-          xpEarned: (xpBefore == null || xpAfter == null)
-              ? null
-              : (xpAfter - xpBefore).toDouble(),
+          xpEarned: _xpFrom(appended),
           track: track,
         ),
       );
@@ -107,18 +113,30 @@ class TripHistoryRecorder {
     }
   }
 
-  /// Current cumulative XP, or `null` when the journal could not be read —
-  /// `GameJournal.readAll` itself is documented to never throw (a
-  /// missing/corrupt journal reads as `[]`/skips bad lines), so this catch
-  /// is a second, independent guard for whatever reaches it regardless
-  /// (e.g. `reduceAll` itself), matching the "never let this cost the trip
-  /// its history row" contract [process] promises.
-  Future<int?> _xp() async {
-    try {
-      return reduceAll(await journal.readAll()).xp;
-    } catch (_) {
-      return null;
+  /// Sums the `xp_earned` amounts among the events [inner] itself appended
+  /// for this trip, or `null` when [appended] is empty — which only happens
+  /// when [inner] failed before durably committing anything (see
+  /// `ExplorationRecorder.process`'s doc comment), since on any successful
+  /// run it always appends at least a km-based `xp_earned` event, even for
+  /// a zero-distance trip. `null` therefore cleanly means "unknown", never
+  /// a wrong number — it is never conflated with a real zero.
+  ///
+  /// Deliberately the raw `amount` payload, not the energy-multiplied value
+  /// the reducer would eventually bank (`reducers.dart`'s private
+  /// `_energyMultiplier`, out of scope for this class to depend on): this
+  /// is "what this trip itself earned," an intrinsic property of the trip,
+  /// rather than "what it happened to bank," which depends on the player's
+  /// energy level at whatever moment the reducer runs — a quantity this
+  /// class has no race-free way to pin down anyway (see this class's own
+  /// doc comment on why a `GameState` read was dropped entirely).
+  double? _xpFrom(List<GameEvent> appended) {
+    if (appended.isEmpty) return null;
+    var total = 0.0;
+    for (final event in appended) {
+      if (event.type != GameEventTypes.xpEarned) continue;
+      total += (event.payload['amount'] as num?)?.toDouble() ?? 0;
     }
+    return total;
   }
 
   /// Reads [trackFile] as newline-delimited `{"lat":.., "lon":..}` objects

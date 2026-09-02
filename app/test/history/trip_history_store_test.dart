@@ -59,7 +59,8 @@ void main() {
   });
 
   test(
-    'record then list round-trips every field, including the track',
+    'record then list round-trips every summary field (review fix round 1, '
+    'Critical 2: list is summary-only, see the group below for the track)',
     () async {
       await store.record(entry(xpEarned: 35));
       final entries = await store.list();
@@ -73,9 +74,40 @@ void main() {
       expect(got.duration, const Duration(minutes: 30));
       expect(got.avgSpeedKmh, closeTo(5.0, 1e-9));
       expect(got.xpEarned, closeTo(35, 1e-9));
-      expect(got.track, [(46.2, 6.1), (46.21, 6.11)]);
     },
   );
+
+  group('lazy track loading (review fix round 1, Critical 2)', () {
+    test(
+      'list never carries a track, even for a trip recorded with one',
+      () async {
+        await store.record(entry(track: const [(46.2, 6.1), (46.21, 6.11)]));
+        expect((await store.list()).single.track, isEmpty);
+      },
+    );
+
+    test('latest never carries a track either — see list', () async {
+      await store.record(entry(track: const [(46.2, 6.1), (46.21, 6.11)]));
+      expect((await store.latest())!.track, isEmpty);
+    });
+
+    test('fetchById loads the full row, including the track', () async {
+      final id = await store.record(
+        entry(track: const [(46.2, 6.1), (46.21, 6.11)], xpEarned: 35),
+      );
+      final full = await store.fetchById(id);
+      expect(full, isNotNull);
+      expect(full!.track, [(46.2, 6.1), (46.21, 6.11)]);
+      // Every other summary field still round-trips through fetchById too.
+      expect(full.distanceKm, closeTo(2.5, 1e-9));
+      expect(full.xpEarned, closeTo(35, 1e-9));
+    });
+
+    test('fetchById returns null for an id that does not exist', () async {
+      final id = await store.record(entry());
+      expect(await store.fetchById(id + 1000), isNull);
+    });
+  });
 
   test('a trip with no XP source records a null xpEarned', () async {
     await store.record(entry(xpEarned: null));
@@ -121,7 +153,7 @@ void main() {
       // that connection out from under `store` too. `tearDown`'s
       // `tempDir.delete` cleans it up regardless.
       final raw = await openDatabase(dbPath);
-      await raw.insert('trip_history', {
+      final corruptId = await raw.insert('trip_history', {
         'started_at': 'not-a-date',
         'ended_at': 'not-a-date',
         'profile': 'walk',
@@ -135,11 +167,17 @@ void main() {
       final entries = await store.list();
       expect(entries, hasLength(1));
       expect(entries.single.startedAt, DateTime.utc(2026, 8, 1));
+
+      // fetchById gives the same per-row tolerance: null, not a throw.
+      expect(await store.fetchById(corruptId), isNull);
     },
   );
 
-  test('an entry with an empty track round-trips as an empty list', () async {
-    await store.record(entry(track: const []));
-    expect((await store.list()).single.track, isEmpty);
-  });
+  test(
+    'an entry with an empty track round-trips as an empty list via fetchById',
+    () async {
+      final id = await store.record(entry(track: const []));
+      expect((await store.fetchById(id))!.track, isEmpty);
+    },
+  );
 }

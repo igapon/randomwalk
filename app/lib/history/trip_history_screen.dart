@@ -96,11 +96,17 @@ class TripHistoryTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadii.card),
       child: InkWell(
         borderRadius: BorderRadius.circular(AppRadii.card),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => TripHistoryDetailScreen(entry: entry),
-          ),
-        ),
+        // Navigates by id, not by handing the already-in-memory `entry`
+        // along: `entry` came from the summary-only `tripHistoryListProvider`
+        // (no track — see `TripHistoryStore.list`'s doc comment), and the
+        // detail screen fetches its own full row, track included, by id.
+        onTap: entry.id == null
+            ? null
+            : () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => TripHistoryDetailScreen(id: entry.id!),
+                ),
+              ),
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),
           child: Row(

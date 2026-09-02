@@ -24,8 +24,18 @@ class ThrowingTripHistoryStore implements TripHistoryStore {
   Future<TripHistoryEntry?> latest() async => null;
 
   @override
+  Future<TripHistoryEntry?> fetchById(int id) async => null;
+
+  @override
   Future<void> close() async {}
 }
+
+GameEvent _xpEvent(String id, DateTime ts, num amount) => GameEvent(
+  id: id,
+  ts: ts,
+  type: GameEventTypes.xpEarned,
+  payload: {'amount': amount, 'preMultiplied': true},
+);
 
 void main() {
   setUpAll(() {
@@ -35,6 +45,10 @@ void main() {
 
   late Directory tempDir;
   late File trackFile;
+  // A real journal, only used to simulate what a concurrent writer (the
+  // real `ExplorationRecorder`, or — for Critical 1's regression tests — a
+  // concurrent `SyncEngine` merge) does to shared state; `TripHistoryRecorder`
+  // itself no longer touches a journal at all (see the review fix).
   late GameJournal journal;
   late TripHistoryStore store;
   var innerCalls = 0;
@@ -64,17 +78,17 @@ void main() {
   });
 
   TripHistoryRecorder build({
-    Future<void> Function(FinishedTrip trip)? inner,
+    Future<List<GameEvent>> Function(FinishedTrip trip)? inner,
     TripHistoryStore? storeOverride,
   }) => TripHistoryRecorder(
     store: storeOverride ?? store,
-    journal: journal,
     trackFile: trackFile,
     inner:
         inner ??
         (t) async {
           innerCalls++;
           innerReceived = t;
+          return const <GameEvent>[];
         },
   );
 
@@ -93,65 +107,104 @@ void main() {
     expect(entry.duration, const Duration(minutes: 40));
   });
 
-  test('XP earned is the GameState delta across inner\'s own call', () async {
-    // Simulate what the real ExplorationRecorder does: append the trip's
-    // own xp_earned events as part of `inner`.
-    // `preMultiplied: true` so the reducer's own energy-multiplier math
-    // (`reducers.dart`'s private `_energyMultiplier`, out of scope here)
-    // never enters the picture — this test is only about the before/after
-    // diffing this class does, not about how much XP a given event is
-    // ultimately worth.
-    final recorder = build(
-      inner: (t) async {
-        await journal.appendAll([
-          GameEvent(
-            id: '1',
-            ts: t.startedAt!,
-            type: GameEventTypes.xpEarned,
-            payload: const {'amount': 32, 'preMultiplied': true},
-          ),
-          GameEvent(
-            id: '2',
-            ts: t.startedAt!,
-            type: GameEventTypes.xpEarned,
-            payload: const {'amount': 5, 'preMultiplied': true},
-          ),
-        ]);
-      },
-    );
+  group('XP source (review fix round 1, Critical 1)', () {
+    test('XP earned is the sum of xp_earned amounts among the events inner '
+        'itself returns', () async {
+      // `preMultiplied: true` so the reducer's own energy-multiplier math
+      // (`reducers.dart`'s private `_energyMultiplier`, out of scope
+      // here) never enters the picture — this test is only about the
+      // summing this class does over inner's own return value.
+      final recorder = build(
+        inner: (t) async => [
+          _xpEvent('1', t.startedAt!, 32),
+          _xpEvent('2', t.startedAt!, 5),
+        ],
+      );
 
-    await recorder.process(trip);
+      await recorder.process(trip);
 
-    final entry = (await store.list()).single;
-    expect(entry.xpEarned, closeTo(37, 1e-9));
-  });
+      final entry = (await store.list()).single;
+      expect(entry.xpEarned, closeTo(37, 1e-9));
+    });
 
-  test('XP earned before this trip is not counted twice', () async {
-    // A previous trip already banked 100 XP.
-    await journal.append(
-      GameEvent(
-        id: 'prev',
-        ts: DateTime.utc(2026, 8, 29),
-        type: GameEventTypes.xpEarned,
-        payload: const {'amount': 100, 'preMultiplied': true},
-      ),
-    );
-    final recorder = build(
-      inner: (t) async {
-        await journal.append(
-          GameEvent(
-            id: 'this-trip',
-            ts: t.startedAt!,
-            type: GameEventTypes.xpEarned,
-            payload: const {'amount': 10, 'preMultiplied': true},
-          ),
+    test(
+      'pre-existing XP in the journal from earlier trips is never counted '
+      '(requirement (b): the prior-trip no-double-count guarantee)',
+      () async {
+        // A previous trip's XP already sits in the journal — but nothing in
+        // TripHistoryRecorder reads the journal any more, so this can no
+        // longer leak into this trip's figure regardless of its value.
+        await journal.append(_xpEvent('prev', DateTime.utc(2026, 8, 29), 100));
+        final recorder = build(
+          inner: (t) async {
+            final own = _xpEvent('this-trip', t.startedAt!, 10);
+            await journal.append(own);
+            return [own];
+          },
         );
+
+        await recorder.process(trip);
+
+        expect((await store.list()).single.xpEarned, closeTo(10, 1e-9));
       },
     );
 
-    await recorder.process(trip);
+    test('requirement (a): a concurrent sync merge landing during inner\'s '
+        'call never pollutes this trip\'s recorded XP', () async {
+      // Simulates the exact race Critical 1 described: `TripController
+      // ._finalise` fires both `processTripExploration` and the post-trip
+      // auto-sync trigger unawaited, and `SyncEngine.sync()` can merge
+      // remote xp_earned events into the same GameJournal while `inner`
+      // (the real ExplorationRecorder) is still running. `inner` here
+      // appends its own event AND, mid-call, a "remote merge" event —
+      // but only returns its own, exactly like the real
+      // `ExplorationRecorder.process` only ever returns what it itself
+      // appended.
+      final recorder = build(
+        inner: (t) async {
+          final own = _xpEvent('own', t.startedAt!, 10);
+          await journal.append(own);
+          // The concurrent merge: a much larger amount, from "another
+          // device", landing in the same window.
+          await journal.append(_xpEvent('remote-merge', t.startedAt!, 500));
+          return [own];
+        },
+      );
 
-    expect((await store.list()).single.xpEarned, closeTo(10, 1e-9));
+      await recorder.process(trip);
+
+      final entry = (await store.list()).single;
+      expect(entry.xpEarned, closeTo(10, 1e-9));
+      expect(entry.xpEarned, isNot(closeTo(510, 1e-9)));
+    });
+
+    test('inner returning no events (a failed/degenerate run) records a null '
+        'xpEarned, never zero', () async {
+      final recorder = build(inner: (t) async => const []);
+      await recorder.process(trip);
+      expect((await store.list()).single.xpEarned, isNull);
+    });
+
+    test(
+      'non-xp_earned events among inner\'s return value are ignored',
+      () async {
+        final recorder = build(
+          inner: (t) async => [
+            GameEvent(
+              id: 'batch',
+              ts: t.startedAt!,
+              type: GameEventTypes.edgeCoveredBatch,
+              payload: const {'km': 3.2},
+            ),
+            _xpEvent('xp', t.startedAt!, 20),
+          ],
+        );
+
+        await recorder.process(trip);
+
+        expect((await store.list()).single.xpEarned, closeTo(20, 1e-9));
+      },
+    );
   });
 
   test('the track is peeked before inner deletes it, and inner still sees '
@@ -167,21 +220,27 @@ void main() {
         innerSawFile = await trackFile.exists();
         // Mirrors the real ExplorationRecorder: reads then deletes.
         await trackFile.delete();
+        return const <GameEvent>[];
       },
     );
 
     await recorder.process(trip);
 
     expect(innerSawFile, isTrue, reason: 'inner must still see the file');
-    final entry = (await store.list()).single;
-    expect(entry.track, [(46.2, 6.1), (46.21, 6.11)]);
+    // The list screen's own store method never returns a track (Critical
+    // 2 — see `trip_history_store_test.dart`); fetch the full row to
+    // check what was actually recorded.
+    final summary = (await store.list()).single;
+    final full = await store.fetchById(summary.id!);
+    expect(full!.track, [(46.2, 6.1), (46.21, 6.11)]);
     expect(await trackFile.exists(), isFalse);
   });
 
   test('a missing track file records an empty track, not a failure', () async {
     final recorder = build();
     await recorder.process(trip);
-    expect((await store.list()).single.track, isEmpty);
+    final summary = (await store.list()).single;
+    expect((await store.fetchById(summary.id!))!.track, isEmpty);
   });
 
   test('a store write failure is swallowed: inner still ran, process never '
