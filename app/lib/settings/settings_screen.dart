@@ -12,6 +12,7 @@ import 'battery_optimization.dart';
 import 'data_export.dart';
 import 'identity.dart';
 import 'local_purge.dart';
+import 'theme_mode_tile.dart';
 
 /// Player settings: editable pseudo, plus read-only identity and local
 /// stats. Reached via the settings icon in the app's top bar.
@@ -222,6 +223,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           value: hapticsEnabled,
                           onChanged: _setHapticsEnabled,
                         ),
+                        const ThemeModeTile(),
                         FutureBuilder<String?>(
                           future: _manufacturer,
                           builder: (context, manufacturerSnapshot) {

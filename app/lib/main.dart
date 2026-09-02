@@ -24,6 +24,8 @@ import 'package:randomwalk/session/recorder.dart';
 import 'package:randomwalk/session/session_screen.dart';
 import 'package:randomwalk/settings/identity.dart';
 import 'package:randomwalk/settings/settings_screen.dart';
+import 'package:randomwalk/settings/theme_mode_provider.dart';
+import 'package:randomwalk/settings/theme_mode_store.dart';
 import 'package:randomwalk/sync/auto_sync.dart';
 import 'package:randomwalk/theme/theme.dart';
 import 'package:randomwalk/theme/tokens.dart';
@@ -58,10 +60,17 @@ Future<void> main() async {
   // frame already shows onboarding or the map, never a flash of one then
   // the other.
   final onboarded = await isOnboarded();
+  // Task 2l item 2: same "resolve before runApp" shape again — the app's
+  // very first frame renders in the walker's chosen Système/Jour/Nuit mode
+  // rather than flashing "Système" before this loads.
+  final themeMode = await ThemeModeStore().load();
 
   runApp(
     ProviderScope(
-      overrides: [tripControllerProvider.overrideWith((ref) => trip)],
+      overrides: [
+        tripControllerProvider.overrideWith((ref) => trip),
+        themeModeProvider.overrideWith((ref) => themeMode),
+      ],
       child: RandomWalkApp(onboarded: onboarded),
     ),
   );
@@ -200,7 +209,7 @@ Future<RoutingEngine?> _buildExplorationEngine(
   return engine;
 }
 
-class RandomWalkApp extends StatelessWidget {
+class RandomWalkApp extends ConsumerWidget {
   const RandomWalkApp({super.key, this.onboarded = true});
 
   /// Whether the first-launch onboarding screen (task 2b item 2) has already
@@ -208,14 +217,26 @@ class RandomWalkApp extends StatelessWidget {
   final bool onboarded;
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'RandomWalk',
-    navigatorKey: appNavigatorKey,
-    theme: AppTheme.light,
-    darkTheme: AppTheme.dark,
-    themeMode: ThemeMode.system,
-    home: OnboardingGate(onboarded: onboarded, child: const HomeShell()),
-  );
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Task 2l item 2: `ThemeModeTile` (settings/theme_mode_tile.dart)
+    // writes to this provider live — watching it here (rather than reading
+    // `ThemeMode.system` as a constant) is the entire "applies immediately,
+    // no restart" mechanism. Every theme-reactive call site downstream
+    // (`map_screen.dart`'s style-URL choice, `GameLayer`/`FogLayer`'s
+    // brightness-keyed paint) already reads `Theme.of(context).brightness`,
+    // which Flutter resolves FROM `themeMode` below — so this one change is
+    // enough to make the manual override reach the map too, not just
+    // Material widgets.
+    final themeMode = ref.watch(themeModeProvider);
+    return MaterialApp(
+      title: 'RandomWalk',
+      navigatorKey: appNavigatorKey,
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: themeMode,
+      home: OnboardingGate(onboarded: onboarded, child: const HomeShell()),
+    );
+  }
 }
 
 class HomeShell extends ConsumerStatefulWidget {
