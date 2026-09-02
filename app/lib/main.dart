@@ -17,7 +17,7 @@ import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
 import 'package:randomwalk/map/boot_preload.dart';
-import 'package:randomwalk/map/map_screen.dart';
+import 'package:randomwalk/map/carte_tab.dart';
 import 'package:randomwalk/onboarding/onboarding_screen.dart';
 import 'package:randomwalk/onboarding/onboarding_store.dart';
 import 'package:randomwalk/session/recorder.dart';
@@ -223,7 +223,7 @@ class HomeShell extends ConsumerStatefulWidget {
   final List<Widget>? screensOverride;
 
   static final List<Widget> defaultScreens = <Widget>[
-    const MapScreen(),
+    const CarteTabRoot(),
     const SessionScreen(),
     const LeaderboardScreen(),
     const AdventureScreen(),

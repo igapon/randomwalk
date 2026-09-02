@@ -47,7 +47,28 @@ const _kIconMarkerB = 'waymark-marker-b';
 const _kWaymarkIconSizePx = 44.0;
 
 class MapScreen extends ConsumerStatefulWidget {
-  const MapScreen({super.key});
+  const MapScreen({super.key, this.autoPlan, this.onExitToWizard});
+
+  /// Task 2i: a fully-specified plan the trip-start wizard already collected
+  /// one screen back — set only by `CarteTabRoot` (`carte_tab.dart`), never
+  /// by any of this screen's other call sites (the tab's own resting
+  /// instance once a plan/trip already exists, and every existing test/usage
+  /// that constructs a bare `const MapScreen()`), so this is additive and
+  /// changes nothing about the screen's pre-task-2i behavior when absent.
+  /// Consumed exactly once, in [MapScreenState.initState] — see
+  /// [MapScreenState._runAutoPlan].
+  final WizardHandoff? autoPlan;
+
+  /// Task 2i: renders a discreet "Accueil" affordance that discards
+  /// whatever is planned (same as the result banner's own ✕) and hands
+  /// control back to `CarteTabRoot`, which then shows the wizard again —
+  /// the one way back to the sober step-1 screen once a plan has been
+  /// started. Null hides the affordance entirely: every pre-task-2i call
+  /// site (and `CarteTabRoot` itself, while a trip is recording or
+  /// interrupted — brief's own pinned rule that an active trip's nav map is
+  /// unchanged) passes nothing.
+  final VoidCallback? onExitToWizard;
+
   @override
   ConsumerState<MapScreen> createState() => MapScreenState();
 }
@@ -191,6 +212,12 @@ class MapScreenState extends ConsumerState<MapScreen> {
     unawaited(_checkExistingLocationPermission());
     unawaited(_loadPlanMode());
     unawaited(_refreshSpeedKmh());
+    // Task 2i: the trip-start wizard already collected everything this
+    // needs — see [_runAutoPlan]'s own doc comment for why this runs
+    // alongside (not instead of) the two loads above rather than reusing
+    // their state.
+    final autoPlan = widget.autoPlan;
+    if (autoPlan != null) unawaited(_runAutoPlan(autoPlan));
   }
 
   @override
@@ -946,6 +973,49 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final speed = await _speedHistory.speedKmh(profile);
     if (!mounted) return;
     setState(() => _speedKmh = speed);
+  }
+
+  /// Task 2i: runs the plan the trip-start wizard already collected —
+  /// mode, target and (via [ActiveRoute], saved by the wizard before this
+  /// screen was ever built) destination/profile — the instant this screen
+  /// mounts, instead of waiting for a manual "Proposer"/search-select that
+  /// would just repeat a gesture the walker already made one screen back.
+  ///
+  /// Reads [PlanModeStore] itself, independently of [_loadPlanMode]'s own
+  /// unawaited call in `initState`, rather than waiting on that call's own
+  /// future: the wizard persists the mode through the very same store
+  /// (`plan_mode.dart`'s `PlanModeStore`) immediately before handing off, so
+  /// this reads back the exact value [_loadPlanMode] would also land on —
+  /// duplicating the read costs nothing (a cheap `SharedPreferences` lookup)
+  /// and keeps this method fully self-contained rather than racing against
+  /// (or depending on the ordering of) the other unawaited startup calls.
+  Future<void> _runAutoPlan(WizardHandoff handoff) async {
+    final mode = await _planModeStore.load();
+    if (!mounted) return;
+    setState(() {
+      _planMode = mode;
+      if (handoff.loopTargetKm != null) {
+        _loopTargetKm = clampLoopTargetKm(handoff.loopTargetKm!);
+      }
+      if (handoff.durationTarget != null) {
+        _durationTarget = clampDurationTarget(handoff.durationTarget!);
+      }
+    });
+    if (mode == PlanMode.itinerary) {
+      await _planRoute();
+      return;
+    }
+    await _proposeCandidates();
+    // « Repartir »'s own 2-tap promise (brief point 4): the best-scored
+    // candidate — index 0, `_proposeCandidates`' own selection default — is
+    // promoted immediately rather than left for the walker to confirm from
+    // the fullscreen chip row, landing this call on the plain result banner
+    // instead (one remaining tap: « Démarrer »).
+    if (handoff.autoAcceptBestCandidate &&
+        mounted &&
+        _candidateResult != null) {
+      await _startCandidate();
+    }
   }
 
   Future<void> _onPlanModeChanged(PlanMode mode) async {
@@ -1726,6 +1796,16 @@ class MapScreenState extends ConsumerState<MapScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Task 2i: the one way back to the wizard's step 1 once
+                    // a plan has started — absent (and this whole row skips
+                    // itself) for every pre-task-2i call site, and for
+                    // `CarteTabRoot`'s own hand-off while a trip is
+                    // recording or interrupted, matching the brief's pinned
+                    // rule that an active trip's nav map stays unchanged.
+                    if (widget.onExitToWizard != null) ...[
+                      _WizardExitButton(onPressed: widget.onExitToWizard!),
+                      const SizedBox(height: 6),
+                    ],
                     // A row of its own above the bottom banner (not
                     // overlapping it, e.g. the full-width "Démarrer" pill) —
                     // see task-8 brief point 7.
@@ -2431,6 +2511,27 @@ class MapAttribution extends StatelessWidget {
     kMapAttribution,
     style: Theme.of(context).textTheme.labelSmall?.copyWith(
       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
+    ),
+  );
+}
+
+/// Task 2i: the discreet "Accueil" affordance — see
+/// [MapScreen.onExitToWizard]'s doc comment. A plain text button, not a
+/// pill/FAB: this is a way *out*, not an action to draw the eye the way the
+/// yellow "Démarrer" pill does (balisage identity — yellow spent sparingly,
+/// only on "go" actions).
+class _WizardExitButton extends StatelessWidget {
+  const _WizardExitButton({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+    onPressed: onPressed,
+    icon: const Icon(Icons.arrow_back, size: 16),
+    label: const Text('Accueil'),
+    style: TextButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      visualDensity: VisualDensity.compact,
     ),
   );
 }

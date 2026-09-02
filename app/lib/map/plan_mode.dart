@@ -454,6 +454,47 @@ bool shouldHideOtherProposals({
   required PlanKind kind,
 }) => candidateCount == 1 && kind == PlanKind.toDestination;
 
+// ---- Wizard hand-off (Task 2i) ---------------------------------------------
+
+/// A fully-specified plan handed off by the trip-start wizard
+/// (`wizard_home_screen.dart` and friends) so [MapScreen] (`map_screen.dart`)
+/// computes it immediately on mount — a "Proposer"/search-select the walker
+/// already made, one screen back — instead of waiting for a manual repeat of
+/// the same gesture. Both fields are `null` for [PlanMode.itinerary] (the
+/// destination alone, already saved into [ActiveRoute] before this reaches
+/// `MapScreen`, is enough to drive `_planRoute()`); exactly one is non-null
+/// for [PlanMode.loop]/[PlanMode.duration] depending on which constraint the
+/// wizard's own screen asked about.
+///
+/// See [MapScreen.autoPlan]'s doc comment for exactly how this is consumed —
+/// once, in `initState`, never re-read afterwards.
+class WizardHandoff {
+  final double? loopTargetKm;
+  final Duration? durationTarget;
+
+  /// « Repartir » (brief point 4 — "2 taps total to relaunch"): skips the
+  /// fullscreen candidate-selection UI entirely and promotes the best-scored
+  /// candidate (index 0 — `LoopPlanner`'s own ordering) the instant it comes
+  /// back, landing straight on the plain result banner's single « Démarrer »
+  /// tap. `false` for every ordinary wizard hand-off (Destination/Promenade),
+  /// which show the candidates for the walker to actually choose between —
+  /// exactly the M3 fullscreen selection the brief's step 3 keeps unchanged.
+  final bool autoAcceptBestCandidate;
+
+  const WizardHandoff({
+    this.loopTargetKm,
+    this.durationTarget,
+    this.autoAcceptBestCandidate = false,
+  });
+}
+
+/// The wizard's own screens' shared "hand off to the map" callback —
+/// `CarteTabRoot._enterMap` (`carte_tab.dart`) — kept here (a pure,
+/// Flutter-widget-free file both `carte_tab.dart` and every wizard screen
+/// already import) rather than in either side, so neither has to import the
+/// other just for this type.
+typedef EnterMapCallback = void Function([WizardHandoff? handoff]);
+
 // ---- Mode persistence --------------------------------------------------------
 
 const kPlanModePrefsKey = 'plan_mode';

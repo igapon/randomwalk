@@ -253,6 +253,19 @@ final tripHistoryListProvider =
       return store.list();
     });
 
+/// The single most recent trip, or `null` when history is empty — what the
+/// Task 2i trip-start wizard's « Repartir » card reads to decide whether to
+/// show itself at all, and to render its own summary line. `autoDispose`,
+/// same reasoning as [tripHistoryListProvider]: re-read fresh every time the
+/// wizard's home screen is actually on screen, not cached for the app's
+/// whole session.
+final tripHistoryLatestProvider = FutureProvider.autoDispose<TripHistoryEntry?>(
+  (ref) async {
+    final store = await ref.watch(tripHistoryStoreProvider.future);
+    return store.latest();
+  },
+);
+
 /// One trip's full row (including its track), keyed by
 /// [TripHistoryEntry.id] — what `TripHistoryDetailScreen` watches instead of
 /// reusing the summary-only entry the list screen already has in memory

@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:randomwalk/adventure/adventure_screen.dart';
 import 'package:randomwalk/main.dart';
-import 'package:randomwalk/map/map_screen.dart';
+import 'package:randomwalk/map/carte_tab.dart';
 import 'package:randomwalk/theme/theme.dart';
 import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/steps.dart';
@@ -62,7 +62,10 @@ void main() {
 
   test('HomeShell.defaultScreens wiring is correct', () {
     expect(HomeShell.defaultScreens, hasLength(4));
-    expect(HomeShell.defaultScreens[0], isA<MapScreen>());
+    // Task 2i: the Carte tab's resting content is now `CarteTabRoot` — the
+    // wizard-or-map router — rather than `MapScreen` directly; see
+    // `carte_tab.dart`.
+    expect(HomeShell.defaultScreens[0], isA<CarteTabRoot>());
     expect(HomeShell.defaultScreens[3], isA<AdventureScreen>());
   });
 
