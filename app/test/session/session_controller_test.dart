@@ -639,6 +639,21 @@ void main() {
         3,
         12,
       ], reason: 'the pending adaptive-GPS change applies on resume');
+
+      // Fix round 2 (one-liner folded from C1): the resume above must have
+      // cleared _pendingResubscribe too, not just applied it once — a
+      // later reconcile that finds the stream already open (this resume()
+      // call is otherwise a no-op: already running) must not needlessly
+      // cancel and reopen the stream again for a change that was already
+      // incorporated in controllers[1]'s own subscribe.
+      await session.resume();
+      expect(
+        controllers,
+        hasLength(2),
+        reason:
+            'no pointless churn once already running with the '
+            'deferred setting already applied',
+      );
     });
   });
 

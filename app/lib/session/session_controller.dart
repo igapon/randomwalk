@@ -271,6 +271,13 @@ class SessionController {
     if (!_isRecording) return;
     if (_desiredRunning) {
       if (_positionStream == null) {
+        // Fix round 2 — one-liner folded from C1: _subscribe() already
+        // opens against the CURRENT _locationSettings, so any pending
+        // adaptive-GPS change is already incorporated by the resubscribe
+        // itself — leaving the flag set would make some later reconcile,
+        // finding the stream already open, cancel and reopen it again for
+        // no reason at all.
+        _pendingResubscribe = false;
         _subscribe();
       } else if (_pendingResubscribe) {
         _pendingResubscribe = false;

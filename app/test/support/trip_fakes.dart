@@ -194,15 +194,33 @@ class FakeTripTracker implements TripTracker {
 }
 
 class FakeStepSensor implements StepSensor {
-  FakeStepSensor({this.available = true, this.value = 0});
+  FakeStepSensor({
+    this.available = true,
+    this.value = 0,
+    this.nullReadsBeforeReady = 0,
+  });
   bool available;
   int value;
+
+  /// How many `read()` calls return null before actually reporting [value]
+  /// — simulates the hardware sensor listener's asynchronous registration
+  /// delay (fix round 2, task 2d, I4: `TripTaskHandler._pollFallbackSteps`'s
+  /// very first poll of a pause spell can land before the sensor has
+  /// reported anything at all).
+  int nullReadsBeforeReady;
 
   @override
   Future<bool> start() async => available;
 
   @override
-  Future<int?> read() async => available ? value : null;
+  Future<int?> read() async {
+    if (!available) return null;
+    if (nullReadsBeforeReady > 0) {
+      nullReadsBeforeReady--;
+      return null;
+    }
+    return value;
+  }
 
   @override
   Future<void> stop() async {}
