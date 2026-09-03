@@ -103,16 +103,19 @@ reste en mode local pur (comportement M4 identique, aucun appel réseau vers
 Supabase, tuile "Compte" affichant "Synchronisation non configurée") — c'est
 le comportement par défaut voulu, pas une erreur de configuration.
 
-### Note pour plus tard : passer ces valeurs à la CI
+### Ces valeurs sont déjà câblées à la CI
 
-Le jour où la compilation de l'AAB signé sera automatisée (voir
-`docs/release-signing.md` et le job CI optionnel prévu en fin de projet M5),
-ces deux valeurs devront être stockées comme **secrets** du dépôt (Settings →
-Secrets and variables → Actions sur GitHub) et injectées au job via
+Le job optionnel `aab` (`.github/workflows/ci.yml`, déclenché uniquement
+manuellement depuis l'onglet **Actions** de GitHub — jamais sur un push)
+injecte déjà ces deux valeurs au build via
 `--dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }}
---dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}` — jamais
-écrites en clair dans un fichier du dépôt. Cette étape n'est pas encore
-câblée ; ce paragraphe est un pense-bête pour la tâche qui l'ajoutera.
+--dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}`, lues
+depuis les **secrets** du dépôt (Settings → Secrets and variables →
+Actions). Rien à faire ici pour l'activer au-delà d'y renseigner
+`SUPABASE_URL`/`SUPABASE_ANON_KEY` (voir `docs/owner-handoff.md`, Action 2,
+et `docs/release-signing.md` pour les secrets de signature qui les
+accompagnent) — si ces deux secrets sont absents, le job compile quand même
+un AAB, simplement en mode local pur (comportement décrit ci-dessus).
 
 ## 6. Checklist de vérification
 
@@ -137,6 +140,61 @@ Si ces sept points sont vérifiés, la synchronisation Supabase est
 opérationnelle de bout en bout.
 
 **Dépannage suppression de compte :** si "Supprimer mon compte" échoue avec
-une erreur du type *"permission denied for table users"*, ré-exécutez
-`migrations/0001_init.sql` (étape 2) depuis le SQL Editor du dashboard — cela
-recrée `delete_account` avec les bons droits.
+une erreur du type *"permission denied for table users"*, c'est que la
+fonction `delete_account` a été créée par un rôle qui n'a pas les droits
+nécessaires sur `auth.users` — ré-exécuter tout `migrations/0001_init.sql`
+**ne corrige pas ça** : ce script n'a aucune clause `if not exists`, et le
+SQL Editor exécute tout le script dans **une seule transaction** — la
+toute première instruction (`create table public.game_events`) échoue
+immédiatement (la table existe déjà) et annule tout le reste, y compris la
+recréation de la fonction que vous cherchez à corriger.
+
+Le correctif réel : coller et exécuter l'extrait autonome ci-dessous (il
+peut être ré-exécuté autant de fois que nécessaire, sans dépendre du reste
+de la migration) :
+
+```sql
+drop function if exists public.delete_account();
+
+create or replace function public.delete_account()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'delete_account: authentication required';
+  end if;
+
+  delete from auth.users where id = auth.uid();
+end;
+$$;
+
+-- La clause déterminante : `create or replace` ne change JAMAIS le
+-- propriétaire d'une fonction existante, donc si le problème vient d'une
+-- fonction créée par le mauvais rôle, le `create or replace` ci-dessus
+-- seul ne suffit pas — c'est cette ligne qui corrige réellement les droits.
+alter function public.delete_account() owner to postgres;
+
+revoke all on function public.delete_account() from public;
+grant execute on function public.delete_account() to authenticated;
+```
+
+Si votre projet utilise un rôle propriétaire différent de `postgres` (rare,
+mais possible sur certaines configurations), remplacez `postgres` par le
+rôle affiché dans **Database → Roles** comme propriétaire des autres tables
+du projet.
+
+**SMTP personnalisé requis en production.** L'envoi d'e-mail par défaut de
+Supabase (utilisé par l'OTP de connexion, étape 3 ci-dessus) est limité à
+quelques envois par heure et **n'est pas prévu pour un usage en
+production** — au-delà de ce débit, les joueurs cessent de recevoir leur
+code de connexion sans message d'erreur explicite côté app. Avant une
+publication à volume réel, configurer un fournisseur SMTP personnalisé
+dans **Project Settings → Authentication → SMTP Settings** (n'importe quel
+fournisseur transactionnel usuel convient — Resend, Postmark, SendGrid...).
+Voir la documentation Supabase officielle sur le sujet :
+`https://supabase.com/docs/guides/auth/auth-smtp` *(lien à vérifier par le
+propriétaire au moment de la configuration — Supabase réorganise parfois
+ses URLs de documentation)*.

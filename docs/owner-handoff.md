@@ -156,13 +156,16 @@ réel, puis promouvoir vers la production.
 
 ## Action 3 — QA sur appareil réel
 
-Checklist complète et déjà à jour : **`docs/qa-device-checklist.md`** (8
-sections : navigation écran éteint, TTS, planification, aventure/jeu,
-permissions, marqueurs logcat, bannières GPS/couverture, compte et
-synchronisation). Tout ce qui dépend d'un vrai GPS, d'un comportement
-OS/OEM réel, ou d'un vrai projet Supabase (section 8 — impossible à tester
-en CI) doit être vérifié là, sur un téléphone Android physique, avant la
-promotion en production.
+Checklist à jour pour M5 : **`docs/qa-device-checklist.md`** (13 sections :
+navigation écran éteint, TTS, planification, aventure/jeu, permissions,
+marqueurs logcat, bannières GPS/couverture, compte et synchronisation,
+**puis, ajouté pour M5** : assistant de démarrage/wizard, fin automatique +
+écran de félicitations, historique des trajets/enregistrement libre, mode
+jour/nuit + brouillard redessiné, et le parcours RGPD complet — export,
+suppression de compte, purge locale, tuile de réessai). Tout ce qui dépend
+d'un vrai GPS, d'un comportement OS/OEM réel, ou d'un vrai projet Supabase
+(section 8 — impossible à tester en CI) doit être vérifié là, sur un
+téléphone Android physique, avant la promotion en production.
 
 La section 8 ("Compte et synchronisation") ne peut être cochée qu'**après**
 l'action 1 ci-dessus (il faut un vrai projet Supabase pour la vérifier).
@@ -171,48 +174,15 @@ l'action 1 ci-dessus (il faut un vrai projet Supabase pour la vérifier).
 
 ## Backlog technique reporté — M6
 
-Éléments identifiés pendant M5 mais volontairement **non traités** dans ce
-jalon (jugés soit non triviaux, soit hors scope d'une tâche donnée) :
+Liste complète, tenue à jour séparément : **`docs/backlog-m6.md`**.
+Compilée depuis la colonne CONFIRM-DEFER de la revue finale de branche M5
+(`.superpowers/sdd/2026-09-01-m5-sync/final-review.md`), en tête de liste le
+filet de sécurité au démarrage de `main()` (le point techniquement le plus
+important resté délibérément hors du dernier lot de correctifs — voir ce
+document pour pourquoi), suivi de la synchronisation de l'historique des
+trajets, du harnais de test `MapLibreMapController` factice, du diff des
+symboles par identifiant, du test adverse Douglas-Peucker, de la prochaine
+source de pièces, de la taille du checkpoint en O(cellules), et d'une
+douzaine d'autres points mineurs classés et expliqués individuellement.
 
-1. **Diff des symboles de carte par identifiant** (repère ledger M4 :
-   "symbols diff par id si trivial, sinon documenté") — les couches de
-   marqueurs sur la carte (points d'intérêt, repères de jeu) sont
-   aujourd'hui recréées en bloc à chaque rafraîchissement plutôt que
-   diffées symbole par symbole (ajout/suppression uniquement de ce qui a
-   changé, par id) — même famille de problème que le bug de "repères
-   fantômes" corrigé en tâche 2e pour les lignes de route
-   (`updateLine` en place plutôt que suppression+recréation). **Non
-   trivial** : nécessite le harnais de test ci-dessous (item 2) pour être
-   fait sans régression silencieuse — reporté, pas traité "à l'aveugle".
-2. **Harnais de test `MapLibreMapController` factice** — lacune
-   transversale identifiée dès la tâche 2e (confirmée en 2j) : aucun faux
-   contrôleur de carte n'existe pour tester en isolation les mises à jour
-   de couches (lignes, symboles, sources) sans dépendre d'un vrai widget
-   carte. Bloque proprement l'item 1 ci-dessus et tout futur test
-   d'idempotence de rafraîchissement de couche.
-3. **Test adverse pour la simplification Douglas-Peucker** — l'algorithme
-   de simplification d'affichage du tracé de route
-   (`app/lib/nav/` — introduit/optimisé en tâche 2l pour le gel au
-   démarrage/replanification) est O(n²) dans le pire cas sur l'isolate UI ;
-   aucun test n'existe avec une entrée pathologique construite pour
-   maximiser ce coût. À date, seules des traces réelles ont été mesurées.
-4. **Synchronisation de l'historique des trajets** — `TripHistoryStore`
-   (historique détaillé introduit en tâche 2f, avant la conception de la
-   synchronisation) n'est **pas** synchronisé par le moteur de sync M5 (qui
-   ne couvre que le journal d'événements de jeu) : l'historique des trajets
-   reste local à chaque appareil, jamais fusionné entre plusieurs appareils
-   d'un même compte.
-5. **Nouvelle source de pièces (coins)** — la tâche 2k a retiré la seule
-   source existante de pièces (visites de POI banque/distributeur, POIs
-   désormais recentrés sur le patrimoine culturel) ; le HUD masque la pastille
-   pièces tant qu'aucune source n'existe, mais les réducteurs et l'état
-   restent en place (identité de rejeu M4 préservée). Une décision produit
-   reste à prendre sur la prochaine source de pièces, le cas échéant.
-6. **Taille du checkpoint d'état de jeu en O(cellules)** — le fichier
-   `game_state_checkpoint.json` (tâche 5) grossit linéairement avec le
-   nombre de cellules de carte explorées, sans compression ni pagination ;
-   acceptable aux volumes actuels, à surveiller si l'exploration cumulée
-   d'un joueur de longue date devient significative.
-
-Ces six points sont candidats pour la planification M6 ; aucun n'est
-bloquant pour la publication 1.0.0.
+Aucun de ces points n'est bloquant pour la publication 1.0.0.

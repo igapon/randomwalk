@@ -160,21 +160,24 @@ unique par e-mail, pas de mot de passe), les données suivantes sont envoyées
 <tr><td>Votre adresse e-mail</td><td>Authentification par code de connexion</td></tr>
 <tr><td>Votre pseudo</td><td>Classement, synchronisation entre appareils</td></tr>
 <tr><td>Votre distance totale cumulée (km)</td><td>Classement, synchronisation entre appareils</td></tr>
-<tr><td>Votre journal d'événements de jeu — XP, badges, pièces, énergie, <strong>cellules de la carte explorées et lieux culturels visités</strong></td><td>Reconstitution/fusion de la progression (y compris la carte explorée) sur plusieurs appareils</td></tr>
+<tr><td>Votre journal d'événements de jeu — XP, badges, pièces, énergie, <strong>cellules de la carte explorées et lieux culturels visités, chacun horodaté</strong> (date et heure)</td><td>Reconstitution/fusion de la progression (y compris la carte explorée et sa chronologie) sur plusieurs appareils</td></tr>
 </table>
 <p><strong>Ce que ce journal contient précisément, et ce qu'il ne contient
 pas</strong>&nbsp;: chaque « cellule explorée » est une case d'environ
 150&nbsp;m × 150&nbsp;m de la grille interne du jeu — une zone approximative,
 pas une position précise — et chaque « lieu visité » est référencé par
 l'identifiant du point d'intérêt culturel concerné (église, point de vue,
-tour...), pas par des coordonnées. <strong>Ce journal ne contient jamais vos
+tour...), pas par des coordonnées. <strong>Chaque événement est
+horodaté</strong>&nbsp;: le serveur sait donc non seulement quelles zones/
+lieux vous avez explorés, mais aussi quand — une chronologie, pas
+seulement une carte statique. <strong>Ce journal ne contient jamais vos
 coordonnées GPS brutes ni le tracé complet d'un trajet</strong> (ces
 données-là restent toujours locales, avec ou sans compte — voir section 3).
 Mais soyons clairs&nbsp;: dès qu'un compte est configuré, le journal envoyé
-au serveur révèle bel et bien, de façon approximative, les zones que vous
-avez explorées et les lieux culturels que vous avez visités — ce n'est pas
-rien, même si ce n'est pas un tracé GPS. <strong>Sans compte configuré, rien
-de tout cela ne quitte jamais l'appareil.</strong></p>
+au serveur révèle bel et bien, de façon approximative mais horodatée, les
+zones que vous avez explorées et les lieux culturels que vous avez visités
+— ce n'est pas rien, même si ce n'est pas un tracé GPS. <strong>Sans compte
+configuré, rien de tout cela ne quitte jamais l'appareil.</strong></p>
 
 <h2>5. Classement anonyme (drive.lmqc.fr)</h2>
 <p>Indépendamment d'un compte, RandomWalk peut soumettre votre score à un
@@ -186,9 +189,15 @@ serveur). Aucune coordonnée GPS ni tracé n'est envoyé à ce classement.</p>
 
 <h2>6. Export de vos données</h2>
 <p>Réglages → « Exporter mes données » génère un fichier JSON contenant
-l'intégralité de vos données locales et vous permet de le partager via le
-sélecteur standard d'Android — votre droit d'accès et de portabilité RGPD,
-exerçable à tout moment.</p>
+votre profil, votre journal de jeu complet et vos informations de compte si
+connecté, et vous permet de le partager via le sélecteur standard d'Android
+— l'exercice de votre droit d'accès et de portabilité RGPD, exerçable à
+tout moment.</p>
+<p><strong>Ce que cet export ne contient pas</strong>, à ce jour&nbsp;:
+l'historique détaillé de vos trajets et leurs traces GPS (section 3) —
+reste local, pas encore inclus dans l'export automatisé (amélioration
+identifiée, pas encore livrée). Contactez-nous pour une demande spécifique
+sur cet historique.</p>
 
 <h2>7. Suppression de compte et de vos données locales</h2>
 <p>Réglages → Compte → « Supprimer mon compte »&nbsp;:</p>
@@ -212,7 +221,13 @@ restantes.</p>
   (badges, XP, classement).</li>
 </ul>
 
-<h2>9. Modifications de cette politique</h2>
+<h2>9. Correspondance avec le formulaire « Sécurité des données » (Google Play)</h2>
+<p>Voir <code>release/play-listing.md</code>, section « Data safety form »,
+pour le mappage exact case par case de cette politique vers les réponses du
+formulaire Play Console — les deux documents doivent toujours être mis à
+jour ensemble.</p>
+
+<h2>10. Modifications de cette politique</h2>
 <p>Toute évolution notable (nouvelle donnée collectée, nouveau service tiers)
 sera reflétée ici avant la mise à jour de l'application correspondante, avec
 une date de mise à jour révisée en haut de ce document.</p>

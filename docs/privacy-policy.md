@@ -5,7 +5,7 @@
 Cette politique décrit quelles données l'application Android **RandomWalk**
 (éditeur : lmqc, `fr.lmqc.randomwalk`) collecte, pourquoi, où elles sont
 stockées, et comment les supprimer. Elle est écrite pour être lue par un
-joueur, mais reprend aussi (section 8) les réponses exactes attendues par le
+joueur, mais reprend aussi (section 9) les réponses exactes attendues par le
 formulaire "Sécurité des données" de la Google Play Console — les deux
 doivent rester cohérentes.
 
@@ -113,21 +113,25 @@ européenne (région Francfort/UE centrale) :
 | Votre adresse e-mail | Authentification (code de connexion), gérée par le fournisseur d'authentification Supabase |
 | Votre pseudo | Affiché sur le classement, synchronisé entre vos appareils |
 | Votre distance totale cumulée (km) | Classement, synchronisée entre vos appareils |
-| Votre journal d'événements de jeu — XP, badges, pièces, énergie, **cellules de la carte explorées et lieux culturels visités** | Permet de reconstituer et fusionner votre progression (y compris la carte explorée) sur plusieurs appareils |
+| Votre journal d'événements de jeu — XP, badges, pièces, énergie, **cellules de la carte explorées et lieux culturels visités, chacun horodaté** (date et heure de l'événement) | Permet de reconstituer et fusionner votre progression (y compris la carte explorée et la chronologie de son exploration) sur plusieurs appareils |
 
 **Ce que ce journal contient précisément, et ce qu'il ne contient pas** :
 chaque « cellule explorée » est une case d'environ 150 m × 150 m de la
 grille interne du jeu — une zone approximative, pas une position précise —
 et chaque « lieu visité » est référencé par l'identifiant du point d'intérêt
 culturel concerné (église, point de vue, tour...) dans notre base
-embarquée, pas par des coordonnées. **Ce journal ne contient jamais vos
+embarquée, pas par des coordonnées. **Chaque événement est horodaté** : le
+serveur sait donc non seulement *quelles* zones/lieux vous avez explorés,
+mais aussi *quand*, à l'horodatage de l'événement près — une chronologie,
+pas seulement une carte statique. **Ce journal ne contient jamais vos
 coordonnées GPS brutes ni le tracé complet d'un trajet** (ces données-là
 restent toujours locales, avec ou sans compte — voir section 3). Mais soyez
 clair avec vous-même sur ce que cela veut dire : dès qu'un compte est
 configuré, le journal envoyé au serveur révèle bel et bien, de façon
-approximative, les zones que vous avez explorées et les lieux culturels que
-vous avez visités — ce n'est pas rien, même si ce n'est pas un tracé GPS.
-**Sans compte configuré, rien de tout cela ne quitte jamais l'appareil.**
+approximative mais horodatée, les zones que vous avez explorées et les
+lieux culturels que vous avez visités — ce n'est pas rien, même si ce n'est
+pas un tracé GPS. **Sans compte configuré, rien de tout cela ne quitte
+jamais l'appareil.**
 
 Un compte n'a de sens qu'associé à au moins un appareil ; la sécurité des
 données est assurée par des règles d'accès strictes côté base de données
@@ -159,11 +163,21 @@ serveur).
 
 ## 6. Export de vos données
 
-Réglages → « Exporter mes données » génère un fichier JSON contenant
-l'intégralité de vos données locales (profil, journal de jeu, informations
-de compte si connecté) et vous permet de le partager ou de l'enregistrer
-via le sélecteur de partage standard d'Android. C'est votre droit d'accès
-et de portabilité RGPD, exerçable à tout moment, sans contacter personne.
+Réglages → « Exporter mes données » génère un fichier JSON contenant votre
+profil, votre journal de jeu complet (XP, badges, pièces, énergie, cellules
+explorées, lieux visités) et vos informations de compte si vous êtes
+connecté, et vous permet de le partager ou de l'enregistrer via le
+sélecteur de partage standard d'Android. C'est l'exercice de votre droit
+d'accès et de portabilité RGPD, exerçable à tout moment, sans contacter
+personne.
+
+**Ce que cet export ne contient PAS**, à ce jour : l'historique détaillé de
+vos trajets et leurs traces GPS point par point (section 3) — cette
+donnée-là reste locale à l'appareil et n'est, pour l'instant, incluse dans
+aucun export automatisé. Si vous en avez besoin (portabilité complète), il
+s'agit d'un point d'amélioration identifié mais pas encore livré ; d'ici
+là, contactez-nous (voir l'adresse en haut de ce document) pour toute
+demande portant spécifiquement sur cet historique.
 
 ## 7. Suppression de compte et de vos données locales (droit RGPD à
    l'effacement)
