@@ -492,7 +492,7 @@ GameState _reduceLandmarkVisited(GameState state, GameEvent event) {
     case 'reveal':
     default:
       // Reveal landmarks (and any unrecognized kind) have no economy
-      // effect here; revelation itself is handled by grid.dart/reveal.dart.
+      // effect here; revelation itself is handled by grid.dart.
       return state;
   }
 }

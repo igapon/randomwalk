@@ -115,6 +115,11 @@ replanification) est O(n²) dans le pire cas sur l'isolate UI ; aucun test
 n'existe avec une entrée pathologique construite pour maximiser ce coût. À
 date, seules des traces réelles ont été mesurées.
 
+Même lot (mineurs 2l) : le banc d'essai `waymarkDiamondPng` écarté pendant
+le diagnostic du gel (pendait 10 min en `testWidgets` nu) mériterait d'être
+réparé et conservé comme garde de régression du soupçon (d) — rafale
+d'enregistrement d'icônes.
+
 ## 7. Synchronisation de l'historique des trajets
 
 `TripHistoryStore` (historique détaillé introduit en tâche 2f, avant la

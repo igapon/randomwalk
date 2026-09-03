@@ -38,7 +38,7 @@ double _cosDeg(double degrees) => math.cos(degrees * math.pi / 180);
 ///   single per-region reference latitude to be threaded through every
 ///   call site — each row picks its own correction factor from its own `y`,
 ///   which is simple to reproduce anywhere `y` is known (see
-///   `cellBoundsLatLon`-style helpers in `reveal.dart`).
+///   `cellBoundsLatLon`-style helpers, formerly in the deleted `reveal.dart`).
 ///
 /// Both `floor` operations are true mathematical floor (rounds toward
 /// negative infinity), not truncation toward zero — this matters south of
