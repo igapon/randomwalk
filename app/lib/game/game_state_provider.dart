@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'events.dart';
 import 'reducers.dart';
+import 'state_checkpoint.dart';
 
 /// Broadcasts "the game journal just changed" to whichever
 /// [gameStateProvider] subscribers exist, without depending on Riverpod
@@ -73,6 +74,17 @@ final gameJournalProvider = FutureProvider<GameJournal>((ref) async {
 /// for the regression coverage). Can additionally be forced with
 /// `ref.invalidate` (see `HomeShell`'s "refresh on tab focus" handling in
 /// main.dart).
+///
+/// **Task 5: replays via [loadStateFast]**, not a bare `readAll` +
+/// [reduceAll] — a checkpoint-plus-tail fast path (`game/state_checkpoint
+/// .dart`) that always produces the exact same [GameState] a full replay
+/// would (see that file's dartdoc for the validity invariant), just without
+/// re-doing the full journal's reduction work on every call once the
+/// journal has grown large. The checkpoint file lives next to whichever
+/// journal [gameJournalProvider] resolves to (`GameJournal.dir`), so it
+/// automatically follows the same path swap tests use (overriding
+/// [gameJournalProvider] with a temp-dir journal also gets a temp-dir
+/// checkpoint).
 final gameStateProvider = FutureProvider<GameState>((ref) async {
   final sub = GameJournalSignal.instance.stream.listen((_) {
     ref.invalidateSelf();
@@ -80,8 +92,7 @@ final gameStateProvider = FutureProvider<GameState>((ref) async {
   ref.onDispose(sub.cancel);
   try {
     final journal = await ref.watch(gameJournalProvider.future);
-    final events = await journal.readAll();
-    return reduceAll(events);
+    return await loadStateFast(journal, GameStateCheckpointStore(journal.dir));
   } catch (_) {
     return const GameState();
   }

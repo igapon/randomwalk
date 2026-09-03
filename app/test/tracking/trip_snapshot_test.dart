@@ -74,6 +74,30 @@ void main() {
       expect(TripSnapshot.fromJson(legacy).gpsSilent, isFalse);
     });
 
+    test('carries the low-power-mode pause flag (M5 Task 2d)', () {
+      final paused = _recording().copyWith(lowPowerPaused: true);
+      expect(
+        TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(paused.toJson())),
+        ).lowPowerPaused,
+        isTrue,
+      );
+      expect(
+        TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(_recording().toJson())),
+        ).lowPowerPaused,
+        isFalse,
+      );
+    });
+
+    test(
+      'a document written before the pause flag existed reads as not paused',
+      () {
+        final legacy = _recording().toJson()..remove('lowPowerPaused');
+        expect(TripSnapshot.fromJson(legacy).lowPowerPaused, isFalse);
+      },
+    );
+
     test('carries the navigation fields the service computes', () {
       final navigating = _recording().copyWith(
         nav: const NavFields(
@@ -249,6 +273,36 @@ void main() {
       test('PendingVisit.tryParse rejects an unparseable ts', () {
         final json = visit.toJson()..['ts'] = 'not-a-date';
         expect(PendingVisit.tryParse(json), isNull);
+      });
+    });
+
+    group('visitXpEarned (Task 2g fix round 1, Important 2)', () {
+      test('defaults to 0 and is omitted from JSON', () {
+        expect(_recording().visitXpEarned, 0);
+        expect(_recording().toJson().containsKey('visitXpEarned'), isFalse);
+      });
+
+      test('round-trips a non-zero value through JSON', () {
+        final withXp = _recording().copyWith(visitXpEarned: 25);
+        expect(withXp.toJson()['visitXpEarned'], 25);
+        final restored = TripSnapshot.fromJson(
+          jsonDecode(jsonEncode(withXp.toJson())),
+        );
+        expect(restored.visitXpEarned, closeTo(25, 1e-9));
+      });
+
+      test('a document written before this field existed reads as 0 '
+          '(backward-compat)', () {
+        final legacy = _recording().toJson()..remove('visitXpEarned');
+        expect(TripSnapshot.fromJson(legacy).visitXpEarned, 0);
+      });
+
+      test('copyWith leaves it untouched when not passed', () {
+        final withXp = _recording().copyWith(visitXpEarned: 25);
+        expect(
+          withXp.copyWith(distanceKm: 3.0).visitXpEarned,
+          closeTo(25, 1e-9),
+        );
       });
     });
 

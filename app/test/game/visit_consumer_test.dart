@@ -106,6 +106,27 @@ void main() {
     ts: ts ?? t0,
   );
 
+  // Task 2k: same default lat/lon as `reveal()` above, deliberately — every
+  // "first-visit culture landmark" test below relies on a single 400m disc
+  // at this spot already crossing the quartier_25 threshold, exactly like
+  // the equivalent `reveal` tests.
+  PendingVisit culture({
+    String poiId = 'node/museum',
+    String? name = 'Musée Cantonal',
+    String? subkind = 'museum',
+    double lat = 46.52,
+    double lon = 6.63,
+    DateTime? ts,
+  }) => PendingVisit(
+    poiId: poiId,
+    kind: 'culture',
+    subkind: subkind,
+    name: name,
+    lat: lat,
+    lon: lon,
+    ts: ts ?? t0,
+  );
+
   group('first-visit reveal landmark', () {
     test('emits landmark_visited, cell_revealed, quartier_25 (crossed by this '
         'disc), then xp_earned, in order', () async {
@@ -262,6 +283,130 @@ void main() {
       expect(state.energy, 50); // unchanged: unknown subkind = 0 amount.
       expect(state.xp, 25);
       expect(alerts.single, '⚑ Café Central — +25 XP');
+    });
+  });
+
+  group('Task 2k: first-visit culture landmark', () {
+    test('emits landmark_visited (with subkind), cell_revealed, '
+        'quartier_25 (crossed by this disc), xp_earned, then a refill '
+        'energy_changed LAST, in that order', () async {
+      final consumer = buildConsumer();
+      await consumer.consume([culture()]);
+
+      final events = await journal.readAll();
+      expect(events.map((e) => e.type).toList(), [
+        GameEventTypes.landmarkVisited,
+        GameEventTypes.cellRevealed,
+        GameEventTypes.badgeUnlocked,
+        GameEventTypes.xpEarned,
+        GameEventTypes.energyChanged,
+      ]);
+      expect(events[0].payload, {
+        'poiId': 'node/museum',
+        'kind': 'culture',
+        'subkind': 'museum',
+      });
+      expect(events[0].ts, t0);
+      expect((events[1].payload['cells'] as List), isNotEmpty);
+      expect(events[2].payload, {'badge': GameBadges.quartier25});
+      expect(events[3].payload, {'amount': 25, 'preMultiplied': false});
+      expect(events[4].payload, {'delta': kCultureEnergyRefill});
+    });
+
+    test('reveal + XP + energy refill all land from ONE visit ("reprendre '
+        'son souffle devant un monument")', () async {
+      await drainEnergyTo(-50); // 100 -> 50: neutral x1.0 multiplier band.
+      final consumer = buildConsumer();
+      await consumer.consume([culture()]);
+
+      final state = reduceAll(await journal.readAll());
+      expect(state.xp, 25);
+      expect(state.energy, 50 + kCultureEnergyRefill);
+      expect(state.cellsRevealed, greaterThan(0));
+      expect(state.badges, contains(GameBadges.quartier25));
+      expect(alerts.single, '⚑ Musée Cantonal — +40 énergie · +25 XP');
+    });
+
+    test('an unnamed culture landmark falls back to a subkind-specific '
+        'label', () async {
+      final consumer = buildConsumer();
+      await consumer.consume([culture(name: null, subkind: 'viewpoint')]);
+      expect(alerts.single, contains('Point de vue'));
+    });
+
+    test('an unnamed culture landmark with no subkind falls back to the '
+        'generic label', () async {
+      final consumer = buildConsumer();
+      await consumer.consume([culture(name: null, subkind: null)]);
+      expect(alerts.single, contains('Point de repère'));
+    });
+
+    test(
+      'landmark_visited omits the subkind key when the POI has none',
+      () async {
+        final consumer = buildConsumer();
+        await consumer.consume([culture(subkind: null)]);
+
+        final visited = (await journal.readAll()).firstWhere(
+          (e) => e.type == GameEventTypes.landmarkVisited,
+        );
+        expect(visited.payload.containsKey('subkind'), isFalse);
+      },
+    );
+
+    test('a revisit to the same culture landmark (no new cells, no xp, no '
+        'refill) stays silent', () async {
+      final consumer = buildConsumer();
+      await consumer.consume([culture(ts: t0)]);
+      alerts.clear();
+
+      await consumer.consume([culture(ts: t0.add(const Duration(hours: 1)))]);
+
+      final events = await journal.readAll();
+      expect(
+        events.where((e) => e.type == GameEventTypes.landmarkVisited).length,
+        2,
+      );
+      expect(events.where((e) => e.type == GameEventTypes.xpEarned).length, 1);
+      expect(
+        events.where((e) => e.type == GameEventTypes.energyChanged).length,
+        1, // only the first visit's refill — no repeatable cooldown/re-grant.
+      );
+      expect(alerts, isEmpty);
+    });
+
+    test('a revisit later — even well past any old-energy-kind-style '
+        'cooldown — earns no second refill: the gate is first-visit-ever, '
+        'not a cooldown (see kCultureEnergyRefill\'s doc comment)', () async {
+      // Drained (rather than left at the default 100) so a buggy second
+      // refill would visibly move `energy` again instead of being masked by
+      // the [0, 100] clamp.
+      await drainEnergyTo(-90);
+      final consumer = buildConsumer();
+      await consumer.consume([culture(ts: t0)]);
+      final before = reduceAll(await journal.readAll()).energy;
+      expect(before, lessThan(100)); // sanity: not clamp-masked.
+
+      await consumer.consume([culture(ts: t0.add(const Duration(days: 30)))]);
+      final after = reduceAll(await journal.readAll()).energy;
+
+      expect(after, before); // no farming by revisiting.
+    });
+
+    test('documented tradeoff: this visit\'s own xp_earned reads the '
+        "walker's PRE-refill energy, not the refreshed one (energy_changed "
+        'is forced into the last same-ts tier by reducers.dart\'s '
+        'unmodified _typePrecedence — see GameVisitConsumer\'s doc comment '
+        'on why this class stays out of reducers.dart entirely)', () async {
+      await drainEnergyTo(-90); // 100 -> 10: x0.5 multiplier band.
+      final consumer = buildConsumer();
+      await consumer.consume([culture()]);
+
+      final state = reduceAll(await journal.readAll());
+      // 25 * 0.5 (energy=10, the PRE-refill value) = 12.5 -> rounds to 13 —
+      // NOT 25 * 1.0 (which the POST-refill energy of 50 would have given).
+      expect(state.xp, 13);
+      expect(state.energy, 10 + kCultureEnergyRefill);
     });
   });
 
@@ -459,6 +604,77 @@ void main() {
         expect(xpEvents.length, 1);
       },
     );
+  });
+
+  group('Task 2g: consume() return value (TripController XP accumulation)', () {
+    test('returns exactly the events durably appended this call', () async {
+      final consumer = buildConsumer();
+      final events = await consumer.consume([reveal()]);
+
+      expect(events.map((e) => e.type).toList(), [
+        GameEventTypes.landmarkVisited,
+        GameEventTypes.cellRevealed,
+        GameEventTypes.badgeUnlocked,
+        GameEventTypes.xpEarned,
+      ]);
+      // `GameEvent` has no `==` override, so compare structurally
+      // (`toJson`) rather than by identity — `journal.readAll()` parses
+      // fresh instances off disk, distinct objects from the ones `consume`
+      // itself returned in memory.
+      expect(
+        events.map((e) => e.toJson()).toList(),
+        (await journal.readAll()).map((e) => e.toJson()).toList(),
+      );
+    });
+
+    test('an all-already-seen batch returns an empty list', () async {
+      final consumer = buildConsumer();
+      final visit = coins();
+      await consumer.consume([visit]);
+
+      final second = await consumer.consume([visit]);
+      expect(second, isEmpty);
+    });
+
+    test(
+      'a cooldown-blocked revisit returns landmark_visited alone (no '
+      'xp_earned) — mirrors the journal, not a synthesized "nothing"',
+      () async {
+        final consumer = buildConsumer();
+        await consumer.consume([coins(ts: t0)]);
+
+        final events = await consumer.consume([
+          coins(ts: t0.add(const Duration(hours: 2))),
+        ]);
+
+        expect(events.map((e) => e.type).toList(), [
+          GameEventTypes.landmarkVisited,
+        ]);
+      },
+    );
+
+    test('a readAll() failure returns an empty list, never a partial/throwing '
+        'result', () async {
+      final flaky = FlakyReadJournal(journal.dir)..failNext = true;
+      final consumer = GameVisitConsumer(
+        journal: flaky,
+        newId: () => 'evt-${idCounter++}',
+      );
+      final events = await consumer.consume([reveal()]);
+      expect(events, isEmpty);
+    });
+
+    test('two distinct-poi visits in one batch both contribute their own '
+        'xp_earned events to the returned list', () async {
+      await drainEnergyTo(-75);
+      final consumer = buildConsumer();
+      final events = await consumer.consume([
+        coins(poiId: 'bank-a', ts: t0),
+        energy(poiId: 'cafe-b', ts: t0.add(const Duration(seconds: 1))),
+      ]);
+
+      expect(events.where((e) => e.type == GameEventTypes.xpEarned).length, 2);
+    });
   });
 
   group('resilience', () {

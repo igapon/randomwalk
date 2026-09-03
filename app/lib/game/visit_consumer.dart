@@ -14,8 +14,33 @@ const kLandmarkXp = 25;
 
 /// Reveal radius (meters) around a `reveal`-kind landmark once visited —
 /// Global Constraints: "sync points (place_of_worship, tourism=viewpoint,
-/// man_made=tower, historic=*) révèlent rayon 400 m".
+/// man_made=tower, historic=*) révèlent rayon 400 m". Task 2k: the new
+/// `culture` kind gets the exact same reveal treatment (see
+/// [GameVisitConsumer._appendReveal]'s condition).
 const kLandmarkRevealRadiusM = 400.0;
+
+/// Task 2k (owner-pinned decision): a `culture`-kind landmark's first-ever
+/// visit restores this much energy — "reprendre son souffle devant un
+/// monument" — on top of the reveal + XP every kind already gets. Chosen to
+/// sit at the generous end of the OLD `energy` kind's amounts (restaurant
+/// 40 / cafe 25 / fast_food 25 — see `reducers.dart`'s `_energyAmountFor`,
+/// untouched and still governing OLD journal replay): a flat 40 across every
+/// culture subkind (museum/church/castle/... all being worth a comparable
+/// "proper break"), unlike the old restaurant/cafe/fast_food split which
+/// existed to reflect meal size, not applicable here.
+///
+/// **First-visit-only, not a repeatable cooldown** (unlike the old `energy`
+/// kind's 6h `_energyCooldown`): the old kind's cooldown/amount bookkeeping
+/// lives inside `reducers.dart`'s `_reduceLandmarkVisited`/`_applyEnergyVisit`
+/// under the literal `kind == 'energy'` case, keyed off a hardcoded subkind
+/// table — extending it to a NEW kind or subkind is a `reducers.dart` change,
+/// out of scope for this task (see the task brief's explicit lock on that
+/// file). Gating the refill on [GameState.visitedPoiIds] instead — the same
+/// gate `kLandmarkXp` already uses — reuses state the reducer already tracks
+/// with zero reducer changes, and incidentally forecloses the repeat-farming
+/// concern a cooldown would otherwise exist to prevent: a culture landmark
+/// simply cannot be milked for energy by revisiting it.
+const kCultureEnergyRefill = 40;
 
 /// Fraction of a quartier that must be revealed for the `quartier_25` badge
 /// — same threshold `ExplorationRecorder` uses for a trip's own corridor
@@ -44,13 +69,37 @@ const kLandmarkNotificationId = 4213;
 /// and a discreet alert, one call per detected visit.
 ///
 /// **Event order per visit** (the plan's binding decision): `landmark_visited`
-/// first, then — for `kind == 'reveal'` only — `cell_revealed` (and a
-/// `quartier_25` `badge_unlocked` if that reveal crosses the threshold),
-/// then `xp_earned` for every FIRST-EVER visit to that `poiId` (any kind).
-/// A cooldown-blocked revisit therefore emits `landmark_visited` alone.
-/// Coin/energy rewards are not separate events: they live inside
-/// `landmark_visited`'s own reducer logic (`reducers.dart`), so this class
-/// never emits `coins_earned`/`energy_changed` itself.
+/// first, then — for `kind == 'reveal'` OR `kind == 'culture'` (Task 2k) —
+/// `cell_revealed` (and a `quartier_25` `badge_unlocked` if that reveal
+/// crosses the threshold), then `xp_earned` for every FIRST-EVER visit to
+/// that `poiId` (any kind), then — `culture` only, same first-visit gate —
+/// an `energy_changed` refill (Task 2k, [kCultureEnergyRefill]) LAST.
+/// A cooldown-blocked (`coins`/`energy`) or already-visited (`reveal`/
+/// `culture`) revisit therefore emits `landmark_visited` alone.
+///
+/// Coin/energy rewards for the OLD `coins`/`energy` kinds are not separate
+/// events: they live inside `landmark_visited`'s own reducer logic
+/// (`reducers.dart`), untouched by Task 2k. The NEW `culture` kind's energy
+/// refill, by contrast, IS emitted here as an ordinary already-supported
+/// `energy_changed` event — seeing `culture` isn't a kind `reducers.dart`'s
+/// `_reduceLandmarkVisited` switch recognizes at all (it falls through to
+/// the same no-op `default` case as `reveal`), Task 2k could not embed the
+/// refill inside `landmark_visited` itself without adding a case there
+/// (a `reducers.dart` change, out of scope — see [kCultureEnergyRefill]'s
+/// doc comment). Appending it LAST matters: `reduceAll`'s same-`ts`
+/// type-precedence table (`reducers.dart`, unchanged) always sorts
+/// `energy_changed` into the last tier on replay, regardless of append
+/// order, so appending it last here is what keeps this class's own
+/// immediate/local fold (`_process`'s `after`, used for the alert and for
+/// threading state across a batch) IN SYNC with what a later full-journal
+/// `reduceAll` will compute for the same events — the exact live/replay
+/// divergence hazard `_typePrecedence`'s own doc comment warns about. One
+/// observable consequence: a culture visit's own `xp_earned` reads the
+/// walker's PRE-refill energy for its multiplier (tier 1, before tier 2's
+/// refill) — unlike the old `energy` kind, whose refill is tier 0 (inside
+/// `landmark_visited` itself) and therefore already visible to a same-`ts`
+/// `xp_earned`. A deliberate, documented tradeoff for staying out of
+/// `reducers.dart` entirely, not an oversight.
 ///
 /// **Idempotency, not just dedup**: [consume] skips any `(poiId, ts)` pair
 /// already seen (see [_seen]) purely as a performance/hygiene measure — the
@@ -128,7 +177,21 @@ class GameVisitConsumer {
   /// under-reward the walker has no way to notice or recover from, unlike a
   /// duplicate (which the reducers' own idempotency already absorbs, see
   /// this class's doc comment).
-  Future<void> consume(List<PendingVisit> visits) async {
+  ///
+  /// **Task 2g (owner brief)**: returns exactly the [GameEvent]s durably
+  /// appended across this call — `const []` if nothing was (an empty/
+  /// already-seen [visits], or a `readAll()` failure before any visit was
+  /// even attempted). Mirrors `ExplorationRecorder.process`'s own return
+  /// contract, and for the identical reason: `TripController` accumulates
+  /// this trip's own landmark-visit XP by summing the `xp_earned` amounts in
+  /// what THIS call returns, never by re-reading `GameState.xp` off the
+  /// journal — which a concurrent `SyncEngine.sync()` merge could pollute
+  /// with XP that has nothing to do with this trip (see
+  /// `history/trip_history_recorder.dart`'s doc comment for the identical
+  /// race this sidesteps for exploration XP). A visit lost to a transient
+  /// failure (see the per-visit `catch` below) contributes nothing to the
+  /// returned list, exactly as it contributes nothing to the journal.
+  Future<List<GameEvent>> consume(List<PendingVisit> visits) async {
     final toProcess = <PendingVisit>[];
     final keysToProcess = <String>[];
     for (final visit in visits) {
@@ -141,7 +204,7 @@ class GameVisitConsumer {
       keysToProcess.add(key);
       toProcess.add(visit);
     }
-    if (toProcess.isEmpty) return;
+    if (toProcess.isEmpty) return const [];
 
     GameState state;
     try {
@@ -152,13 +215,16 @@ class GameVisitConsumer {
       // `TripSnapshot.pendingVisits`) will simply retry this batch later —
       // nothing in `toProcess` was `_remember`ed, so that retry is not
       // blocked by this attempt having half-marked it seen.
-      return;
+      return const [];
     }
 
+    final appended = <GameEvent>[];
     for (var i = 0; i < toProcess.length; i++) {
       final visit = toProcess[i];
       try {
-        state = await _process(visit, state);
+        final result = await _process(visit, state);
+        state = result.state;
+        appended.addAll(result.events);
         // Only remembered once its events are durably appended — a visit
         // whose `_process` call throws stays un-remembered, so it is
         // retried (rather than silently lost) the next time the service
@@ -171,6 +237,7 @@ class GameVisitConsumer {
         // onto a partially-applied one.
       }
     }
+    return appended;
   }
 
   void _remember(String key) {
@@ -183,9 +250,13 @@ class GameVisitConsumer {
 
   /// Processes one [visit] against the already-known [before] state (the
   /// running fold from [consume], not a fresh read of the journal) and
-  /// returns the resulting state for [consume] to carry into the next visit
-  /// in the same batch.
-  Future<GameState> _process(PendingVisit visit, GameState before) async {
+  /// returns the resulting state (for [consume] to carry into the next visit
+  /// in the same batch) alongside exactly the events this call durably
+  /// appended to [journal] (Task 2g — see [consume]'s own doc comment).
+  Future<({GameState state, List<GameEvent> events})> _process(
+    PendingVisit visit,
+    GameState before,
+  ) async {
     final toAppend = <GameEvent>[];
 
     final payload = <String, dynamic>{
@@ -202,10 +273,16 @@ class GameVisitConsumer {
       // WHOLE event (including `visitedPoiIds`) and let every future visit
       // to that same broken landmark mint another `xp_earned` forever.
       if (visit.kind == 'energy') 'subkind': visit.subkind ?? '',
+      // Task 2k: same rationale as the `energy` key above — carried whenever
+      // present so a future subkind-aware label/analytics read never has to
+      // special-case a missing key, even though the reducer itself (the
+      // no-op `default` case for an unrecognized kind) never reads it.
+      if (visit.kind == 'culture' && visit.subkind != null)
+        'subkind': visit.subkind,
     };
     toAppend.add(_event(GameEventTypes.landmarkVisited, payload, visit.ts));
 
-    if (visit.kind == 'reveal') {
+    if (visit.kind == 'reveal' || visit.kind == 'culture') {
       _appendReveal(toAppend, visit, before);
     }
 
@@ -215,6 +292,17 @@ class GameVisitConsumer {
         _event(GameEventTypes.xpEarned, {
           'amount': kLandmarkXp,
           'preMultiplied': false,
+        }, visit.ts),
+      );
+    }
+
+    // Task 2k: the culture-kind energy refill — first-visit-only (see
+    // `kCultureEnergyRefill`'s doc comment), and appended LAST (see this
+    // class's own doc comment on why append order matters here).
+    if (visit.kind == 'culture' && firstVisit) {
+      toAppend.add(
+        _event(GameEventTypes.energyChanged, {
+          'delta': kCultureEnergyRefill,
         }, visit.ts),
       );
     }
@@ -231,15 +319,15 @@ class GameVisitConsumer {
       after = reduceOne(after, event);
     }
     await _maybeAlert(visit, before: before, after: after);
-    return after;
+    return (state: after, events: toAppend);
   }
 
-  /// Reveal-kind visits also reveal a [kLandmarkRevealRadiusM]-meter disc
-  /// around the landmark (Global Constraints: "sync points ... révèlent
-  /// rayon 400 m") — the same `cell_revealed`/`quartier_25` treatment
-  /// `ExplorationRecorder` gives a trip's own corridor, applied here too so
-  /// a quartier can cross 25% from a landmark's reveal just as well as from
-  /// ground actually walked.
+  /// Reveal-kind (and, Task 2k, culture-kind) visits also reveal a
+  /// [kLandmarkRevealRadiusM]-meter disc around the landmark (Global
+  /// Constraints: "sync points ... révèlent rayon 400 m") — the same
+  /// `cell_revealed`/`quartier_25` treatment `ExplorationRecorder` gives a
+  /// trip's own corridor, applied here too so a quartier can cross 25% from
+  /// a landmark's reveal just as well as from ground actually walked.
   void _appendReveal(
     List<GameEvent> toAppend,
     PendingVisit visit,
@@ -322,7 +410,11 @@ class GameVisitConsumer {
     required double energyDelta,
     required int xpDelta,
   }) {
-    final label = visit.name ?? _defaultLabel(visit.kind);
+    final label =
+        visit.name ??
+        (visit.kind == 'culture'
+            ? _cultureLabel(visit.subkind)
+            : _defaultLabel(visit.kind));
     final parts = <String>[
       if (coinsDelta > 0) '+$coinsDelta pièces',
       if (energyDelta > 0) '+${energyDelta.round()} énergie',
@@ -334,6 +426,22 @@ class GameVisitConsumer {
   static String _defaultLabel(String kind) => switch (kind) {
     'coins' => 'Banque',
     'energy' => 'Pause',
+    _ => 'Point de repère',
+  };
+
+  /// Task 2k: an unnamed culture landmark's default alert label, by
+  /// [GamePoi.subkind] — purely cosmetic (French copy for the discreet
+  /// alert), mirrors the tiles repo's `extract_pois.py` subkind vocabulary.
+  /// An unrecognized/missing subkind falls back to the same generic
+  /// "Point de repère" every other unnamed kind uses.
+  static String _cultureLabel(String? subkind) => switch (subkind) {
+    'worship' => 'Lieu de culte',
+    'monument' => 'Monument',
+    'museum' => 'Musée',
+    'artwork' => 'Œuvre d\'art',
+    'viewpoint' => 'Point de vue',
+    'castle' => 'Château',
+    'ruins' => 'Ruines',
     _ => 'Point de repère',
   };
 

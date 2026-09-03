@@ -102,6 +102,15 @@ dependencies {
     // see the compileOptions comment above for why the app module needs it
     // too.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // M5 Task 2d (low-power mode): MotionChannel.kt's Activity Recognition
+    // Transition API (ActivityRecognitionClient, ActivityTransition,
+    // DetectedActivity, ...). geolocator_android already pulls this in as
+    // an `implementation` dependency of its own Gradle module, which Gradle
+    // does not expose to this app module's compile classpath — declared
+    // here too, pinned to the exact version geolocator_android-5.0.3 itself
+    // uses (see its android/build.gradle) to avoid two different resolved
+    // versions of the same artifact.
+    implementation("com.google.android.gms:play-services-location:21.2.0")
 }
 
 flutter {

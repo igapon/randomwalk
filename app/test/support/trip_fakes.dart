@@ -35,6 +35,11 @@ class FakeTotalDistanceStore implements TotalDistanceStore {
 class MemoryFinalisedTripMemory implements FinalisedTripMemory {
   final banked = <DateTime>{};
 
+  /// Task 2g fix round 1 (Important 5): the (identity, stats) pair last
+  /// passed to [setPendingCelebration], or `null` after
+  /// [clearPendingCelebration].
+  (DateTime, PendingCelebrationStats)? pending;
+
   @override
   Future<bool> wasFinalised(DateTime startedAt) async =>
       banked.contains(startedAt.toUtc());
@@ -42,6 +47,19 @@ class MemoryFinalisedTripMemory implements FinalisedTripMemory {
   @override
   Future<void> markFinalised(DateTime startedAt) async =>
       banked.add(startedAt.toUtc());
+
+  @override
+  Future<void> setPendingCelebration(
+    DateTime startedAt,
+    PendingCelebrationStats stats,
+  ) async => pending = (startedAt.toUtc(), stats);
+
+  @override
+  Future<(DateTime, PendingCelebrationStats)?> pendingCelebration() async =>
+      pending;
+
+  @override
+  Future<void> clearPendingCelebration() async => pending = null;
 }
 
 /// Records every [recordSession] call this fake has seen — unconditionally,
@@ -107,6 +125,10 @@ class FakeTripTracker implements TripTracker {
   /// matching [startedWith].
   final startedPoisFilePath = <String?>[];
   final publishedSteps = <int>[];
+
+  /// Every [TripTracker.publishVisitXp] call this fake has seen, in order
+  /// (Task 2g fix round 1, Important 2).
+  final publishedVisitXp = <double>[];
   int stops = 0;
   int clears = 0;
   int attaches = 0;
@@ -172,6 +194,10 @@ class FakeTripTracker implements TripTracker {
   @override
   Future<void> publishSteps(int steps) async => publishedSteps.add(steps);
 
+  @override
+  Future<void> publishVisitXp(double totalVisitXp) async =>
+      publishedVisitXp.add(totalVisitXp);
+
   /// Every [TripTracker.updateAlertSettings] call this fake has seen, in
   /// order.
   final alertSettingsUpdates = <({bool ttsEnabled, bool hapticsEnabled})>[];
@@ -194,15 +220,33 @@ class FakeTripTracker implements TripTracker {
 }
 
 class FakeStepSensor implements StepSensor {
-  FakeStepSensor({this.available = true, this.value = 0});
+  FakeStepSensor({
+    this.available = true,
+    this.value = 0,
+    this.nullReadsBeforeReady = 0,
+  });
   bool available;
   int value;
+
+  /// How many `read()` calls return null before actually reporting [value]
+  /// — simulates the hardware sensor listener's asynchronous registration
+  /// delay (fix round 2, task 2d, I4: `TripTaskHandler._pollFallbackSteps`'s
+  /// very first poll of a pause spell can land before the sensor has
+  /// reported anything at all).
+  int nullReadsBeforeReady;
 
   @override
   Future<bool> start() async => available;
 
   @override
-  Future<int?> read() async => available ? value : null;
+  Future<int?> read() async {
+    if (!available) return null;
+    if (nullReadsBeforeReady > 0) {
+      nullReadsBeforeReady--;
+      return null;
+    }
+    return value;
+  }
 
   @override
   Future<void> stop() async {}

@@ -5,11 +5,16 @@ import '../nav/polyline_math.dart' show metersBetween;
 /// (Task 6 perf constraint: "cap ~200 nearest").
 const kMaxAdventureSymbols = 200;
 
-/// MapLibre `addImage` ids for the six landmark glyph variants: one per
-/// [PoiKind], each in a filled (visited) and outlined (unvisited) version —
-/// see `adventure_screen.dart`'s icon registration, which renders these with
-/// [WaymarkDiamond]'s color-per-kind scheme (yellow reveal / hydro coins /
-/// terre energy) via `waymarkDiamondPng`.
+/// MapLibre `addImage` id for one [PoiKind], in either a filled (visited)
+/// or outlined (unvisited) version — see `adventure_screen.dart`'s icon
+/// registration, which renders these with [WaymarkDiamond]'s color-per-kind
+/// scheme via `waymarkDiamondPng`. Generic over all of [PoiKind.values],
+/// but in practice only two kinds are ever asked for an icon: Task 2k
+/// retired the `coins`/`energy` kinds (`map/game_layer.dart`'s
+/// `_kPoiColorsByKind` registers colors for `reveal`/`culture` alone — see
+/// that map's own doc comment), so only four ids (two kinds × two states)
+/// are ever actually rendered, not the up-to-eight this function could
+/// theoretically produce.
 String poiIconId(PoiKind kind, {required bool visited}) {
   final suffix = visited ? 'filled' : 'outline';
   return 'adventure-poi-${kind.name}-$suffix';

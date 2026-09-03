@@ -84,4 +84,33 @@ void main() {
     await store.upsertAll(['1'], ts.add(const Duration(days: 60)));
     expect(await store.totalCount, 1);
   });
+
+  group('clear (Task 6 local purge)', () {
+    test('empties every covered edge', () async {
+      await store.upsertAll(['1', '2', '3'], ts);
+      expect(await store.totalCount, 3);
+
+      await store.clear();
+
+      expect(await store.totalCount, 0);
+      expect(await store.contains('1'), isFalse);
+    });
+
+    test('is a no-op on an already-empty store', () async {
+      await store.clear();
+      expect(await store.totalCount, 0);
+    });
+
+    test(
+      'the store stays usable after clear (upsertAll still works)',
+      () async {
+        await store.upsertAll(['1'], ts);
+        await store.clear();
+
+        final newly = await store.upsertAll(['1', '2'], ts);
+        expect(newly, 2);
+        expect(await store.totalCount, 2);
+      },
+    );
+  });
 }

@@ -9,6 +9,7 @@ import '../game/grid.dart';
 import '../game/reducers.dart';
 import '../nav/polyline_math.dart';
 import '../valhalla/engine.dart';
+import '../valhalla/models.dart';
 import 'edges_store.dart';
 import 'matcher.dart';
 import 'track_sampler.dart';
@@ -94,10 +95,44 @@ class FinishedTrip {
   /// `loop_completed` needs both.
   final bool navArrived;
 
+  /// Task 2f (local trip history): when this trip started/ended and which
+  /// profile it recorded with. [ExplorationRecorder] itself never reads
+  /// these three — they exist purely so a decorator wrapped around whatever
+  /// `processTripExploration` hook is wired (see
+  /// `history/trip_history_recorder.dart`) can write a per-trip history
+  /// summary without `TripController` or this class needing to know that
+  /// store exists. Optional and defaulted so every existing call site/test
+  /// keeps compiling unchanged; `TripController._finalise` (the only
+  /// production caller) always supplies them.
+  final DateTime? startedAt;
+  final DateTime? endedAt;
+  final RoutingProfile? profile;
+
+  /// Task 2g (owner brief, binding requirement from the 2f re-review): this
+  /// trip's own landmark-visit XP — the sum of `xp_earned` amounts among the
+  /// events `GameVisitConsumer.consume` itself appended across every call
+  /// `TripController` made for THIS trip (mid-trip landmark visits reach the
+  /// journal via a separate path from this class's own `xp_earned` events —
+  /// see [ExplorationRecorder]'s class doc comment — so without this field
+  /// the congratulations screen's XP figure silently missed it). Accumulated
+  /// in memory by `TripController` for the life of one trip (reset to 0 at
+  /// every `startTrip`/`resumeInterrupted`), never by re-reading `GameState`
+  /// — see `history/trip_history_recorder.dart`'s doc comment for why that
+  /// specific approach is unsafe against a concurrent sync merge. [Exploration
+  /// Recorder] itself never reads this — purely additive, like [startedAt]/
+  /// [endedAt]/[profile] — so every existing call site/test keeps compiling
+  /// unchanged; only `history/trip_history_recorder.dart`'s decorator adds it
+  /// to the exploration-XP sum it already computes.
+  final double visitXpEarned;
+
   const FinishedTrip({
     required this.km,
     this.isLoop = false,
     this.navArrived = false,
+    this.startedAt,
+    this.endedAt,
+    this.profile,
+    this.visitXpEarned = 0,
   });
 }
 
@@ -160,11 +195,29 @@ class ExplorationRecorder {
   /// step already guarding itself (see the per-step doc comments below), so
   /// this is a deliberate belt-and-braces final backstop rather than the
   /// only thing standing between a bug here and a broken trip flow.
-  Future<void> process(FinishedTrip trip) async {
+  ///
+  /// Returns exactly the events THIS call appended to [journal] — `const
+  /// []` if anything failed before `journal.appendAll` durably committed
+  /// (including a throwing `appendAll` itself, since nothing landed then).
+  /// Task 2f review fix round 1 (Critical 1): `history/trip_history_
+  /// recorder.dart` used to compute a trip's XP by reading `GameState.xp`
+  /// before and after this call and diffing — which silently absorbed any
+  /// remote `xp_earned` event `SyncEngine.sync()` merged into this same
+  /// journal in that window (`sync_engine.dart`'s own doc comment: "the
+  /// journal is not exclusively this engine's to write"), since
+  /// `TripController._finalise` fires both `processTripExploration` and the
+  /// post-trip auto-sync trigger unawaited, racing each other. Returning
+  /// the exact event list built here — never re-reading the journal to
+  /// figure out what "this trip's" contribution was — makes that race
+  /// impossible by construction: a caller summing `xp_earned` amounts out
+  /// of this return value sees only what this call itself produced,
+  /// regardless of what anyone else appends concurrently.
+  Future<List<GameEvent>> process(FinishedTrip trip) async {
     try {
-      await _run(trip);
+      return await _run(trip);
     } catch (e) {
       debugPrint('ExplorationRecorder: failed, continuing: $e');
+      return const [];
     }
   }
 
@@ -196,7 +249,7 @@ class ExplorationRecorder {
   /// containing `'T'` or `'Z'` outright (see its own doc comment) precisely
   /// to keep timezone/DST semantics out of what is meant to be a pure
   /// calendar-day fact.
-  Future<void> _run(FinishedTrip trip) async {
+  Future<List<GameEvent>> _run(FinishedTrip trip) async {
     final now = _clock();
     final shape = await _readAndClearTrack();
     final events = <GameEvent>[
@@ -243,6 +296,7 @@ class ExplorationRecorder {
     } catch (_) {
       // A misbehaving listener must never take down trip finalisation.
     }
+    return events;
   }
 
   /// Map-matches [shape] (best-effort — see [engineProvider]'s doc comment)

@@ -98,6 +98,63 @@ void main() {
     });
   });
 
+  group('GameLayerToggleButton — task 2j', () {
+    testWidgets('enabled shows a filled diamond and the "désactiver" tooltip', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light,
+          home: Scaffold(
+            body: GameLayerToggleButton(enabled: true, onPressed: () {}),
+          ),
+        ),
+      );
+
+      final diamond = tester.widget<WaymarkDiamond>(
+        find.byType(WaymarkDiamond),
+      );
+      expect(diamond.filled, isTrue);
+      expect(find.byTooltip('Désactiver la couche Aventure'), findsOneWidget);
+    });
+
+    testWidgets('disabled shows an outlined diamond and the "activer" '
+        'tooltip', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light,
+          home: Scaffold(
+            body: GameLayerToggleButton(enabled: false, onPressed: () {}),
+          ),
+        ),
+      );
+
+      final diamond = tester.widget<WaymarkDiamond>(
+        find.byType(WaymarkDiamond),
+      );
+      expect(diamond.filled, isFalse);
+      expect(find.byTooltip('Activer la couche Aventure'), findsOneWidget);
+    });
+
+    testWidgets('tapping invokes onPressed', (tester) async {
+      var tapped = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light,
+          home: Scaffold(
+            body: GameLayerToggleButton(
+              enabled: true,
+              onPressed: () => tapped = true,
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byType(GameLayerToggleButton));
+      expect(tapped, isTrue);
+    });
+  });
+
   group('StatsBanner — narrow-phone overflow', () {
     Future<void> pumpAt360(WidgetTester tester, Widget banner) async {
       await tester.binding.setSurfaceSize(const Size(360, 800));

@@ -877,6 +877,51 @@ void main() {
     });
   });
 
+  group('shouldInterceptBackForWizardExit (task 2i review fix round 1, '
+      'Important #1)', () {
+    test('back during candidate selection still closes selection only — '
+        'candidates win outright even with a wizard exit available', () {
+      expect(
+        shouldInterceptBackForWizardExit(
+          interceptedForCandidates: true,
+          hasWizardExit: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('back on the free map (no candidates) returns to the wizard home', () {
+      expect(
+        shouldInterceptBackForWizardExit(
+          interceptedForCandidates: false,
+          hasWizardExit: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('back on the wizard home / any pre-task-2i call site keeps exiting — '
+        'no wizard to return to', () {
+      expect(
+        shouldInterceptBackForWizardExit(
+          interceptedForCandidates: false,
+          hasWizardExit: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('never intercepts when neither candidates nor a wizard exist', () {
+      expect(
+        shouldInterceptBackForWizardExit(
+          interceptedForCandidates: true,
+          hasWizardExit: false,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('loopTargetFloorForDestination (fix-round-1, point 3: far-pin '
       'distance floor)', () {
     test('current target already covers the direct distance — untouched', () {

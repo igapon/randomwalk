@@ -18,11 +18,14 @@ import '../coverage/manifest.dart' show DatasetVersionMismatch;
 import '../exploration/explore_planner.dart';
 import '../game/game_state_provider.dart';
 import '../game/grid.dart' show corridorCells;
+import '../game/poi_loader.dart' show poisStoreProvider;
+import '../game/pois.dart' show PoiStore;
+import '../game/reducers.dart' show GameState;
 import '../loop/loop_planner.dart';
 import '../loop/speed_history.dart';
 import '../nav/guidance_text.dart';
 import '../nav/nav_fields.dart' show formatDistance;
-import '../nav/polyline_math.dart' show metersBetween;
+import '../nav/polyline_math.dart' show metersBetween, simplifyForDisplay;
 import '../theme/tokens.dart';
 import '../theme/waymark_glyph.dart';
 import '../trip/active_route_store.dart';
@@ -31,6 +34,8 @@ import '../trip/trip_controller.dart';
 import '../trip/trip_messages.dart';
 import '../valhalla/engine.dart';
 import '../valhalla/models.dart';
+import 'game_layer.dart';
+import 'game_layer_toggle_store.dart';
 
 const kMapStyleUrlLight = 'https://tiles.openfreemap.org/styles/liberty';
 // OpenFreeMap's dark style — see task-12 brief: the map follows the app's
@@ -47,7 +52,28 @@ const _kIconMarkerB = 'waymark-marker-b';
 const _kWaymarkIconSizePx = 44.0;
 
 class MapScreen extends ConsumerStatefulWidget {
-  const MapScreen({super.key});
+  const MapScreen({super.key, this.autoPlan, this.onExitToWizard});
+
+  /// Task 2i: a fully-specified plan the trip-start wizard already collected
+  /// one screen back — set only by `CarteTabRoot` (`carte_tab.dart`), never
+  /// by any of this screen's other call sites (the tab's own resting
+  /// instance once a plan/trip already exists, and every existing test/usage
+  /// that constructs a bare `const MapScreen()`), so this is additive and
+  /// changes nothing about the screen's pre-task-2i behavior when absent.
+  /// Consumed exactly once, in [MapScreenState.initState] — see
+  /// [MapScreenState._runAutoPlan].
+  final WizardHandoff? autoPlan;
+
+  /// Task 2i: renders a discreet "Accueil" affordance that discards
+  /// whatever is planned (same as the result banner's own ✕) and hands
+  /// control back to `CarteTabRoot`, which then shows the wizard again —
+  /// the one way back to the sober step-1 screen once a plan has been
+  /// started. Null hides the affordance entirely: every pre-task-2i call
+  /// site (and `CarteTabRoot` itself, while a trip is recording or
+  /// interrupted — brief's own pinned rule that an active trip's nav map is
+  /// unchanged) passes nothing.
+  final VoidCallback? onExitToWizard;
+
   @override
   ConsumerState<MapScreen> createState() => MapScreenState();
 }
@@ -55,6 +81,17 @@ class MapScreen extends ConsumerStatefulWidget {
 class MapScreenState extends ConsumerState<MapScreen> {
   MapLibreMapController? controller;
   bool _iconsRegistered = false;
+
+  /// Task 2j: fog + POIs + exploration bearings on the main map — the exact
+  /// same wiring `AdventureScreen` uses (`map/game_layer.dart`), gated by
+  /// the "couche Aventure" toggle below. [_gameLayerEnabled] starts at the
+  /// documented default (ON — the game is the product's own identity) and
+  /// is immediately corrected by [_loadGameLayerEnabled] once the persisted
+  /// choice has loaded, same pattern `_loadPlanMode` already uses for
+  /// `PlanModeStore`.
+  final _gameLayer = GameLayer();
+  bool _gameLayerEnabled = kGameLayerEnabledDefault;
+  final _gameLayerStore = GameLayerToggleStore();
 
   // Native handles for what is currently drawn. These are the only pieces
   // of map state that legitimately live in the widget: they belong to one
@@ -191,6 +228,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
     unawaited(_checkExistingLocationPermission());
     unawaited(_loadPlanMode());
     unawaited(_refreshSpeedKmh());
+    unawaited(_loadGameLayerEnabled());
+    // Task 2i: the trip-start wizard already collected everything this
+    // needs — see [_runAutoPlan]'s own doc comment for why this runs
+    // alongside (not instead of) the two loads above rather than reusing
+    // their state.
+    final autoPlan = widget.autoPlan;
+    if (autoPlan != null) unawaited(_runAutoPlan(autoPlan));
   }
 
   @override
@@ -311,12 +355,91 @@ class MapScreenState extends ConsumerState<MapScreen> {
     // replan had already happened before this remount (a theme flip
     // mid-navigation, say).
     _lastDrawnRouteShapeEnc = null;
+    // Task 2j: same story as every other native handle above — the fog
+    // source/layers and landmark symbols the old controller held are gone
+    // with it; `_installGameLayer` (called from `_onStyleLoaded` below)
+    // installs them fresh on the new one.
+    _gameLayer.reset();
   }
 
   Future<void> _onStyleLoaded() async {
     await _registerWaymarkIcons();
+    await _installGameLayer();
     await _redrawAfterRemount();
     if (_candidateResult != null) await _drawCandidateLines();
+  }
+
+  /// Task 2j: (re)installs the "couche Aventure" (fog + POIs) on the current
+  /// native map instance, then applies whatever the toggle's last-known
+  /// state is and redraws its content — the same install-then-restore
+  /// sequence [_onMapCreated]/[_installGameLayer]'s callers already run for
+  /// the route overlays, needed for the identical reason: a brightness flip
+  /// remounts `MapLibreMap` under a fresh `ValueKey(styleUrl)` (see
+  /// [_onMapCreated]'s own doc comment), which silently drops every custom
+  /// source/layer this screen had installed — including a fog layer the
+  /// walker had explicitly hidden, which must come back hidden, not
+  /// reset to visible.
+  Future<void> _installGameLayer() async {
+    final c = controller;
+    if (c == null || !mounted) return;
+    try {
+      await _gameLayer.install(c, brightness: Theme.of(context).brightness);
+      await _gameLayer.setVisible(c, _gameLayerEnabled);
+    } catch (_) {
+      // Game never blocks the tool: a style/layer failure just means no fog
+      // is drawn this session, not a crash.
+    }
+    _refreshGameLayer();
+  }
+
+  /// Loads the persisted "couche Aventure" choice — called once from
+  /// [initState], same pattern [_loadPlanMode] already uses for
+  /// `PlanModeStore`. If the map has already finished its first style load
+  /// by the time this resolves (the common case: this is a fast
+  /// SharedPreferences read racing a much slower native map/style load),
+  /// [_installGameLayer] hasn't necessarily run with the correct value yet
+  /// — [_setGameLayerVisible] below reapplies it directly rather than
+  /// waiting for a style reload that may never happen this session.
+  Future<void> _loadGameLayerEnabled() async {
+    final enabled = await _gameLayerStore.load();
+    if (!mounted || enabled == _gameLayerEnabled) return;
+    setState(() => _gameLayerEnabled = enabled);
+    await _setGameLayerVisible(enabled);
+  }
+
+  /// The toggle button's own handler — flips [_gameLayerEnabled], persists
+  /// it (so it survives a cold start, same as [PlanModeStore]/the trip
+  /// profile), and applies it to whatever native map instance currently
+  /// exists.
+  Future<void> _toggleGameLayer() async {
+    final enabled = !_gameLayerEnabled;
+    setState(() => _gameLayerEnabled = enabled);
+    unawaited(_gameLayerStore.save(enabled));
+    await _setGameLayerVisible(enabled);
+  }
+
+  Future<void> _setGameLayerVisible(bool enabled) async {
+    final c = controller;
+    if (c == null) return;
+    await _gameLayer.setVisible(c, enabled);
+    if (enabled) _refreshGameLayer();
+  }
+
+  /// Regenerates the fog geometry and redraws the nearest landmark symbols
+  /// for the current viewport — a no-op while the layer is turned off (fog
+  /// hidden via `setLayerVisibility`, so there is nothing to spend work
+  /// redrawing) or before [gameStateProvider] has resolved at least once.
+  /// Called from `onCameraIdle` (viewport-dependent, like
+  /// `AdventureScreen`'s own `_refreshMapContent`) and via [build]'s
+  /// `ref.listen` on [gameStateProvider]/[poisStoreProvider].
+  void _refreshGameLayer() {
+    if (!_gameLayerEnabled) return;
+    final c = controller;
+    if (c == null) return;
+    final state = ref.read(gameStateProvider).valueOrNull;
+    if (state == null) return;
+    final store = ref.read(poisStoreProvider).valueOrNull;
+    unawaited(_gameLayer.refresh(c, state: state, store: store));
   }
 
   /// Re-adds whatever route/markers/camera-follow the app state says are
@@ -405,7 +528,17 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
     final route = plan.route;
     if (route != null) {
-      final geometry = [for (final (lat, lon) in route.shape) LatLng(lat, lon)];
+      // Task 2l: the drawn line is simplified for DISPLAY only — nothing
+      // navigation-related reads this geometry back; `route.shape` itself
+      // (used by `RouteFollower`/ETA/off-route math) is untouched. See
+      // [simplifyForDisplay]'s own doc comment for why this matters: this
+      // is the exact code path the owner's device-QA report tied to a
+      // startup freeze whenever a trip is restored with an already-planned
+      // route.
+      final geometry = [
+        for (final (lat, lon) in simplifyForDisplay(route.shape))
+          LatLng(lat, lon),
+      ];
       // Casing first (drawn below), then the yellow line on top.
       _routeLineCasing = await controller?.addLine(
         LineOptions(
@@ -466,29 +599,66 @@ class MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  /// Draws the new casing/line pair before removing the old one, so the
-  /// route never flashes empty between a replan and its redraw.
+  /// Updates the drawn route line's geometry IN PLACE — same stable
+  /// [_routeLineCasing]/[_routeLine] native ids throughout a trip — rather
+  /// than adding a fresh pair and removing the old one.
+  ///
+  /// Task 2e item 2 (owner device-QA: "après recalcul j'ai l'impression que
+  /// les anciens itinéraires restent visibles"): the previous add-then-remove
+  /// version raced itself. `_maybeSyncReplannedRoute` is invoked from a
+  /// `postFrameCallback` scheduled on every `build()` while the route-bound
+  /// trip keeps ticking (roughly every 1-2 s — see `TripController.tick`/
+  /// `_onTrackerSnapshot`), with no guard against a second call starting
+  /// before the first's `addLine`/`removeLine` round trips had completed. Two
+  /// overlapping calls could each read the SAME "old" line (captured before
+  /// either had reassigned the field), add their own fresh replacement, and
+  /// then each remove only the "old" line THEY captured — orphaning the
+  /// intermediate line the first call had added and the second overwrote in
+  /// the field before it was ever removed: a ghost polyline with no
+  /// remaining reference, left on the map for the rest of the trip.
+  ///
+  /// `updateLine` mutates the existing [Line]'s geometry via the SAME native
+  /// id (`maplibre_gl`'s `LineManager.set`) instead of creating a new one, so
+  /// even under the exact same overlapping-calls race there is nothing left
+  /// to orphan — whichever call's `updateLine` lands last simply wins the
+  /// geometry, same as any other last-write-wins race, with no line ever
+  /// created that isn't already tracked by [_routeLineCasing]/[_routeLine].
+  /// Falls back to `addLine` only the first time this trip draws a line at
+  /// all (guarded separately by [_drawOverlays], which always runs first for
+  /// a route-bound trip — this fallback exists purely so this method stays
+  /// correct if that ever stopped being true).
   Future<void> _redrawRouteLine(List<(double, double)> shape) async {
-    final oldCasing = _routeLineCasing;
-    final oldLine = _routeLine;
-    final geometry = [for (final (lat, lon) in shape) LatLng(lat, lon)];
-    _routeLineCasing = await controller?.addLine(
-      LineOptions(
-        geometry: geometry,
-        lineColor: AppColors.routeLineCasingHex,
-        lineWidth: 7,
-        lineOpacity: 1.0,
-      ),
-    );
-    _routeLine = await controller?.addLine(
-      LineOptions(
-        geometry: geometry,
-        lineColor: AppColors.routeLineHex,
-        lineWidth: 4.5,
-      ),
-    );
-    if (oldCasing != null) await controller?.removeLine(oldCasing);
-    if (oldLine != null) await controller?.removeLine(oldLine);
+    // Task 2l: same display-only simplification `_drawOverlays` applies —
+    // this is the method every REPLAN redraw goes through (see
+    // `_maybeSyncReplannedRoute`), the owner's second reported freeze
+    // moment. `shape` itself (the caller's full-resolution route/replanned
+    // geometry) is passed through unsimplified everywhere else — only the
+    // `LatLng` list actually handed to the platform channel is thinned.
+    final geometry = [
+      for (final (lat, lon) in simplifyForDisplay(shape)) LatLng(lat, lon),
+    ];
+    final casing = _routeLineCasing;
+    final line = _routeLine;
+    if (casing != null && line != null) {
+      await controller?.updateLine(casing, LineOptions(geometry: geometry));
+      await controller?.updateLine(line, LineOptions(geometry: geometry));
+    } else {
+      _routeLineCasing = await controller?.addLine(
+        LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineCasingHex,
+          lineWidth: 7,
+          lineOpacity: 1.0,
+        ),
+      );
+      _routeLine = await controller?.addLine(
+        LineOptions(
+          geometry: geometry,
+          lineColor: AppColors.routeLineHex,
+          lineWidth: 4.5,
+        ),
+      );
+    }
     if (!mounted) return;
     setState(() {});
   }
@@ -788,12 +958,14 @@ class MapScreenState extends ConsumerState<MapScreen> {
         _searchResults = results;
         _searching = false;
       });
-    } on GeocodingException {
+    } on GeocodingException catch (e) {
       if (!mounted || !_searchGeneration.isCurrent(gen)) return;
       setState(() {
         _searchResults = [];
         _searching = false;
-        _searchError = 'Recherche indisponible hors ligne.';
+        // Task 2b: honest, cause-specific message instead of always
+        // claiming "hors ligne" — see `searchErrorMessage`.
+        _searchError = searchErrorMessage(e.kind);
       });
     }
   }
@@ -915,6 +1087,49 @@ class MapScreenState extends ConsumerState<MapScreen> {
     final speed = await _speedHistory.speedKmh(profile);
     if (!mounted) return;
     setState(() => _speedKmh = speed);
+  }
+
+  /// Task 2i: runs the plan the trip-start wizard already collected —
+  /// mode, target and (via [ActiveRoute], saved by the wizard before this
+  /// screen was ever built) destination/profile — the instant this screen
+  /// mounts, instead of waiting for a manual "Proposer"/search-select that
+  /// would just repeat a gesture the walker already made one screen back.
+  ///
+  /// Reads [PlanModeStore] itself, independently of [_loadPlanMode]'s own
+  /// unawaited call in `initState`, rather than waiting on that call's own
+  /// future: the wizard persists the mode through the very same store
+  /// (`plan_mode.dart`'s `PlanModeStore`) immediately before handing off, so
+  /// this reads back the exact value [_loadPlanMode] would also land on —
+  /// duplicating the read costs nothing (a cheap `SharedPreferences` lookup)
+  /// and keeps this method fully self-contained rather than racing against
+  /// (or depending on the ordering of) the other unawaited startup calls.
+  Future<void> _runAutoPlan(WizardHandoff handoff) async {
+    final mode = await _planModeStore.load();
+    if (!mounted) return;
+    setState(() {
+      _planMode = mode;
+      if (handoff.loopTargetKm != null) {
+        _loopTargetKm = clampLoopTargetKm(handoff.loopTargetKm!);
+      }
+      if (handoff.durationTarget != null) {
+        _durationTarget = clampDurationTarget(handoff.durationTarget!);
+      }
+    });
+    if (mode == PlanMode.itinerary) {
+      await _planRoute();
+      return;
+    }
+    await _proposeCandidates();
+    // « Repartir »'s own 2-tap promise (brief point 4): the best-scored
+    // candidate — index 0, `_proposeCandidates`' own selection default — is
+    // promoted immediately rather than left for the walker to confirm from
+    // the fullscreen chip row, landing this call on the plain result banner
+    // instead (one remaining tap: « Démarrer »).
+    if (handoff.autoAcceptBestCandidate &&
+        mounted &&
+        _candidateResult != null) {
+      await _startCandidate();
+    }
   }
 
   Future<void> _onPlanModeChanged(PlanMode mode) async {
@@ -1381,6 +1596,19 @@ class MapScreenState extends ConsumerState<MapScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    // Task 2j: re-runs the game-layer refresh whenever the underlying data
+    // changes, e.g. a trip ends / a visit is recorded while this screen is
+    // on screen — mirrors `AdventureScreen`'s own identical `ref.listen`
+    // pair. `ref.listen` rather than `ref.watch`: nothing here needs
+    // `build()` itself to re-run on new game data, only the imperative,
+    // side-effecting map redraw `_refreshGameLayer` performs.
+    ref.listen<AsyncValue<GameState>>(gameStateProvider, (_, __) {
+      _refreshGameLayer();
+    });
+    ref.listen<AsyncValue<PoiStore>>(poisStoreProvider, (_, __) {
+      _refreshGameLayer();
+    });
+
     final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     final trip = ref.watch(tripControllerProvider);
     _statsTicker.sync(trip.isRecording);
@@ -1491,8 +1719,9 @@ class MapScreenState extends ConsumerState<MapScreen> {
         onStart: _startRouteTrip,
       );
     } else {
-      // Final review item 3: the « Démarrer » pill (a free session — no
-      // route, no target) is shown in *every* plan mode, not only Itinéraire.
+      // Final review item 3: the « Enregistrer » pill (a free session — no
+      // route, no target — task 2j renaming) is shown in *every* plan mode,
+      // not only Itinéraire.
       // The owner's one-tap rule is about the app, not about which planning
       // panel happens to be selected: a walker who opened Distance, thought
       // better of it and just wants to start walking must not have to switch
@@ -1615,34 +1844,60 @@ class MapScreenState extends ConsumerState<MapScreen> {
       trackingReleased: _trackingReleased,
     );
 
+    // Fix-round-1, point 2: Android's system back gesture/button during
+    // fullscreen candidate selection used to fall through to the OS
+    // (backgrounding the app instead of leaving selection) since nothing
+    // on this screen intercepted it. Blocking `canPop` whenever there is
+    // something to back out of first — candidates on screen, or a
+    // « Proposer » request still in flight — makes back == leave
+    // selection == the same ✕ the chip row/spinner already offer, and
+    // only a real "no candidates, nothing planning" state actually pops
+    // the route (or exits the app).
+    //
+    // Fix-round-2: driven through [shouldInterceptBackForCandidates]
+    // rather than these two flags raw — a recording that starts while
+    // either is still true must free `canPop` in this very same frame,
+    // not one frame later once the post-frame cancel/clear effects above
+    // have actually run, or back reads as silently swallowed by a plan
+    // the walker can no longer see behind the recording pill.
+    final interceptForCandidates = shouldInterceptBackForCandidates(
+      hasCandidates: candidateResult != null,
+      candidatePlanning: _candidatePlanning,
+      isRecording: trip.isRecording,
+    );
+    // Task 2i review fix round 1 (Important #1): a system back press on the
+    // free map — reached via `CarteTabRoot` (`widget.onExitToWizard` is
+    // only ever non-null there — see its own doc comment) with no
+    // candidate session claiming the back press already — used to fall
+    // straight through this screen's own (only) `PopScope` and out through
+    // the app's root route, which Flutter's default Android back handling
+    // reads as `SystemNavigator.pop()`: the app closed instead of
+    // returning to the wizard home, exactly the risk the brief calls out.
+    // Candidate selection still wins outright (`interceptForCandidates`
+    // first) — this is the SAME `PopScope` as above, not a second one
+    // registered on the same route, which is what keeps the two concerns
+    // from firing on each other's back presses (a second, independently
+    // gated `PopScope` at `CarteTabRoot` was tried and rejected — see the
+    // task-2i report's "Known limitation" — because both would be notified
+    // of every blocked pop regardless of which one's own `canPop` asked
+    // for the block).
+    final interceptForWizardExit = shouldInterceptBackForWizardExit(
+      interceptedForCandidates: interceptForCandidates,
+      hasWizardExit: widget.onExitToWizard != null,
+    );
+
     return PopScope(
-      // Fix-round-1, point 2: Android's system back gesture/button during
-      // fullscreen candidate selection used to fall through to the OS
-      // (backgrounding the app instead of leaving selection) since nothing
-      // on this screen intercepted it. Blocking `canPop` whenever there is
-      // something to back out of first — candidates on screen, or a
-      // « Proposer » request still in flight — makes back == leave
-      // selection == the same ✕ the chip row/spinner already offer, and
-      // only a real "no candidates, nothing planning" state actually pops
-      // the route (or exits the app).
-      //
-      // Fix-round-2: driven through [shouldInterceptBackForCandidates]
-      // rather than these two flags raw — a recording that starts while
-      // either is still true must free `canPop` in this very same frame,
-      // not one frame later once the post-frame cancel/clear effects above
-      // have actually run, or back reads as silently swallowed by a plan
-      // the walker can no longer see behind the recording pill.
-      canPop: !shouldInterceptBackForCandidates(
-        hasCandidates: candidateResult != null,
-        candidatePlanning: _candidatePlanning,
-        isRecording: trip.isRecording,
-      ),
+      canPop: !interceptForCandidates && !interceptForWizardExit,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_candidatePlanning) {
-          _cancelCandidatePlanning();
-        } else {
-          _clearCandidates();
+        if (interceptForCandidates) {
+          if (_candidatePlanning) {
+            _cancelCandidatePlanning();
+          } else {
+            _clearCandidates();
+          }
+        } else if (interceptForWizardExit) {
+          widget.onExitToWizard!();
         }
       },
       child: Scaffold(
@@ -1666,6 +1921,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
               // Device-QA addendum, point 3: any user gesture releases the
               // camera from following the walker during navigation.
               onCameraTrackingDismissed: _onCameraTrackingDismissed,
+              // Task 2j: landmark symbols are viewport-dependent (same as
+              // `AdventureScreen`'s own `onCameraIdle`) — the fog itself is
+              // not (see `game_layer.dart`'s `_refreshFog`), so panning alone
+              // never triggers fog work, only a landmark redraw.
+              onCameraIdle: _refreshGameLayer,
             ),
             Positioned(
               top: 0,
@@ -1695,8 +1955,18 @@ class MapScreenState extends ConsumerState<MapScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Task 2i: the one way back to the wizard's step 1 once
+                    // a plan has started — absent (and this whole row skips
+                    // itself) for every pre-task-2i call site, and for
+                    // `CarteTabRoot`'s own hand-off while a trip is
+                    // recording or interrupted, matching the brief's pinned
+                    // rule that an active trip's nav map stays unchanged.
+                    if (widget.onExitToWizard != null) ...[
+                      _WizardExitButton(onPressed: widget.onExitToWizard!),
+                      const SizedBox(height: 6),
+                    ],
                     // A row of its own above the bottom banner (not
-                    // overlapping it, e.g. the full-width "Démarrer" pill) —
+                    // overlapping it, e.g. the full-width "Enregistrer" pill) —
                     // see task-8 brief point 7.
                     const MapAttribution(),
                     const SizedBox(height: 6),
@@ -1713,6 +1983,15 @@ class MapScreenState extends ConsumerState<MapScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Task 2j: always reachable, guided trip or not — the walker's
+              // own choice of whether the fog/POI layer shows persists
+              // (`GameLayerToggleStore`) and is otherwise independent of
+              // navigation state.
+              GameLayerToggleButton(
+                enabled: _gameLayerEnabled,
+                onPressed: _toggleGameLayer,
+              ),
+              const SizedBox(height: 12),
               if (showRecenter) ...[
                 RecenterButton(onPressed: _recenterOnTrack),
                 const SizedBox(height: 12),
@@ -2326,6 +2605,43 @@ class RecenterButton extends StatelessWidget {
   );
 }
 
+/// Task 2j: the "couche Aventure" toggle — fog-of-war + landmark POIs +
+/// exploration bearings, merged onto the main map (`map/game_layer.dart`).
+/// Diamond/losange iconography matching the app's waymark identity: filled
+/// when the layer is showing, outlined when hidden — the same filled/
+/// outline convention [WaymarkDiamond] already uses for the A/B route
+/// markers. Public, like [RecenterButton]/[MapAttribution], so it can be
+/// pumped directly in a widget test — `MapScreen` itself owns a real
+/// `MapLibreMapController` and cannot be (see this file's own doc comment
+/// on why).
+class GameLayerToggleButton extends StatelessWidget {
+  const GameLayerToggleButton({
+    super.key,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  /// Whether the layer is currently shown — drives both the icon (filled vs.
+  /// outlined diamond) and the tooltip (which names the action the NEXT tap
+  /// performs, matching [RecenterButton]'s own always-imperative phrasing).
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => FloatingActionButton(
+    heroTag: 'gameLayerToggle',
+    onPressed: onPressed,
+    tooltip: enabled
+        ? 'Désactiver la couche Aventure'
+        : 'Activer la couche Aventure',
+    child: WaymarkDiamond(
+      size: 16,
+      filled: enabled,
+      color: Theme.of(context).colorScheme.onPrimaryContainer,
+    ),
+  );
+}
+
 /// Route result card (T9): the primary action is the yellow "Démarrer
 /// l'itinéraire" pill (right), "✕" (clear) is secondary.
 class _ResultBanner extends StatelessWidget {
@@ -2387,7 +2703,7 @@ class _ResultBanner extends StatelessWidget {
 /// OpenFreeMap's and OpenStreetMap's usage terms. Sits in its own row above
 /// the bottom banner (see the `Column` in [MapScreenState.build]) rather
 /// than literally overlapping it, so it never collides with the full-width
-/// "Démarrer" pill. The fuller "OpenStreetMap © contributors (ODbL) ·
+/// "Enregistrer" pill. The fuller "OpenStreetMap © contributors (ODbL) ·
 /// OpenFreeMap · Valhalla" explanation lives in Settings → "À propos des
 /// données" (see `AboutDataTile`), reachable independently of the map.
 /// Public (not `_`-prefixed) so it can be pumped in isolation — see
@@ -2404,7 +2720,35 @@ class MapAttribution extends StatelessWidget {
   );
 }
 
-/// Idle, no route planned: the plain one-tap "Démarrer" pill.
+/// Task 2i: the discreet "Accueil" affordance — see
+/// [MapScreen.onExitToWizard]'s doc comment. A plain text button, not a
+/// pill/FAB: this is a way *out*, not an action to draw the eye the way the
+/// yellow "Démarrer" pill does (balisage identity — yellow spent sparingly,
+/// only on "go" actions).
+class _WizardExitButton extends StatelessWidget {
+  const _WizardExitButton({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+    onPressed: onPressed,
+    icon: const Icon(Icons.arrow_back, size: 16),
+    label: const Text('Accueil'),
+    style: TextButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      visualDensity: VisualDensity.compact,
+    ),
+  );
+}
+
+/// Idle, no route planned: the plain one-tap "Enregistrer" pill — free
+/// tracking (task 2j, owner request): starts the foreground service in free
+/// mode (exploration/game events active, no route) via
+/// [MapScreenState._startFreeTrip], exactly like a guided trip's own start
+/// otherwise (same permission flow, notification, low-power mode), except
+/// manual stop only — [TripController]'s Task 2g auto-finish only ever fires
+/// for a route-bound trip (`_isAutoFinishSignal` requires `routeBound`),
+/// which a free trip never is.
 class _StartPill extends StatelessWidget {
   const _StartPill({required this.onStart});
   final VoidCallback onStart;
@@ -2415,7 +2759,12 @@ class _StartPill extends StatelessWidget {
     child: ElevatedButton.icon(
       onPressed: onStart,
       icon: const WaymarkDiamond(size: 14, color: AppColors.ink),
-      label: const Text('Démarrer'),
+      // Task 2j (owner request): a free session — no route, no target —
+      // is exactly the "je me balade et je révèle la carte" free-tracking
+      // mode the brief asks for; renamed from "Démarrer" to the brief's
+      // own wording so the recording action reads distinctly from a
+      // guided trip's "Démarrer l'itinéraire" (`_ResultBanner`, below).
+      label: const Text('Enregistrer'),
     ),
   );
 }

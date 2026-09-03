@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -11,13 +12,21 @@ import 'package:randomwalk/exploration/exploration_recorder.dart';
 import 'package:randomwalk/game/events.dart';
 import 'package:randomwalk/game/game_state_provider.dart';
 import 'package:randomwalk/game/visit_consumer.dart';
+import 'package:randomwalk/history/trip_history_recorder.dart';
+import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/leaderboard/leaderboard_screen.dart';
 import 'package:randomwalk/leaderboard/repository.dart';
-import 'package:randomwalk/map/map_screen.dart';
+import 'package:randomwalk/map/boot_preload.dart';
+import 'package:randomwalk/map/carte_tab.dart';
+import 'package:randomwalk/onboarding/onboarding_screen.dart';
+import 'package:randomwalk/onboarding/onboarding_store.dart';
 import 'package:randomwalk/session/recorder.dart';
 import 'package:randomwalk/session/session_screen.dart';
 import 'package:randomwalk/settings/identity.dart';
 import 'package:randomwalk/settings/settings_screen.dart';
+import 'package:randomwalk/settings/theme_mode_provider.dart';
+import 'package:randomwalk/settings/theme_mode_store.dart';
+import 'package:randomwalk/sync/auto_sync.dart';
 import 'package:randomwalk/theme/theme.dart';
 import 'package:randomwalk/theme/tokens.dart';
 import 'package:randomwalk/tracking/permission_rationale.dart';
@@ -25,6 +34,7 @@ import 'package:randomwalk/tracking/permissions.dart';
 import 'package:randomwalk/tracking/tracking_service.dart';
 import 'package:randomwalk/tracking/trip_snapshot.dart' show PendingVisit;
 import 'package:randomwalk/trip/active_route_store.dart';
+import 'package:randomwalk/trip/trip_celebration_screen.dart';
 import 'package:randomwalk/trip/trip_controller.dart';
 import 'package:randomwalk/trip/trip_messages.dart';
 import 'package:randomwalk/valhalla/engine.dart';
@@ -45,11 +55,23 @@ Future<void> main() async {
   // or one the OS killed — is on screen immediately, rather than flashing
   // an idle map first.
   await trip.restore();
+  // Task 2b item 2: read once, before the first frame — same "resolve
+  // before runApp" shape as `trip.restore()` above — so the very first
+  // frame already shows onboarding or the map, never a flash of one then
+  // the other.
+  final onboarded = await isOnboarded();
+  // Task 2l item 2: same "resolve before runApp" shape again — the app's
+  // very first frame renders in the walker's chosen Système/Jour/Nuit mode
+  // rather than flashing "Système" before this loads.
+  final themeMode = await ThemeModeStore().load();
 
   runApp(
     ProviderScope(
-      overrides: [tripControllerProvider.overrideWith((ref) => trip)],
-      child: const RandomWalkApp(),
+      overrides: [
+        tripControllerProvider.overrideWith((ref) => trip),
+        themeModeProvider.overrideWith((ref) => themeMode),
+      ],
+      child: RandomWalkApp(onboarded: onboarded),
     ),
   );
 }
@@ -87,7 +109,8 @@ Future<TripController> _buildTripController() async {
   // app failing to start; every other exploration/visit failure mode is
   // handled inside `ExplorationRecorder`/`GameVisitConsumer` themselves.
   Future<void> Function(FinishedTrip trip)? processTripExploration;
-  Future<void> Function(List<PendingVisit> visits)? processGameVisits;
+  Future<List<GameEvent>> Function(List<PendingVisit> visits)?
+  processGameVisits;
   try {
     final journal = GameJournal(Directory('${dir.path}/game'));
     final edgesStore = await EdgesStore.open('${dir.path}/covered_edges.db');
@@ -103,7 +126,23 @@ Future<TripController> _buildTripController() async {
       // Riverpod read (no ProviderScope exists yet at this call site).
       onJournalChanged: GameJournalSignal.instance.bump,
     );
-    processTripExploration = recorder.process;
+    // Task 2f (local trip history): decorates the exploration hook rather
+    // than adding a second `TripController` dependency — see
+    // `TripHistoryRecorder`'s own doc comment. Opens its own store handle
+    // at the same path `history/trip_history_store.dart`'s
+    // `tripHistoryStoreProvider` independently resolves for the UI (sqflite
+    // shares one underlying connection per path within a process); a
+    // failure opening it here disables trip history for this run exactly
+    // like `EdgesStore.open` failing disables the rest of the game layer —
+    // never the app failing to start.
+    final tripHistoryStore = await TripHistoryStore.open(
+      '${dir.path}/trip_history.db',
+    );
+    processTripExploration = TripHistoryRecorder(
+      store: tripHistoryStore,
+      trackFile: File('${dir.path}/active_track.jsonl'),
+      inner: recorder.process,
+    ).process;
     // Shares `journal` with the recorder above — one `game_events.jsonl`,
     // appended to by whichever of the two fires for a given trip (landmark
     // visits mid-trip via this consumer, trip-level km/cells/loop XP and
@@ -170,17 +209,34 @@ Future<RoutingEngine?> _buildExplorationEngine(
   return engine;
 }
 
-class RandomWalkApp extends StatelessWidget {
-  const RandomWalkApp({super.key});
+class RandomWalkApp extends ConsumerWidget {
+  const RandomWalkApp({super.key, this.onboarded = true});
+
+  /// Whether the first-launch onboarding screen (task 2b item 2) has already
+  /// run. See [OnboardingGate].
+  final bool onboarded;
+
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'RandomWalk',
-    navigatorKey: appNavigatorKey,
-    theme: AppTheme.light,
-    darkTheme: AppTheme.dark,
-    themeMode: ThemeMode.system,
-    home: const HomeShell(),
-  );
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Task 2l item 2: `ThemeModeTile` (settings/theme_mode_tile.dart)
+    // writes to this provider live — watching it here (rather than reading
+    // `ThemeMode.system` as a constant) is the entire "applies immediately,
+    // no restart" mechanism. Every theme-reactive call site downstream
+    // (`map_screen.dart`'s style-URL choice, `GameLayer`/`FogLayer`'s
+    // brightness-keyed paint) already reads `Theme.of(context).brightness`,
+    // which Flutter resolves FROM `themeMode` below — so this one change is
+    // enough to make the manual override reach the map too, not just
+    // Material widgets.
+    final themeMode = ref.watch(themeModeProvider);
+    return MaterialApp(
+      title: 'RandomWalk',
+      navigatorKey: appNavigatorKey,
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: themeMode,
+      home: OnboardingGate(onboarded: onboarded, child: const HomeShell()),
+    );
+  }
 }
 
 class HomeShell extends ConsumerStatefulWidget {
@@ -188,7 +244,7 @@ class HomeShell extends ConsumerStatefulWidget {
   final List<Widget>? screensOverride;
 
   static final List<Widget> defaultScreens = <Widget>[
-    const MapScreen(),
+    const CarteTabRoot(),
     const SessionScreen(),
     const LeaderboardScreen(),
     const AdventureScreen(),
@@ -219,6 +275,78 @@ class _HomeShellState extends ConsumerState<HomeShell>
     final trip = ref.read(tripControllerProvider);
     trip.onSessionEnded = _onSessionEnded;
     trip.onSessionError = _onSessionError;
+    // Task 2g: fired synchronously from inside `_finalise` for a guided
+    // trip that had just latched arrival — see `onTripCelebration`'s own
+    // doc comment.
+    trip.onTripCelebration = _onTripCelebration;
+    // M5 launch auto-sync: fire-and-forget, best-effort, silent (per
+    // task-4-brief.md — errors are only ever surfaced on the account
+    // screen). Not awaited: initState can't be async, and this must never
+    // delay the first frame. A no-op with no backend call at all unless a
+    // configured backend already has a restored session — see
+    // restoreAccountAndAutoSync's own doc comment, in particular for how
+    // it keeps an unconfigured build byte-identical to M4.
+    unawaited(restoreAccountAndAutoSync(ref));
+    // Task 2g: a trip that auto-finished (or was manually stopped after
+    // arriving) while nothing was watching live — the app backgrounded, or
+    // its whole process killed and later relaunched — surfaces its
+    // congratulations screen here instead, exactly once. Fire-and-forget:
+    // `initState` cannot be async, and this must never delay the first
+    // frame the way `trip.restore()` (already resolved by the time
+    // `runApp` ran, see `main()`) deliberately is allowed to.
+    unawaited(_checkPendingCelebration(trip));
+  }
+
+  /// Task 2g: pushed the instant a guided trip finalises having latched
+  /// arrival, straight from `TripController._finalise` (live path — the app
+  /// is on screen right now). Always clears the pending-celebration marker
+  /// first: it was set unconditionally by `_finalise` so the *deferred*
+  /// path (see [_checkPendingCelebration]) works even when nothing is
+  /// watching, and without clearing it here too, the very trip whose
+  /// celebration was just shown live would be offered a second time at the
+  /// next cold start.
+  void _onTripCelebration(FinishedTripCelebration celebration) {
+    unawaited(_showCelebration(celebration.startedAt, celebration));
+  }
+
+  /// Task 2g: checked once at startup (after `restore()`, which may itself
+  /// have just finalised a trip that auto-finished while this process was
+  /// away — see `TripController.restore`'s own doc comment) for a
+  /// congratulations screen nothing live ever got the chance to show.
+  ///
+  /// Fix round 1 (Important 5): `takePendingCelebration()` now returns the
+  /// stats too (persisted alongside the marker — see
+  /// `PendingCelebrationStats`'s own doc comment), not just the trip's
+  /// identity, so this deferred path shows distance/durée/vitesse
+  /// immediately, exactly like the live path — only the combined XP figure
+  /// still needs `TripCelebrationScreen`'s own poll.
+  Future<void> _checkPendingCelebration(TripController trip) async {
+    final celebration = await trip.takePendingCelebration();
+    if (celebration == null) return;
+    await _showCelebration(celebration.startedAt, celebration);
+  }
+
+  Future<void> _showCelebration(
+    DateTime startedAt,
+    FinishedTripCelebration? celebration,
+  ) async {
+    await ref.read(tripControllerProvider).clearPendingCelebration();
+    if (!mounted) return;
+    // M5 final review, Important I6: reset the tab UNDERNEATH to Carte
+    // before showing the celebration, so its single « Continuer » button
+    // (a bare `Navigator.pop()`) always surfaces the map at rest — per the
+    // 2g brief's "bouton unique « Continuer » → carte (état repos)" — no
+    // matter which tab was active when the trip finished (e.g. a walker who
+    // switched to Session to watch the distance read-out mid-trip).
+    setState(() => _tab = 0);
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TripCelebrationScreen(
+          startedAt: startedAt,
+          celebration: celebration,
+        ),
+      ),
+    );
   }
 
   @override
@@ -243,6 +371,13 @@ class _HomeShellState extends ConsumerState<HomeShell>
   /// truth; it is retried on the next trip end or the next time the
   /// leaderboard tab opens.
   Future<void> _onSessionEnded(double totalKm) async {
+    // M5 post-trip auto-sync: fire-and-forget, best-effort, never blocking
+    // or delaying the trip flow — `_finalise` (trip/trip_controller.dart)
+    // awaits this whole method, so this call is deliberately NOT awaited.
+    // A no-op unless already signedIn, same as every other auto-sync
+    // trigger — see runAutoSync's own doc comment.
+    unawaited(runAutoSync(ref));
+
     final messenger = ScaffoldMessenger.of(context);
     try {
       final identity = await ref.read(identityStoreProvider).get();
@@ -308,6 +443,7 @@ class _HomeShellState extends ConsumerState<HomeShell>
               trip.trackingMode == TrackingMode.foregroundOnly)
             const ForegroundOnlyBanner(),
           if (trip.isRecording && trip.gpsSilent) const GpsSilentBanner(),
+          const BootPreloadBanner(),
           // IndexedStack, not `screens[_tab]`: every screen stays mounted
           // across tab switches, so the map keeps its native surface (and
           // everything drawn on it) instead of being rebuilt from scratch
@@ -439,6 +575,49 @@ class GpsSilentBanner extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Discreet, non-blocking indicator for the boot-time coverage preload
+/// (task 2b brief item 3b) — visible only while [bootPreloadProgressProvider]
+/// is non-null, i.e. only during the (usually very short, since tile
+/// downloads are near-free once a version is already on disk) window that
+/// preload is actually fetching something. Never a modal, never in the way
+/// of anything else on screen.
+class BootPreloadBanner extends ConsumerWidget {
+  const BootPreloadBanner({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final progress = ref.watch(bootPreloadProgressProvider);
+    if (progress == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final label = progress.total > 0
+        ? 'Téléchargement des cartes… ${progress.done}/${progress.total}'
+        : 'Téléchargement des cartes…';
+    return Material(
+      color: theme.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: theme.colorScheme.onSecondaryContainer,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
+          ],
         ),
       ),
     );

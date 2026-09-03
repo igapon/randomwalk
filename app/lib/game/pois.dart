@@ -5,10 +5,29 @@ import '../nav/polyline_math.dart';
 import 'grid.dart';
 
 /// Reward category of a game landmark — see the M4 event contract
-/// (task-1-report.md): `reveal` (churches, viewpoints, towers, historic
-/// sites — no economy effect, just fog reveal), `coins` (banks/ATMs),
-/// `energy` (restaurants/cafes/fast-food).
-enum PoiKind { reveal, coins, energy }
+/// (task-1-report.md) for `reveal`/`coins`/`energy`, and Task 2k's brief for
+/// `culture`:
+///  - `reveal`: churches, viewpoints, towers, historic sites — no economy
+///    effect, just fog reveal (+XP on first visit, as every kind gets).
+///  - `culture`: Task 2k's replacement for the game's whole landmark
+///    dataset — place of worship / monument / museum / artwork / viewpoint /
+///    castle / ruins (see `GamePoi.subkind` and `randomwalk-tiles/tools/
+///    extract_pois.py` for the exact OSM mapping). Same fog-reveal effect as
+///    `reveal`, PLUS a one-time energy refill on a landmark's first-ever
+///    visit ("reprendre son souffle devant un monument" — see
+///    `GameVisitConsumer`'s doc comment for why it's first-visit-only rather
+///    than a repeatable cooldown like the old `energy` kind).
+///  - `coins` (banks/ATMs) and `energy` (restaurants/cafes/fast-food):
+///    **retired by Task 2k** (owner veto: "les restaurants et banques sont
+///    pas une bonne idée"). Kept as parseable enum values — and the
+///    `landmark_visited`/`coins_earned`/`energy_changed` reducer paths that
+///    already understood them stay untouched forever, so an event already
+///    written to a journal keeps replaying identically (locked M4 schema) —
+///    but [PoiStore.load] excludes them from the live index (see
+///    [_isLiveKind]), so an old cached `pois.json.gz` still holding bank/
+///    restaurant entries never shows or lets a walker visit one again. A
+///    fresh tile release (Task 2k) no longer emits them at all.
+enum PoiKind { reveal, coins, energy, culture }
 
 PoiKind? _kindFromString(String s) {
   switch (s) {
@@ -18,10 +37,22 @@ PoiKind? _kindFromString(String s) {
       return PoiKind.coins;
     case 'energy':
       return PoiKind.energy;
+    case 'culture':
+      return PoiKind.culture;
     default:
       return null;
   }
 }
+
+/// Task 2k: whether [PoiStore.load] should index a POI of this [kind] at
+/// all — `false` for the two retired kinds (see [PoiKind]'s doc comment),
+/// `true` for `reveal` and `culture`. A retired-kind POI still parses fine
+/// via [GamePoi.tryParse] (it is a well-formed, well-typed value — nothing
+/// about parsing itself changed), it just never makes it into the store's
+/// `near()`-queryable index, which is what actually keeps it off the map and
+/// out of [VisitDetector]'s candidate list.
+bool _isLiveKind(PoiKind kind) =>
+    kind != PoiKind.coins && kind != PoiKind.energy;
 
 /// One game landmark, as delivered by the tiles repo's `pois.json.gz`
 /// release asset (see `randomwalk-tiles/tools/extract_pois.py`).
@@ -95,7 +126,9 @@ class GamePoi {
 /// landmark layer simply has nothing to show, exactly as if POIs were never
 /// downloaded. Individual malformed *entries* inside an otherwise-valid list
 /// are silently skipped (see [GamePoi.tryParse]) rather than voiding the
-/// whole store.
+/// whole store. Task 2k: entries of a retired kind (`coins`/`energy` — see
+/// [PoiKind]'s doc comment) parse fine but are then excluded from the index
+/// too (see [_isLiveKind]), for the same "never shown" reason.
 class PoiStore {
   final Map<String, List<GamePoi>> _byCell;
   final int count;
@@ -127,7 +160,8 @@ class PoiStore {
       if (decoded is! List) return empty;
       final pois = <GamePoi>[
         for (final item in decoded)
-          if (GamePoi.tryParse(item) case final poi?) poi,
+          if (GamePoi.tryParse(item) case final poi?)
+            if (_isLiveKind(poi.kind)) poi,
       ];
       return PoiStore._fromPois(pois);
     } catch (_) {

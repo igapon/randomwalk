@@ -82,6 +82,58 @@ void main() {
     });
   });
 
+  group('gridVertexLatLon', () {
+    test('is a pure function of (x, y) alone — same vertex, same point '
+        'regardless of which cell asked', () {
+      // Vertex (5, 5) is a corner shared by up to 4 cells: (4,4), (5,4),
+      // (4,5), (5,5). Every one of them must agree on where it is.
+      final p = gridVertexLatLon(5, 5);
+      expect(gridVertexLatLon(5, 5), p);
+    });
+
+    test('latitude is a pure function of y (independent of x)', () {
+      expect(gridVertexLatLon(0, 300).$1, gridVertexLatLon(999, 300).$1);
+    });
+
+    test('the origin vertex is (0, 0)', () {
+      expect(gridVertexLatLon(0, 0), (0.0, 0.0));
+    });
+
+    test('moving one cell size north increases latitude by ~cellM meters', () {
+      final v0 = gridVertexLatLon(0, 300);
+      final v1 = gridVertexLatLon(0, 301);
+      final deltaLatM = (v1.$1 - v0.$1) * 110540.0;
+      expect(deltaLatM, closeTo(cellSizeM, 0.01));
+    });
+
+    test(
+      'fixes the cross-row seam cellBoundsLatLon has by construction: the '
+      'corner at grid (10, 300) is the NE corner of cell (9,299) and the SW '
+      'corner of cell (10,300) — those two cells\' own central-latitude '
+      'correction factors quantize its LONGITUDE slightly differently '
+      '(proving the seam is real, even though latitude always agrees), yet '
+      'gridVertexLatLon gives every caller one single, unambiguous value '
+      'for that shared corner instead of either of the two disagreeing ones',
+      () {
+        final neOfBelow = cellBoundsLatLon(const CellId(9, 299)).ne;
+        final swOfAbove = cellBoundsLatLon(const CellId(10, 300)).sw;
+
+        // Latitude never disagrees (it only depends on y, not on which
+        // cell's central-latitude correction was used)...
+        expect(neOfBelow.$1, swOfAbove.$1);
+        // ...but longitude does: each cell quantized it with a slightly
+        // different `cos(latRef)` correction factor. This tiny gap is the
+        // pre-existing seam `gridVertexLatLon`'s doc comment describes.
+        expect(neOfBelow.$2, isNot(swOfAbove.$2));
+
+        // gridVertexLatLon replaces both with one canonical value, a pure
+        // function of the vertex `(10, 300)` alone.
+        final vertex = gridVertexLatLon(10, 300);
+        expect(vertex.$1, neOfBelow.$1);
+      },
+    );
+  });
+
   group('quartierOf', () {
     test('aligns to multiples of 8, size 8', () {
       final (topLeft, size) = quartierOf(const CellId(10, 20));

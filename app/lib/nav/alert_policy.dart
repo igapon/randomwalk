@@ -2,12 +2,32 @@ import '../valhalla/models.dart';
 import 'guidance_text.dart';
 import 'route_follower.dart';
 
-/// Distance (metres) to the next maneuver at which a walker gets an alert.
-const kWalkAlertThresholdM = 80.0;
+/// Distance (metres) to the next maneuver at which a walker gets the first
+/// alert.
+///
+/// Owner device-QA fix (Task 2e item 3): "les instructions de Navigation a
+/// pied sont trop précoces, il faut les dire a 10-20m" — the old 80 m value
+/// announced a turn nearly a minute of walking before it mattered. Pinned at
+/// the top of that 10-20 m range; [kWalkConfirmThresholdM] covers the close
+/// confirmation the brief also asks for.
+const kWalkAlertThresholdM = 20.0;
+
+/// Distance (metres) to the next maneuver at which a walker gets a SECOND,
+/// confirming alert for the same maneuver — only once [kWalkAlertThresholdM]
+/// has already fired for it and the maneuver has not yet been passed (i.e.
+/// [AlertPolicy] has not yet moved on to the next `maneuverIndex`).
+///
+/// Owner device-QA fix (Task 2e item 3, pinned): "alerte à 20 m, répétition/
+/// confirmation à 8 m si pas encore passée". Bike has no confirmation stage
+/// — see [kBikeAlertThresholdM]'s doc comment.
+const kWalkConfirmThresholdM = 8.0;
 
 /// Distance (metres) to the next maneuver at which a cyclist gets an alert —
 /// larger than the walking one because a bike closes the same distance in a
-/// fraction of the time.
+/// fraction of the time. Unchanged by the Task 2e walking-only fix (owner
+/// brief: "à vélo garder les distances actuelles") — a bike has no second,
+/// confirming alert either: at cycling speed there is no meaningful window
+/// left between a 200 m alert and the maneuver to confirm anything in.
 const kBikeAlertThresholdM = 200.0;
 
 /// Decides when a turn-by-turn tick is worth interrupting the walker for —
@@ -35,6 +55,16 @@ const kBikeAlertThresholdM = 200.0;
 ///     a bike. Re-armed the moment the index advances to the next maneuver;
 ///     a fix that wobbles back above threshold for the *same* index never
 ///     re-triggers it.
+///  4. **Confirming a maneuver (walk only).** Once per `maneuverIndex`,
+///     again, the first tick its `distanceToManeuverM` is at or under
+///     [kWalkConfirmThresholdM] — but only once step 3 has already fired for
+///     this same index (never on its own: a fix that jumps straight under
+///     the confirm distance without ever having been seen between the two
+///     thresholds is the *first* alert, not a confirmation of one already
+///     given — and, since that one alert already covers the ground normally
+///     split between the two, it pre-consumes the confirmation too, so a
+///     slightly closer fix moments later does not immediately buzz again).
+///     Bike profiles never reach this step at all.
 ///
 /// Purely a decision function over the stream of [NavUpdate]s a single trip
 /// produces — no timers, no I/O — so the foreground-service handler that
@@ -44,14 +74,21 @@ class AlertPolicy {
   final RoutingProfile profile;
   final double _thresholdM;
 
+  /// Null for a bike profile — see [kBikeAlertThresholdM]'s doc comment.
+  final double? _confirmThresholdM;
+
   bool _wasArrived = false;
   bool _wasOffRoute = false;
   int? _alertedManeuverIndex;
+  int? _confirmedManeuverIndex;
 
   AlertPolicy({required this.profile})
     : _thresholdM = profile == RoutingProfile.bike
           ? kBikeAlertThresholdM
-          : kWalkAlertThresholdM;
+          : kWalkAlertThresholdM,
+      _confirmThresholdM = profile == RoutingProfile.bike
+          ? null
+          : kWalkConfirmThresholdM;
 
   /// Whether [u] is worth alerting the walker for. Stateful — call once per
   /// fix, in order; calling it twice for the same fix double-latches nothing
@@ -84,9 +121,32 @@ class AlertPolicy {
     }
     _wasOffRoute = false;
 
+    final confirmThresholdM = _confirmThresholdM;
+
     if (u.maneuverIndex != _alertedManeuverIndex &&
         u.distanceToManeuverM <= _thresholdM) {
       _alertedManeuverIndex = u.maneuverIndex;
+      // A sparse fix can jump straight from beyond the alert distance to at
+      // or under the confirm one in a single step — this one alert already
+      // covers both, so the confirmation is pre-consumed rather than firing
+      // again a few metres later for what is really the same approach.
+      if (confirmThresholdM != null &&
+          u.distanceToManeuverM <= confirmThresholdM) {
+        _confirmedManeuverIndex = u.maneuverIndex;
+      }
+      return true;
+    }
+
+    // Confirmation stage (walk only — null for bike): only reachable once
+    // the primary alert above has already fired for THIS maneuver index —
+    // `u.maneuverIndex == _alertedManeuverIndex` — never as a substitute for
+    // it (a fix landing under the confirm distance before ever crossing the
+    // primary one is caught by the branch above instead, on the same tick).
+    if (confirmThresholdM != null &&
+        u.maneuverIndex == _alertedManeuverIndex &&
+        u.maneuverIndex != _confirmedManeuverIndex &&
+        u.distanceToManeuverM <= confirmThresholdM) {
+      _confirmedManeuverIndex = u.maneuverIndex;
       return true;
     }
     return false;
@@ -100,7 +160,8 @@ class AlertPolicy {
   /// the *previous* route — index 0 is the common case, since a fresh
   /// follower's first published maneuver is almost always 0 — would be
   /// silently treated as already handled, and the new route's early
-  /// maneuvers would never alert.
+  /// maneuvers would never alert. Clears the confirmation latch
+  /// ([_confirmedManeuverIndex]) for the identical reason.
   ///
   /// Off-route/arrived state is deliberately left alone: both are driven
   /// entirely by the update passed to [shouldAlert] and already
@@ -108,6 +169,7 @@ class AlertPolicy {
   /// `_wasOffRoute = false` / `_wasArrived = false` fallthrough above).
   void reset() {
     _alertedManeuverIndex = null;
+    _confirmedManeuverIndex = null;
   }
 }
 

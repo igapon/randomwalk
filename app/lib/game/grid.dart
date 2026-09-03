@@ -38,7 +38,7 @@ double _cosDeg(double degrees) => math.cos(degrees * math.pi / 180);
 ///   single per-region reference latitude to be threaded through every
 ///   call site — each row picks its own correction factor from its own `y`,
 ///   which is simple to reproduce anywhere `y` is known (see
-///   `cellBoundsLatLon`-style helpers in `reveal.dart`).
+///   `cellBoundsLatLon`-style helpers, formerly in the deleted `reveal.dart`).
 ///
 /// Both `floor` operations are true mathematical floor (rounds toward
 /// negative infinity), not truncation toward zero — this matters south of
@@ -91,17 +91,6 @@ CellId cellIdFor(double lat, double lon, {double cellM = cellSizeM}) {
   return CellId(x, y);
 }
 
-/// The `x` quantization of longitude [lon] as if it were sampled somewhere
-/// within latitude band [y] — i.e. `cellIdFor(someLatInBand(y), lon).x`
-/// without needing an actual latitude value. Used by `reveal.dart` to
-/// compute a fog viewport row's horizontal cell extent directly from the
-/// viewport's west/east longitudes, one row at a time (the lon-per-cell
-/// scale depends on the row, per [CellId]'s doc comment).
-int cellXForRow(double lon, int y, {double cellM = cellSizeM}) {
-  final latRef = _centralLatForBand(y, cellM);
-  return (lon * _metersPerDegLon * _cosDeg(latRef) / cellM).floor();
-}
-
 /// South-west and north-east corners (lat, lon) of cell [c]'s footprint, for
 /// cell size [cellM]. Both corners share the same longitude scale factor
 /// (derived from `c.y`'s central latitude), matching how [cellIdFor]
@@ -117,6 +106,33 @@ int cellXForRow(double lon, int y, {double cellM = cellSizeM}) {
   final lonW = c.x * cellM / lonScale;
   final lonE = (c.x + 1) * cellM / lonScale;
   return (sw: (latS, lonW), ne: (latN, lonE));
+}
+
+/// Lat/lon of grid-CORNER vertex ([x], [y]) — the shared point where up to
+/// four cells' footprints meet — as a pure function of `(x, y)` alone.
+///
+/// This is deliberately NOT [cellBoundsLatLon]: that function quantizes a
+/// cell's footprint using the correction factor for THAT CELL's own central
+/// latitude (`y + 0.5`), so two vertically-adjacent cells (rows `y` and
+/// `y + 1`) each compute a slightly different longitude for the corner they
+/// nominally share (the `cos(latRef)` factor differs by a hair between the
+/// two rows' central latitudes). That is harmless for `cellBoundsLatLon`'s
+/// original use (an isolated per-cell rectangle), but is exactly the kind
+/// of sub-pixel disagreement that turns into a visible seam once cell
+/// footprints get merged into one traced polygon (`fog_geometry.dart`).
+///
+/// Here, latitude is `y * cellM / metersPerDegLat` and longitude is
+/// `x * cellM / lonScale`, where `lonScale` is evaluated at THIS vertex's
+/// own latitude — a pure function of `(x, y)`, so every cell that shares
+/// this corner computes the bit-for-bit identical point. That equality is
+/// what lets `fog_geometry.dart`'s grid-boundary tracer merge adjacent
+/// revealed cells into a single seamless ring with no floating-point gap
+/// at shared corners.
+(double, double) gridVertexLatLon(int x, int y, {double cellM = cellSizeM}) {
+  final lat = y * cellM / _metersPerDegLat;
+  final lonScale = _metersPerDegLon * _cosDeg(lat);
+  final lon = x * cellM / lonScale;
+  return (lat, lon);
 }
 
 /// All cells intersecting a disc of radius [radiusM] meters centered at

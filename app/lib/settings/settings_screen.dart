@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../history/trip_history_screen.dart';
 import '../nav/tts.dart';
 import '../session/recorder.dart';
 import '../tracking/device_channel.dart';
 import '../tracking/permissions.dart';
 import '../trip/trip_controller.dart';
+import 'account_tile.dart';
 import 'alert_settings.dart';
 import 'battery_optimization.dart';
+import 'data_export.dart';
 import 'identity.dart';
+import 'local_purge.dart';
+import 'theme_mode_tile.dart';
 
 /// Player settings: editable pseudo, plus read-only identity and local
 /// stats. Reached via the settings icon in the app's top bar.
@@ -153,7 +158,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               final ttsEnabled = snapshot.data!.ttsEnabled;
               final hapticsEnabled = snapshot.data!.hapticsEnabled;
               return SafeArea(
-                child: Padding(
+                child: SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
                   child: Form(
                     key: _formKey,
@@ -218,6 +223,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           value: hapticsEnabled,
                           onChanged: _setHapticsEnabled,
                         ),
+                        const ThemeModeTile(),
                         FutureBuilder<String?>(
                           future: _manufacturer,
                           builder: (context, manufacturerSnapshot) {
@@ -230,7 +236,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           },
                         ),
                         const Divider(height: 32),
+                        const TripHistorySettingsTile(),
                         const AboutDataTile(),
+                        const ExportDataTile(),
+                        const AccountTile(),
+                        const PurgeRetryTile(),
                       ],
                     ),
                   ),

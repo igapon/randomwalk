@@ -14,17 +14,20 @@ class AppColors {
   static const yellow = Color(0xFFF5B800);
   static const hydro = Color(0xFF3D7A8C);
 
-  /// Hex form of [ink] — the Aventure tab's fog-of-war fill color (60%
-  /// opacity, set via the layer's own `fillOpacity` rather than baked into
-  /// this string). Same value as [routeLineCasingHex] below; named
-  /// separately since the two call sites (route casing vs. fog) have
-  /// nothing to do with each other.
-  static const inkHex = '#1C2B25';
-
   // Dark palette.
   static const darkBg = Color(0xFF12201A);
   static const darkSurface = Color(0xFF1C2B25);
   static const darkYellow = Color(0xFFE6B800);
+
+  /// Fog-of-war veil colors (Task 2h — "papier non exploré", not a grey
+  /// checkerboard): the light-theme veil is [paper] itself, the dark-theme
+  /// veil is [darkBg] itself — both hex strings for `map/fog_layer.dart`'s
+  /// `FillLayerProperties`/`LineLayerProperties` (String-typed, not
+  /// `Color`), exactly matching the brief's pinned values (`#F7F8F4` /
+  /// `#12201A`, ≈85% opacity applied via the layer's own `fillOpacity`
+  /// rather than baked into these strings).
+  static const fogPaperHex = '#F7F8F4';
+  static const fogDarkHex = '#12201A';
 
   // Pale tints derived from the accents, used for containers / selection
   // states (me-row highlight, NavigationBar indicator) so the saturated
@@ -68,20 +71,19 @@ class AppColors {
   /// above — the unselected candidates' color, at 40% opacity.
   static const hydroHex = '#3D7A8C';
 
-  /// « Terre » — the M4 Aventure tab's third landmark color, for `energy`
-  /// kind POIs (restaurants/cafés/fast-food) on the fog-of-war map: yellow
-  /// is already spent on `reveal` landmarks and hydro on `coins` ones, so
-  /// energy gets its own earth-toned accent (plan's Global Constraints:
-  /// "terre #B0552F à ajouter aux tokens"). One value for both brightnesses
-  /// — an earthy terracotta reads fine on both paper and dark backgrounds,
-  /// unlike the yellow/hydro pair which each need light/dark variants for
-  /// contrast (this tone doesn't).
+  /// « Terre » — the Aventure tab's `culture` landmark color (churches,
+  /// viewpoints, towers) on the fog-of-war map: yellow is spent on `reveal`
+  /// landmarks, so culture gets its own earth-toned accent (plan's Global
+  /// Constraints: "terre #B0552F à ajouter aux tokens"). One value for both
+  /// brightnesses — an earthy terracotta reads fine on both paper and dark
+  /// backgrounds, unlike the yellow/hydro pair which each need light/dark
+  /// variants for contrast (this tone doesn't).
+  ///
+  /// Task 2k retired the original `coins`/`energy` POI kinds this token
+  /// used to back (bank/restaurant landmarks) in favour of cultural POIs —
+  /// see `map/game_layer.dart`'s `_kPoiColorsByKind`, which now maps this
+  /// token to `PoiKind.culture` alone.
   static const terre = Color(0xFFB0552F);
-
-  /// Hex form of [terre], for the same MapLibre `addImage`-rendered diamond
-  /// glyphs the other two landmark kinds use (see
-  /// `adventure/poi_symbols.dart`).
-  static const terreHex = '#B0552F';
 }
 
 class AppRadii {

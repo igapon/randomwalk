@@ -165,9 +165,19 @@ void main() {
           'subkind': subkind,
         });
 
+    // These tests set up a specific energy level via an energy_changed
+    // BEFORE the landmark_visited under test — fix round 1 (Task 4 review,
+    // C3) moved this drain from the SAME `ts` as the visit to a strictly
+    // EARLIER one: _typePrecedence now always applies energy_changed AFTER
+    // every other same-`ts` event (see reducers.dart), so same-`ts` could
+    // no longer express "drain, then visit" — a distinct, earlier `ts` is
+    // the correct way to express that instead (and matches how a real
+    // drain and a real visit are never literally simultaneous anyway).
+    final drained = t0.subtract(const Duration(minutes: 30));
+
     test('restaurant restores +40 energy', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -50}),
+        ev(GameEventTypes.energyChanged, drained, {'delta': -50}),
         visit(t0, 'restaurant'),
       ]);
       expect(s.energy, 90);
@@ -175,7 +185,7 @@ void main() {
 
     test('cafe restores +25 energy', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -50}),
+        ev(GameEventTypes.energyChanged, drained, {'delta': -50}),
         visit(t0, 'cafe'),
       ]);
       expect(s.energy, 75);
@@ -183,7 +193,7 @@ void main() {
 
     test('fast_food restores +25 energy, same as cafe', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -50}),
+        ev(GameEventTypes.energyChanged, drained, {'delta': -50}),
         visit(t0, 'fast_food'),
       ]);
       expect(s.energy, 75);
@@ -191,7 +201,7 @@ void main() {
 
     test('restoration clamps at 100', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -10}), // 90
+        ev(GameEventTypes.energyChanged, drained, {'delta': -10}), // 90
         visit(t0, 'restaurant'), // +40 would be 130, clamps to 100
       ]);
       expect(s.energy, 100);
@@ -199,7 +209,7 @@ void main() {
 
     test('a second visit inside the 6h cooldown restores nothing', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -80}), // 20
+        ev(GameEventTypes.energyChanged, drained, {'delta': -80}), // 20
         visit(t0, 'cafe'), // 20 + 25 = 45
         visit(
           t0.add(const Duration(hours: 5, minutes: 59, seconds: 59)),
@@ -211,7 +221,7 @@ void main() {
 
     test('exactly 6h later is NOT in cooldown (inclusive boundary)', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -80}), // 20
+        ev(GameEventTypes.energyChanged, drained, {'delta': -80}), // 20
         visit(t0, 'cafe'), // 45
         visit(t0.add(const Duration(hours: 6)), 'cafe'), // 70
       ]);
@@ -222,7 +232,7 @@ void main() {
       'an unknown subkind restores nothing AND does not write the cooldown',
       () {
         final s = reduceAll([
-          ev(GameEventTypes.energyChanged, t0, {'delta': -80}), // 20
+          ev(GameEventTypes.energyChanged, drained, {'delta': -80}), // 20
           visit(t0, 'kiosk'), // unknown subkind: no-op
           // Immediately after, at the SAME instant, a real cafe visit must
           // still be rewarded — proving the unknown-subkind visit above never
@@ -302,7 +312,9 @@ void main() {
         // exact same instant, on the exact same poiId, just happened.
         const sharedId = 'node-42';
         final s = reduceAll([
-          ev(GameEventTypes.energyChanged, t0, {'delta': -50}), // energy 50
+          ev(GameEventTypes.energyChanged, drained, {
+            'delta': -50,
+          }), // energy 50
           ev(GameEventTypes.landmarkVisited, t0, {
             'poiId': sharedId,
             'kind': 'coins',
@@ -376,15 +388,25 @@ void main() {
   });
 
   group('xp_earned: energy multiplier', () {
-    GameEvent xp(double amount, {bool? preMultiplied}) =>
-        ev(GameEventTypes.xpEarned, t0, {
+    GameEvent xp(double amount, {bool? preMultiplied, DateTime? ts}) =>
+        ev(GameEventTypes.xpEarned, ts ?? t0, {
           'amount': amount,
           if (preMultiplied != null) 'preMultiplied': preMultiplied,
         });
 
+    // These tests set up a specific energy level via an energy_changed
+    // BEFORE minting the xp_earned under test — a fix-round-1 (Task 4
+    // review, C3) change from same-`ts` ordering to a strictly-earlier `ts`
+    // for the drain: since _typePrecedence now always applies energy_changed
+    // AFTER every other same-`ts` event (see reducers.dart), same-`ts`
+    // could no longer express "drain, then measure" — a distinct, earlier
+    // `ts` is the correct way to do that instead, and is also what every
+    // real emitter does across two different trips/visits.
+    final drained = t0.subtract(const Duration(seconds: 1));
+
     test('energy >= 60 applies x1.5', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -30}), // 70
+        ev(GameEventTypes.energyChanged, drained, {'delta': -30}), // 70
         xp(10),
       ]);
       expect(s.xp, 15);
@@ -392,7 +414,7 @@ void main() {
 
     test('energy exactly 60 still applies x1.5 (inclusive boundary)', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -40}), // 60
+        ev(GameEventTypes.energyChanged, drained, {'delta': -40}), // 60
         xp(10),
       ]);
       expect(s.xp, 15);
@@ -400,7 +422,7 @@ void main() {
 
     test('energy just below 60 applies x1.0', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -41}), // 59
+        ev(GameEventTypes.energyChanged, drained, {'delta': -41}), // 59
         xp(10),
       ]);
       expect(s.xp, 10);
@@ -408,7 +430,7 @@ void main() {
 
     test('energy exactly 20 still applies x1.0 (inclusive boundary)', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -80}), // 20
+        ev(GameEventTypes.energyChanged, drained, {'delta': -80}), // 20
         xp(10),
       ]);
       expect(s.xp, 10);
@@ -416,7 +438,7 @@ void main() {
 
     test('energy just below 20 applies x0.5', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -81}), // 19
+        ev(GameEventTypes.energyChanged, drained, {'delta': -81}), // 19
         xp(10),
       ]);
       expect(s.xp, 5);
@@ -424,7 +446,7 @@ void main() {
 
     test('result is rounded to the nearest integer (half away from zero)', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {'delta': -40}), // 60 -> x1.5
+        ev(GameEventTypes.energyChanged, drained, {'delta': -40}), // 60 -> x1.5
         xp(5), // 5 * 1.5 = 7.5 -> 8
       ]);
       expect(s.xp, 8);
@@ -432,7 +454,7 @@ void main() {
 
     test('preMultiplied:true bypasses the energy multiplier entirely', () {
       final s = reduceAll([
-        ev(GameEventTypes.energyChanged, t0, {
+        ev(GameEventTypes.energyChanged, drained, {
           'delta': -90,
         }), // 10 -> would be x0.5
         xp(10, preMultiplied: true),
@@ -443,45 +465,42 @@ void main() {
     test(
       'multiplier is evaluated at the energy level at the moment of the event',
       () {
+        final t1 = t0.add(const Duration(seconds: 1));
+        final t2 = t0.add(const Duration(seconds: 2));
         final s = reduceAll([
-          xp(10), // energy 100 -> x1.5 -> +15
-          ev(GameEventTypes.energyChanged, t0, {'delta': -90}), // energy now 10
-          xp(10), // energy 10 -> x0.5 -> +5
+          xp(10, ts: t0), // energy 100 -> x1.5 -> +15
+          ev(GameEventTypes.energyChanged, t1, {'delta': -90}), // energy now 10
+          xp(10, ts: t2), // energy 10 -> x0.5 -> +5
         ]);
         expect(s.xp, 20);
       },
     );
 
     group(
-      'ordering contract: xp_earned must be appended before the trip\'s energy drain',
+      "ordering contract: xp_earned and a same-trip (same-`ts`) energy "
+      'drain always apply xp first, regardless of journal/append order '
+      '(fix round 1, Task 4 review C3 — _typePrecedence in reducers.dart)',
       () {
-        test(
-          'xp before drain: multiplier reflects the energy walked in with (x1.5)',
-          () {
-            final s = reduceAll([
-              xp(10), // energy still 100 going in -> x1.5 -> +15
-              ev(GameEventTypes.energyChanged, t0, {
-                'delta': -90,
-              }), // drain after
-            ]);
-            expect(s.xp, 15);
-            expect(s.energy, 10);
-          },
-        );
+        test('xp appended before drain (the real emitters\' own order): '
+            'multiplier reflects the energy walked in with (x1.5)', () {
+          final s = reduceAll([
+            xp(10), // ts == t0
+            ev(GameEventTypes.energyChanged, t0, {'delta': -90}),
+          ]);
+          expect(s.xp, 15);
+          expect(s.energy, 10);
+        });
 
-        test(
-          'drain before xp (wrong order): multiplier wrongly reflects the drained energy (x0.5)',
-          () {
-            final s = reduceAll([
-              ev(GameEventTypes.energyChanged, t0, {
-                'delta': -90,
-              }), // drain first
-              xp(10), // energy already 10 -> x0.5 -> +5
-            ]);
-            expect(s.xp, 5);
-            expect(s.energy, 10);
-          },
-        );
+        test('drain appended before xp, same ts (a hypothetical bad emitter, '
+            'or a merge landing them in reverse order): the sort still '
+            'applies xp first — same (x1.5) result as the order above', () {
+          final s = reduceAll([
+            ev(GameEventTypes.energyChanged, t0, {'delta': -90}),
+            xp(10), // ts == t0, same exact timestamp as the drain
+          ]);
+          expect(s.xp, 15);
+          expect(s.energy, 10);
+        });
       },
     );
   });
@@ -966,23 +985,307 @@ void main() {
     );
   });
 
-  group('ordering (reduceAll never re-sorts by timestamp)', () {
-    test('reduceAll applies non-streak events strictly in the order given', () {
-      // Feeding the 24h-later (rewarded) visit BEFORE the first-ever visit
-      // (in list order, regardless of ts) makes the first list item behave
-      // as the "first-ever" reward (100) and the second as blocked, because
-      // its ts is only 1h after the (list-)first one's ts.
-      final s = reduceAll([
-        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(hours: 24)), {
+  group('ordering (reduceAll sorts by (ts, id), M5 Task 4)', () {
+    test('two rewarded coin visits fed in reverse-append order still cooldown '
+        'correctly by ts, not by list/append position', () {
+      final early = ev(GameEventTypes.landmarkVisited, t0, {
+        'poiId': 'bank-1',
+        'kind': 'coins',
+      });
+      final late = ev(
+        GameEventTypes.landmarkVisited,
+        t0.add(const Duration(hours: 25)),
+        {'poiId': 'bank-1', 'kind': 'coins'},
+      );
+      // Appended out of chronological order — exactly what an M5
+      // SyncEngine merge can leave in the local journal (see
+      // sync/sync_engine.dart): `late` first, `early` second.
+      final outOfOrder = reduceAll([late, early]);
+      final inOrder = reduceAll([early, late]);
+      expect(outOfOrder, inOrder);
+      expect(outOfOrder.coins, 100 + 50); // both rewarded, 25h apart
+    });
+
+    test(
+      'a visit appended out of order but within 24h of the '
+      'chronologically-earlier one still earns nothing for the later visit',
+      () {
+        final early = ev(GameEventTypes.landmarkVisited, t0, {
           'poiId': 'bank-1',
           'kind': 'coins',
-        }),
-        ev(GameEventTypes.landmarkVisited, t0.add(const Duration(hours: 25)), {
-          'poiId': 'bank-1',
-          'kind': 'coins',
-        }),
-      ]);
-      expect(s.coins, 100); // only the list-first visit was rewarded
+        });
+        final late = ev(
+          GameEventTypes.landmarkVisited,
+          t0.add(const Duration(hours: 1)),
+          {'poiId': 'bank-1', 'kind': 'coins'},
+        );
+        final s = reduceAll([late, early]); // append order reversed
+        expect(s.coins, 100); // only the ts-earlier visit was rewarded
+        expect(s.visitCountByPoi['bank-1::coins'], 1);
+      },
+    );
+
+    test('an energy visit appended out of order still respects the 6h '
+        'cooldown by ts, not by append position', () {
+      // Three distinct ts (no ties, so this isolates the ts-sort itself
+      // from the id tiebreak covered by the test below).
+      final drain = ev(GameEventTypes.energyChanged, t0, {'delta': -50});
+      final early = ev(
+        GameEventTypes.landmarkVisited,
+        t0.add(const Duration(minutes: 1)),
+        {'poiId': 'cafe-1', 'kind': 'energy', 'subkind': 'cafe'},
+      );
+      final late = ev(
+        GameEventTypes.landmarkVisited,
+        t0.add(const Duration(hours: 1)),
+        {'poiId': 'cafe-1', 'kind': 'energy', 'subkind': 'cafe'},
+      );
+      final s = reduceAll([late, drain, early]); // fully scrambled append
+      // ts order is drain, early, late: 100 - 50 (drain) + 25 (cafe,
+      // `early`) = 75; `late` is only 59min after `early`, inside the 6h
+      // cooldown, so it restores nothing.
+      expect(s.energy, 75);
+    });
+
+    test('(ts, id) is a total order: two events sharing the same ts break '
+        'ties by id, deterministically, regardless of append order', () {
+      final a = GameEvent(
+        id: 'aaa',
+        ts: t0,
+        type: GameEventTypes.coinsEarned,
+        payload: const {'amount': 1},
+      );
+      final b = GameEvent(
+        id: 'bbb',
+        ts: t0,
+        type: GameEventTypes.coinsEarned,
+        payload: const {'amount': 2},
+      );
+      // coins_earned is itself order-insensitive (pure addition), so this
+      // only pins that same-ts events never get lost or double-applied
+      // regardless of append order — the id tiebreak matters for reducers
+      // like the coins cooldown above, covered by the tests above.
+      expect(reduceAll([a, b]).coins, 3);
+      expect(reduceAll([b, a]).coins, 3);
+    });
+  });
+
+  group('type-precedence determinism (fix round 1, Task 4 review C3)', () {
+    test('a realistic trip (2 xp_earned + 1 energy_changed, all same ts) '
+        'converges on the identical GameState across every permutation — '
+        'ids are chosen so the OLD (ts, id)-only tiebreak would have put the '
+        'drain first every time (it sorts lowest), yet the multiplier is '
+        'still x1.5, proving the type-precedence tier — not id luck — is '
+        'what decides it now', () {
+      final tripTs = t0;
+      final xpKm = GameEvent(
+        id: 'a-xp-km', // would have sorted 2nd under old (ts, id) alone
+        ts: tripTs,
+        type: GameEventTypes.xpEarned,
+        payload: const {'amount': 30.0, 'preMultiplied': false},
+      );
+      final xpCells = GameEvent(
+        id: 'b-xp-cells', // would have sorted 3rd (last) under old rules
+        ts: tripTs,
+        type: GameEventTypes.xpEarned,
+        payload: const {'amount': 10.0, 'preMultiplied': false},
+      );
+      final drain = GameEvent(
+        id: '0-drain', // would have sorted 1st (first!) under old rules
+        ts: tripTs,
+        type: GameEventTypes.energyChanged,
+        payload: const {'delta': -20.0},
+      );
+      final permutations = [
+        [xpKm, xpCells, drain],
+        [xpKm, drain, xpCells],
+        [xpCells, xpKm, drain],
+        [xpCells, drain, xpKm],
+        [drain, xpKm, xpCells],
+        [drain, xpCells, xpKm],
+      ];
+      GameState? expected;
+      for (final perm in permutations) {
+        final s = reduceAll(perm);
+        expected ??= s;
+        expect(s, expected);
+      }
+      // Energy is 100 going into both xp_earned events (drain always
+      // applies last, regardless of append order): 30*1.5 + 10*1.5 = 60.
+      expect(expected!.xp, 60);
+      expect(expected.energy, 80); // 100 - 20, order-independent
+    });
+
+    test('M4 identity: a realistic ExplorationRecorder-shaped trip batch, '
+        'with non-sequential ids (not construction-order-sortable, unlike '
+        "this file's `ev` helper — exactly what a real Uuid().v4() gives no "
+        'guarantee about), replays to the outcome production emitters have '
+        'always produced: xp_earned before the energy drain', () {
+      final tripTs = DateTime.utc(2026, 3, 15, 8, 0);
+      final events = [
+        GameEvent(
+          id: 'f47ac10b',
+          ts: tripTs,
+          type: GameEventTypes.edgeCoveredBatch,
+          payload: const {'km': 5.0},
+        ),
+        GameEvent(
+          id: '3d813cea',
+          ts: tripTs,
+          type: GameEventTypes.streakUpdated,
+          payload: const {'day': '2026-03-15'},
+        ),
+        GameEvent(
+          id: '2ba1dc7e',
+          ts: tripTs,
+          type: GameEventTypes.xpEarned,
+          payload: const {'amount': 50.0, 'preMultiplied': false},
+        ),
+        GameEvent(
+          id: '11e73f1d',
+          ts: tripTs,
+          type: GameEventTypes.energyChanged,
+          payload: const {'delta': -20.0},
+        ),
+      ];
+      final s = reduceAll(events);
+      expect(s.totalKm, 5.0);
+      expect(s.xp, 75); // 50 * x1.5 (energy still 100 going in)
+      expect(s.energy, 80);
+    });
+  });
+
+  group('GameVisitConsumer-shaped ordering (fix round 2, Task 4 review C3 '
+      'remainder)', () {
+    test('landmark_visited (energy kind) + xp_earned, same ts, in either '
+        "journal order: the visit's refill is always visible to the "
+        "multiplier — matches GameVisitConsumer's own live fold order "
+        '(landmark_visited appended, then xp_earned)', () {
+      final earlierTs = t0.subtract(const Duration(minutes: 1));
+      final drainToFortyFive = ev(GameEventTypes.energyChanged, earlierTs, {
+        'delta': -55,
+      }); // 100 -> 45
+      final visited = ev(GameEventTypes.landmarkVisited, t0, {
+        'poiId': 'cafe-1',
+        'kind': 'energy',
+        'subkind': 'cafe',
+      });
+      final xpEarned = ev(GameEventTypes.xpEarned, t0, {
+        'amount': 25,
+        'preMultiplied': false,
+      });
+
+      final visitedFirst = reduceAll([drainToFortyFive, visited, xpEarned]);
+      final xpFirst = reduceAll([drainToFortyFive, xpEarned, visited]);
+
+      expect(visitedFirst, xpFirst);
+      // Refill always applies first: 45 + 25 (cafe) = 70 -> x1.5 ->
+      // round(25 * 1.5) = 38. If xp_earned had applied first instead
+      // (the fix-round-1 bug this pins), it would have read energy 45
+      // (x1.0 tier) and yielded 25, not 38.
+      expect(visitedFirst.xp, 38);
+      expect(visitedFirst.energy, 70);
+    });
+
+    test('M4/live identity: reduceAll (replay, from a journal-order list) '
+        "produces the SAME state as GameVisitConsumer's own live fold "
+        '(reduceOne applied in emitted order) for a realistic visit batch '
+        'with non-sequential, deliberately-backwards ids', () {
+      final visitTs = DateTime.utc(2026, 3, 20, 14, 30);
+      final earlierTs = visitTs.subtract(const Duration(hours: 2));
+      final priorDrain = GameEvent(
+        id: '5f2c8e91',
+        ts: earlierTs,
+        type: GameEventTypes.energyChanged,
+        payload: const {'delta': -60.0},
+      ); // 100 -> 40
+      // Ids deliberately backwards alphabetically relative to emit
+      // order, so a stray reliance on id-as-tiebreak (rather than the
+      // landmark_visited tier) would sort `xpEarned` BEFORE `visited`.
+      final visited = GameEvent(
+        id: 'zzz-visit',
+        ts: visitTs,
+        type: GameEventTypes.landmarkVisited,
+        payload: const {
+          'poiId': 'chapel-1',
+          'kind': 'energy',
+          'subkind': 'restaurant',
+        },
+      );
+      final xpEarned = GameEvent(
+        id: 'aaa-xp',
+        ts: visitTs,
+        type: GameEventTypes.xpEarned,
+        payload: const {'amount': 25.0, 'preMultiplied': false},
+      );
+
+      // "Live": exactly what GameVisitConsumer._process itself does —
+      // fold events one at a time via reduceOne, in emitted order.
+      var live = const GameState();
+      for (final e in [priorDrain, visited, xpEarned]) {
+        live = reduceOne(live, e);
+      }
+
+      // "Replay": reduceAll from a DIFFERENT (journal/merge) order —
+      // a real journal can hold these in any order once M5 sync has
+      // merged events from elsewhere.
+      final replay = reduceAll([xpEarned, priorDrain, visited]);
+
+      expect(replay, live);
+      // 100 - 60 = 40; +40 (restaurant refill) = 80; xp: 80 -> x1.5 ->
+      // round(25 * 1.5) = 38.
+      expect(replay.xp, 38);
+      expect(replay.energy, 80);
+    });
+
+    test('a same-ts trio (landmark_visited energy-kind + xp_earned + '
+        'energy_changed) converges on the identical GameState across '
+        'every permutation, with the tier order — visited, then xp, then '
+        'drain — holding regardless of list position', () {
+      final earlierTs = t0.subtract(const Duration(hours: 1));
+      final priorDrain = ev(GameEventTypes.energyChanged, earlierTs, {
+        'delta': -55,
+      }); // 100 -> 45, outside the permuted trio
+
+      final visited = GameEvent(
+        id: 'zzz-visit',
+        ts: t0,
+        type: GameEventTypes.landmarkVisited,
+        payload: const {'poiId': 'cafe-1', 'kind': 'energy', 'subkind': 'cafe'},
+      );
+      final xpEarned = GameEvent(
+        id: 'aaa-xp',
+        ts: t0,
+        type: GameEventTypes.xpEarned,
+        payload: const {'amount': 20.0, 'preMultiplied': false},
+      );
+      final drain = GameEvent(
+        id: 'mmm-drain',
+        ts: t0,
+        type: GameEventTypes.energyChanged,
+        payload: const {'delta': -10.0},
+      );
+
+      final trioPermutations = [
+        [visited, xpEarned, drain],
+        [visited, drain, xpEarned],
+        [xpEarned, visited, drain],
+        [xpEarned, drain, visited],
+        [drain, visited, xpEarned],
+        [drain, xpEarned, visited],
+      ];
+
+      GameState? expected;
+      for (final perm in trioPermutations) {
+        final s = reduceAll([priorDrain, ...perm]);
+        expected ??= s;
+        expect(s, expected);
+      }
+
+      // 45 (after priorDrain) -> visited (+25 cafe) -> 70 -> xp
+      // (round(20 * 1.5) = 30) -> drain (-10) -> 60.
+      expect(expected!.xp, 30);
+      expect(expected.energy, 60);
     });
   });
 
