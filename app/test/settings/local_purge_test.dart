@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,8 @@ import 'package:randomwalk/exploration/edges_store.dart';
 import 'package:randomwalk/history/trip_history_store.dart';
 import 'package:randomwalk/settings/local_purge.dart';
 import 'package:randomwalk/sync/sync_state_store.dart';
+import 'package:randomwalk/trip/active_route_store.dart';
+import 'package:randomwalk/trip/finalised_trip_memory.dart';
 import 'package:randomwalk/valhalla/models.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -167,6 +170,115 @@ void main() {
       );
 
       test('is a no-op when no trip snapshot exists', () async {
+        final failures = await LocalDataPurge(dir).purge();
+        expect(failures, isEmpty);
+      });
+    });
+
+    group('active route (M5 final review, Critical C1)', () {
+      test(
+        'deletes active_route.json — the destination + full route polyline '
+        'a deleted account left behind was otherwise re-rendered on the '
+        'very next launch',
+        () async {
+          final route = await writeFile(
+            'active_route.json',
+            jsonEncode({
+              'destination': [46.2, 6.1],
+              'profile': 'walk',
+            }),
+          );
+          await LocalDataPurge(dir).purge();
+          expect(await route.exists(), isFalse);
+        },
+      );
+
+      test('is a no-op when nothing was ever planned', () async {
+        final failures = await LocalDataPurge(dir).purge();
+        expect(failures, isEmpty);
+        expect(await File('${dir.path}/active_route.json').exists(), isFalse);
+      });
+
+      test(
+        'post-purge, FileActiveRouteStore.load finds nothing — the '
+        'unit-level standin for "relaunch shows no route"',
+        () async {
+          final store = FileActiveRouteStore(
+            File('${dir.path}/active_route.json'),
+          );
+          await store.save(
+            const ActiveRoute(
+              destination: (46.2, 6.1),
+              profile: RoutingProfile.walk,
+            ),
+          );
+          expect(await store.load(), isNotNull);
+
+          await LocalDataPurge(dir).purge();
+
+          expect(await store.load(), isNull);
+        },
+      );
+    });
+
+    group('.tmp write-ahead siblings (M5 final review, Important I1)', () {
+      test(
+        'deletes game_state_checkpoint.json.tmp alongside the real file',
+        () async {
+          final tmp = await writeFile('game/game_state_checkpoint.json.tmp');
+          await LocalDataPurge(dir).purge();
+          expect(await tmp.exists(), isFalse);
+        },
+      );
+
+      test(
+        'deletes trip_snapshot.json.tmp AND trip_snapshot.json.ui.tmp — the '
+        'service-isolate and UI-isolate scratch paths respectively',
+        () async {
+          final serviceTmp = await writeFile('trip_snapshot.json.tmp');
+          final uiTmp = await writeFile('trip_snapshot.json.ui.tmp');
+          await LocalDataPurge(dir).purge();
+          expect(await serviceTmp.exists(), isFalse);
+          expect(await uiTmp.exists(), isFalse);
+        },
+      );
+
+      test('deletes active_route.json.tmp alongside the real file', () async {
+        final tmp = await writeFile('active_route.json.tmp');
+        await LocalDataPurge(dir).purge();
+        expect(await tmp.exists(), isFalse);
+      });
+    });
+
+    group('trip-memory prefs (M5 final review, Important I1)', () {
+      test(
+        'clears finalised_trip_ids and pending_trip_celebration',
+        () async {
+          final memory = PrefsFinalisedTripMemory();
+          final startedAt = DateTime.utc(2026, 8, 30, 9);
+          await memory.markFinalised(startedAt);
+          await memory.setPendingCelebration(
+            startedAt,
+            const PendingCelebrationStats(
+              distanceKm: 2.4,
+              duration: Duration(minutes: 30),
+              avgSpeedKmh: 4.8,
+              profile: RoutingProfile.walk,
+              isLoop: false,
+            ),
+          );
+          expect(await memory.wasFinalised(startedAt), isTrue);
+          expect(await memory.pendingCelebration(), isNotNull);
+
+          final failures = await LocalDataPurge(dir).purge();
+
+          expect(failures, isEmpty);
+          expect(await memory.wasFinalised(startedAt), isFalse);
+          expect(await memory.pendingCelebration(), isNull);
+        },
+      );
+
+      test('is a no-op when nothing was ever finalised', () async {
         final failures = await LocalDataPurge(dir).purge();
         expect(failures, isEmpty);
       });

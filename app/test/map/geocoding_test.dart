@@ -208,7 +208,7 @@ void main() {
       );
       expect(
         searchErrorMessage(GeocodingFailureKind.server),
-        'Service de recherche momentanément indisponible. Réessaie dans un instant.',
+        'Service de recherche momentanément indisponible. Réessayez dans un instant.',
       );
       expect(
         searchErrorMessage(GeocodingFailureKind.invalid),

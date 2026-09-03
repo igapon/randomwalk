@@ -192,6 +192,6 @@ class PhotonGeocodingService implements GeocodingService {
 String searchErrorMessage(GeocodingFailureKind kind) => switch (kind) {
   GeocodingFailureKind.offline => 'Recherche indisponible hors ligne.',
   GeocodingFailureKind.server =>
-    'Service de recherche momentanément indisponible. Réessaie dans un instant.',
+    'Service de recherche momentanément indisponible. Réessayez dans un instant.',
   GeocodingFailureKind.invalid => 'Réponse inattendue du service de recherche.',
 };

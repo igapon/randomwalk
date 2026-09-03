@@ -175,11 +175,25 @@ class PrefsFinalisedTripMemory implements FinalisedTripMemory {
       final json = jsonDecode(raw) as Map<String, dynamic>;
       final startedAt = DateTime.parse(json['startedAt'] as String);
       final stats = PendingCelebrationStats.tryParse(json['stats']);
-      if (stats == null) return null;
+      if (stats == null) {
+        // M5 final review, Important I1: a corrupt `stats` sub-payload used
+        // to return null WITHOUT removing the key, so `_checkPendingCelebration`
+        // (`main.dart`) early-returns on `null` and never calls
+        // `clearPendingCelebration()` — the marker then survives forever,
+        // including through a local purge that specifically targets it (see
+        // `LocalDataPurge`'s "trip-memory" step). Since a corrupt value is
+        // already treated as "nothing pending" one line below, it must also
+        // be treated as "nothing left to clear later" — remove it here,
+        // exactly like the `catch` block just below does for a payload that
+        // doesn't even parse as JSON.
+        await prefs.remove(_pendingCelebrationKey);
+        return null;
+      }
       return (startedAt, stats);
       // A corrupt value is exactly "nothing pending" — never worth crashing
       // the map screen's startup check over.
     } catch (_) {
+      await prefs.remove(_pendingCelebrationKey);
       return null;
     }
   }
@@ -189,4 +203,20 @@ class PrefsFinalisedTripMemory implements FinalisedTripMemory {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_pendingCelebrationKey);
   }
+}
+
+/// M5 final review, fix wave F1 (folds Important I1 in with Critical C1):
+/// removes both of [PrefsFinalisedTripMemory]'s `shared_preferences` keys —
+/// `finalised_trip_ids` (the last few finalised trip identities, used to
+/// reject a stale "Trajet interrompu" resurrection) and
+/// `pending_trip_celebration` (the not-yet-shown congratulations marker,
+/// carrying [PendingCelebrationStats] — real trip-derived personal data,
+/// see that class's own dartdoc). [LocalDataPurge] calls this the same way
+/// it calls [PrefsSyncStateStore.deleteFor] for the sync-state keys: a
+/// static helper next to the storage it clears, rather than local_purge.dart
+/// reaching into `shared_preferences` key names it doesn't own.
+Future<void> clearFinalisedTripMemoryPrefs() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(PrefsFinalisedTripMemory._key);
+  await prefs.remove(PrefsFinalisedTripMemory._pendingCelebrationKey);
 }

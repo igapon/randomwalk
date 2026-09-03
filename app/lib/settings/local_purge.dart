@@ -8,6 +8,7 @@ import '../exploration/edges_store.dart';
 import '../game/game_state_provider.dart';
 import '../history/trip_history_store.dart';
 import '../sync/sync_state_store.dart';
+import '../trip/finalised_trip_memory.dart';
 import '../trip/trip_controller.dart';
 
 /// French display names for [LocalDataPurge.purge]'s failure labels — what
@@ -22,6 +23,8 @@ const _kFrenchStepLabels = {
   'track': 'trace en cours',
   'trip-history': 'historique des parcours',
   'trip-snapshot': 'trajet en cours',
+  'route': 'itinéraire planifié',
+  'trip-memory': 'informations de trajet en mémoire',
   'sync-state': 'préférences de synchronisation',
 };
 
@@ -48,8 +51,9 @@ const kPurgeRefusedTripActiveMessage =
 
 /// Deletes every piece of LOCAL game data this device holds: the game
 /// journal, its periodic checkpoint, the covered-edges store, trip history,
-/// any leftover in-progress track/snapshot files — plus, when [uid] is
-/// given, that account's own sync checkpoint keys.
+/// any leftover in-progress track/snapshot/route files (and their `.tmp`
+/// write-ahead siblings), the finalised-trip/pending-celebration prefs —
+/// plus, when [uid] is given, that account's own sync checkpoint keys.
 ///
 /// **A separate, EXPLICIT step (Task 6's binding decision).** Never implied
 /// by `SyncBackend.deleteAccount()` itself (that RPC only touches the
@@ -62,12 +66,12 @@ const kPurgeRefusedTripActiveMessage =
 /// - `game/game_events.jsonl` — the append-only event journal
 ///   (`GameJournal`, `game/events.dart`), the source of truth for
 ///   coins/XP/badges/visited places/revealed cells/covered edges.
-/// - `game/game_state_checkpoint.json` — a periodic snapshot of the exact
-///   same profile data, persisted *independently* of the journal
-///   (`GameStateCheckpointStore`, `game/state_checkpoint.dart` — see its own
-///   dartdoc, flagged by Task 5 review I4: "any local purge ... MUST delete
-///   this file alongside the journal, or a deleted account's data survives
-///   in it").
+/// - `game/game_state_checkpoint.json` (plus its `.tmp` write-ahead sibling
+///   — see below) — a periodic snapshot of the exact same profile data,
+///   persisted *independently* of the journal (`GameStateCheckpointStore`,
+///   `game/state_checkpoint.dart` — see its own dartdoc, flagged by Task 5
+///   review I4: "any local purge ... MUST delete this file alongside the
+///   journal, or a deleted account's data survives in it").
 /// - `covered_edges.db` — the covered-OSM-way-id store (`EdgesStore`,
 ///   `exploration/edges_store.dart`). Cleared via [EdgesStore.clear]
 ///   (`DELETE FROM covered_edges`) rather than deleting the file outright —
@@ -100,22 +104,55 @@ const kPurgeRefusedTripActiveMessage =
 ///   acceptable given [purge] already refuses to run at all while a trip is
 ///   recording (see `runLocalPurge`'s own dartdoc), so this can only happen
 ///   if the player starts a brand-new trip after the purge completes.
-/// - `trip_snapshot.json` — the live/resumable trip state (current distance,
-///   steps, route polyline, pending landmark visits — all real coordinates)
-///   written by the tracking service (`tracking/trip_snapshot.dart`'s
-///   `FileTripSnapshotStore`, wired in `main.dart`). Important, Task 6
-///   review round 1: same directory and same category as `active_track
-///   .jsonl` (which was already purged) but was missed. Deleting this file
-///   while a trip is actively recording would corrupt that trip's live
-///   state out from under the running foreground service — see
-///   `runLocalPurge`'s own dartdoc for the refuse-while-recording guard that
-///   makes deleting it here safe.
+/// - `trip_snapshot.json` (plus its two `.tmp`/`.ui.tmp` write-ahead
+///   siblings — see below) — the live/resumable trip state (current
+///   distance, steps, route polyline, pending landmark visits — all real
+///   coordinates) written by the tracking service
+///   (`tracking/trip_snapshot.dart`'s `FileTripSnapshotStore`, wired in
+///   `main.dart`). Important, Task 6 review round 1: same directory and
+///   same category as `active_track.jsonl` (which was already purged) but
+///   was missed. Deleting this file while a trip is actively recording
+///   would corrupt that trip's live state out from under the running
+///   foreground service — see `runLocalPurge`'s own dartdoc for the
+///   refuse-while-recording guard that makes deleting it here safe.
 /// - `active_track.jsonl` — the in-progress GPS track file
 ///   (`tracking/tracking_service.dart`, `exploration/exploration_recorder
 ///   .dart`). Normally deleted by the trip-processing pipeline itself once a
 ///   trip finishes; only ever present here as a leftover from a
 ///   trip in progress or one that crashed mid-processing, but included for
 ///   completeness ("reveal/track" data per `task-6-brief.md`).
+/// - `active_route.json` (plus its `.tmp` write-ahead sibling — see below)
+///   — the planned route (`trip/active_route_store.dart`'s
+///   `FileActiveRouteStore`, wired in `main.dart`): the FULL route polyline
+///   plus the destination/departure coordinates the map screen restores at
+///   every cold start (`main.dart`'s `trip.restore()` reads it via
+///   `ActiveRouteStore.load`). **M5 final review, Critical C1**: this file
+///   was never purged at all, so a deleted account's destination pin and
+///   route line survived on disk and were re-rendered — with a "Démarrer
+///   l'itinéraire" banner — on the very next launch, even though the purge
+///   reported full success. Flagged twice by an earlier task review
+///   (`task-6-review.md`) and closed as "addressed" without actually being
+///   fixed; this is the fix.
+/// - The `.tmp` (and `trip_snapshot.json`'s extra `.ui.tmp`) write-ahead
+///   siblings of the checkpoint/snapshot/route files above. **M5 final
+///   review, Important I1**: each of those three stores writes its new
+///   content to a `<name>.tmp` (or, for the tracking-service-isolate writer
+///   of `trip_snapshot.json`, `<name>.ui.tmp`) file first and renames it
+///   over the real one (`FileActiveRouteStore.save`,
+///   `GameStateCheckpointStore._write`, `FileTripSnapshotStore.write`) — a
+///   process death between that write and the rename leaves a FULL copy of
+///   the purged content sitting under the `.tmp` name, which the
+///   corresponding `_deleteIfExists` on the real filename never touches.
+///   Same profile/route data, just under a different name.
+/// - [clearFinalisedTripMemoryPrefs] — the two `shared_preferences` keys
+///   `trip/finalised_trip_memory.dart`'s `PrefsFinalisedTripMemory` owns:
+///   `finalised_trip_ids` (recently-finalised trip identities) and
+///   `pending_trip_celebration` (the not-yet-shown congratulations marker,
+///   carrying [PendingCelebrationStats] — distance/duration/speed/profile
+///   of the last finalised trip). **M5 final review, Important I1**: this
+///   invalidates the earlier "transient UI bookkeeping, not personal"
+///   characterisation of that key — a later fix round attached real
+///   trip-derived stats to it, and it survived every previous purge round.
 /// - [PrefsSyncStateStore.deleteFor] — the deleted account's own
 ///   `sync_pushed_index::<uid>` / `sync_pushed_catchup_ids::<uid>` /
 ///   `sync_pull_cursor::<uid>` / `sync_known_skipped_lines::<uid>` prefs
@@ -173,7 +210,7 @@ class LocalDataPurge {
     );
     await step(
       'checkpoint',
-      () => _deleteIfExists(
+      () => _deleteWithTmpSiblings(
         '${appSupportDir.path}/game/game_state_checkpoint.json',
       ),
     );
@@ -181,17 +218,53 @@ class LocalDataPurge {
     await step('trip-history', () => _deleteTripHistory());
     await step(
       'trip-snapshot',
-      () => _deleteIfExists('${appSupportDir.path}/trip_snapshot.json'),
+      () => _deleteWithTmpSiblings(
+        '${appSupportDir.path}/trip_snapshot.json',
+        // `tracking_service.dart` writes this document's *other* writer
+        // (the UI isolate, at trip start) through a separate `.ui.tmp`
+        // scratch path — see `FileTripSnapshotStore.tmpSuffix`'s own
+        // dartdoc for why the two isolates can't share one.
+        extraSuffixes: const ['.ui.tmp'],
+      ),
     );
     await step(
       'track',
       () => _deleteIfExists('${appSupportDir.path}/active_track.jsonl'),
     );
+    // M5 final review, Critical C1: the planned route (destination + full
+    // polyline) — see the class dartdoc's own bullet for why this was a
+    // blind spot severe enough to resurrect a deleted account's route on
+    // the very next launch.
+    await step(
+      'route',
+      () => _deleteWithTmpSiblings('${appSupportDir.path}/active_route.json'),
+    );
+    // M5 final review, Important I1: the finalised-trip-ids/pending-
+    // celebration prefs — see the class dartdoc's own bullet.
+    await step('trip-memory', clearFinalisedTripMemoryPrefs);
     if (uid != null) {
       await step('sync-state', () => PrefsSyncStateStore.deleteFor(uid));
     }
 
     return failures;
+  }
+
+  /// Deletes [path] and its `.tmp` write-ahead sibling (the scratch file
+  /// every `.tmp`-then-rename writer in this codebase —
+  /// `FileActiveRouteStore`, `GameStateCheckpointStore`,
+  /// `FileTripSnapshotStore` — leaves behind if the process dies between
+  /// the write and the rename), plus any [extraSuffixes] a particular
+  /// document needs beyond the plain `.tmp` one. See the class dartdoc's
+  /// "M5 final review, Important I1" bullet.
+  Future<void> _deleteWithTmpSiblings(
+    String path, {
+    List<String> extraSuffixes = const [],
+  }) async {
+    await _deleteIfExists(path);
+    await _deleteIfExists('$path.tmp');
+    for (final suffix in extraSuffixes) {
+      await _deleteIfExists('$path$suffix');
+    }
   }
 
   Future<void> _clearEdges() async {
