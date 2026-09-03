@@ -24,6 +24,56 @@ class _MemoryStateStore implements SyncStateStore {
   Future<void> write(SyncCursorState state) async => _state = state;
 }
 
+/// M5 final review, Important I9: simulates a backend bug (or a proxy/tie-
+/// mishandling edge case) that returns a `nextCursor` identical to the one
+/// it was just called with, forever — the exact shape [SyncEngine]'s pull
+/// loop used to have no defence against (see `kMaxSyncPullPages`'s and
+/// [SyncReport.pullBounded]'s own dartdoc).
+class _StuckCursorBackend extends FakeSyncBackend {
+  int calls = 0;
+
+  @override
+  Future<PullPage> pullEventsSince(String? cursor) async {
+    calls++;
+    return PullPage(
+      events: [
+        GameEvent(
+          id: 'stuck-1',
+          ts: DateTime.utc(2026, 9, 1),
+          type: GameEventTypes.coinsEarned,
+          payload: const {'amount': 1},
+        ),
+      ],
+      nextCursor: 'stuck',
+    );
+  }
+}
+
+/// A backend that always advances the cursor and always has one more fresh
+/// event — i.e. one that (bug-free) never naturally exhausts. Proves the
+/// page cap stops the loop rather than the loop ever finding an empty page
+/// or a null cursor on its own.
+class _NeverEndingBackend extends FakeSyncBackend {
+  int calls = 0;
+
+  @override
+  Future<PullPage> pullEventsSince(String? cursor) async {
+    calls++;
+    final next = (int.tryParse(cursor ?? '0') ?? 0) + 1;
+    return PullPage(
+      events: [
+        GameEvent(
+          id: 'ev-$next',
+          ts: DateTime.utc(2026, 9, 1),
+          type: GameEventTypes.coinsEarned,
+          payload: const {'amount': 1},
+        ),
+      ],
+      nextCursor: '$next',
+    );
+  }
+}
+
 void main() {
   late Directory tempDir;
   var seq = 0;
@@ -311,6 +361,51 @@ void main() {
       await engine2.sync();
       expect(recomputed, 1);
     });
+  });
+
+  group('pull loop bounds (M5 final review, Important I9)', () {
+    test(
+      'a backend returning the SAME cursor twice in a row stops the loop '
+      'instead of spinning forever, and the report says so',
+      () async {
+        final journal = newJournal('a');
+        final backend = _StuckCursorBackend();
+        final engine = SyncEngine(
+          journal: journal,
+          backend: backend,
+          stateStore: _MemoryStateStore(),
+        );
+
+        final report = await engine.sync();
+
+        // The event is real and gets appended once — only the SECOND,
+        // no-progress page is what stops the loop.
+        expect(report.pulledCount, 1);
+        expect(report.pullBounded, isTrue);
+        expect(backend.calls, 2);
+        expect(await journal.readAll(), hasLength(1));
+      },
+    );
+
+    test(
+      'a backend that never runs out of pages is capped at '
+      'kMaxSyncPullPages rather than looping forever',
+      () async {
+        final journal = newJournal('a');
+        final backend = _NeverEndingBackend();
+        final engine = SyncEngine(
+          journal: journal,
+          backend: backend,
+          stateStore: _MemoryStateStore(),
+        );
+
+        final report = await engine.sync();
+
+        expect(backend.calls, kMaxSyncPullPages);
+        expect(report.pulledCount, kMaxSyncPullPages);
+        expect(report.pullBounded, isTrue);
+      },
+    );
   });
 
   group('push marker: catch-up set', () {

@@ -332,6 +332,13 @@ class _HomeShellState extends ConsumerState<HomeShell>
   ) async {
     await ref.read(tripControllerProvider).clearPendingCelebration();
     if (!mounted) return;
+    // M5 final review, Important I6: reset the tab UNDERNEATH to Carte
+    // before showing the celebration, so its single « Continuer » button
+    // (a bare `Navigator.pop()`) always surfaces the map at rest — per the
+    // 2g brief's "bouton unique « Continuer » → carte (état repos)" — no
+    // matter which tab was active when the trip finished (e.g. a walker who
+    // switched to Session to watch the distance read-out mid-trip).
+    setState(() => _tab = 0);
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => TripCelebrationScreen(

@@ -12,8 +12,8 @@ const kFogMinRegenInterval = Duration(seconds: 2);
 /// regenerated ([lastGen]), the current time ([now]), and a version
 /// counter for the revealed-cell set ([lastRevealedVersion] vs
 /// [revealedVersion] — the caller bumps this counter every time
-/// `RevealState`/`GameState.revealedCellKeys` gains new cells; this
-/// function never inspects cell sets itself).
+/// `GameState.revealedCellKeys` gains new cells; this function never
+/// inspects cell sets itself).
 ///
 /// Rules, in order:
 /// 1. Never generated yet ([lastGen] is `null`) → always regenerate (there

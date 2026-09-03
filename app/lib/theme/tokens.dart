@@ -71,20 +71,19 @@ class AppColors {
   /// above — the unselected candidates' color, at 40% opacity.
   static const hydroHex = '#3D7A8C';
 
-  /// « Terre » — the M4 Aventure tab's third landmark color, for `energy`
-  /// kind POIs (restaurants/cafés/fast-food) on the fog-of-war map: yellow
-  /// is already spent on `reveal` landmarks and hydro on `coins` ones, so
-  /// energy gets its own earth-toned accent (plan's Global Constraints:
-  /// "terre #B0552F à ajouter aux tokens"). One value for both brightnesses
-  /// — an earthy terracotta reads fine on both paper and dark backgrounds,
-  /// unlike the yellow/hydro pair which each need light/dark variants for
-  /// contrast (this tone doesn't).
+  /// « Terre » — the Aventure tab's `culture` landmark color (churches,
+  /// viewpoints, towers) on the fog-of-war map: yellow is spent on `reveal`
+  /// landmarks, so culture gets its own earth-toned accent (plan's Global
+  /// Constraints: "terre #B0552F à ajouter aux tokens"). One value for both
+  /// brightnesses — an earthy terracotta reads fine on both paper and dark
+  /// backgrounds, unlike the yellow/hydro pair which each need light/dark
+  /// variants for contrast (this tone doesn't).
+  ///
+  /// Task 2k retired the original `coins`/`energy` POI kinds this token
+  /// used to back (bank/restaurant landmarks) in favour of cultural POIs —
+  /// see `map/game_layer.dart`'s `_kPoiColorsByKind`, which now maps this
+  /// token to `PoiKind.culture` alone.
   static const terre = Color(0xFFB0552F);
-
-  /// Hex form of [terre], for the same MapLibre `addImage`-rendered diamond
-  /// glyphs the other two landmark kinds use (see
-  /// `adventure/poi_symbols.dart`).
-  static const terreHex = '#B0552F';
 }
 
 class AppRadii {

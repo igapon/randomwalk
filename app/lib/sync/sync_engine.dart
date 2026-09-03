@@ -15,8 +15,37 @@ class SyncReport {
   /// (0 if nothing new was pulled, including "we're already caught up").
   final int pulledCount;
 
-  const SyncReport({required this.pushedCount, required this.pulledCount});
+  /// True when the pull loop stopped for a reason OTHER than the backend
+  /// naturally running out of pages (an empty page, or a null cursor) —
+  /// either [kMaxSyncPullPages] was reached, or the backend returned the
+  /// SAME cursor twice in a row. M5 final review, Important I9: before this
+  /// field existed, `_runSync`'s pull loop was `while (true)` with no upper
+  /// bound at all — a backend bug (or a proxy/tie-mishandling edge case)
+  /// that ever returned a non-advancing `nextCursor` would spin forever,
+  /// hammering the network indefinitely, since `fresh` staying empty never
+  /// trips the existing "empty page" break and the cursor never becomes
+  /// null either. A correctly-implemented backend (the cursor contract is
+  /// exclusive, see `PullPage`'s dartdoc) always advances it, so this is a
+  /// defensive cap for something that should never happen against a real
+  /// server — not a normal outcome — which is exactly why it is surfaced
+  /// here rather than silently retried: a caller that logs/reports sync
+  /// health has something to alert on.
+  final bool pullBounded;
+
+  const SyncReport({
+    required this.pushedCount,
+    required this.pulledCount,
+    this.pullBounded = false,
+  });
 }
+
+/// Safety cap on how many pull pages one [SyncEngine.sync] call will ever
+/// fetch — see [SyncReport.pullBounded]'s dartdoc. Chosen generously above
+/// any real page count this app should ever see (`SupabaseBackend`'s pull
+/// page size is in the hundreds, so 50 pages is tens of thousands of
+/// events) while still bounding the worst case to a finite, small number of
+/// network round-trips rather than none at all.
+const kMaxSyncPullPages = 50;
 
 /// The M5 sync engine: reconciles the local [GameJournal] with a
 /// [SyncBackend] account, in four steps run in this fixed order every call
@@ -175,9 +204,19 @@ class SyncEngine {
     // ---- PULL + MERGE: remote events with an id the journal doesn't
     // have yet, paginated via the opaque cursor ----
     var pulledCount = 0;
+    var pullBounded = false;
     final knownIds = events.map((e) => e.id).toSet();
     var cursor = state.pullCursor;
+    var pageCount = 0;
     while (true) {
+      if (pageCount >= kMaxSyncPullPages) {
+        // See kMaxSyncPullPages's dartdoc — a defensive cap, not a normal
+        // stopping point.
+        pullBounded = true;
+        break;
+      }
+      pageCount++;
+      final previousCursor = cursor;
       final page = await backend.pullEventsSince(cursor);
       if (page.events.isEmpty) break;
 
@@ -222,13 +261,28 @@ class SyncEngine {
       // empty, which is already handled by the loop's top check — this is a
       // defensive stop, not a case the contract expects to hit.
       if (cursor == null) break;
+
+      // M5 final review, Important I9: a correct backend's cursor is
+      // exclusive, so a page that returned events always moves it forward —
+      // if it comes back IDENTICAL to what was just sent, fetching again
+      // with the same cursor would only ever reproduce the same page
+      // forever (`fresh` already empty for every id this journal has seen,
+      // so `pulledCount` would never grow either). Stop instead of spinning.
+      if (cursor == previousCursor) {
+        pullBounded = true;
+        break;
+      }
     }
 
     if (pulledCount > 0) {
       onRecompute();
     }
 
-    return SyncReport(pushedCount: pushedCount, pulledCount: pulledCount);
+    return SyncReport(
+      pushedCount: pushedCount,
+      pulledCount: pulledCount,
+      pullBounded: pullBounded,
+    );
   }
 
   /// Fix round 1 (Task 4 review I3), corrected in fix round 2 (Task 4

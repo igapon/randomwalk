@@ -320,7 +320,9 @@ List<List<double>> _closedLonLatRing(List<(double, double)> latLonPoints) => [
 ///
 /// Task 2h fixes a correctness bug (owner: "fog of war seems patchy and
 /// changes when i move the map") whose root cause was that the fog geometry
-/// was the old `fogGeoJson` (see `game/reveal.dart`'s git history):
+/// was the old `fogGeoJson` (see this project's own git history for the
+/// retired builder — `game/reveal.dart` briefly held a shrunk, unused
+/// remnant of it before being deleted outright, M5 final review):
 /// generated FOR THE CURRENT VIEWPORT (`sw`/`ne` params) and regenerated on
 /// every camera move past ~1 cell — i.e. the polygon set was a function of
 /// where the camera was pointed, not just of which cells were revealed, so
