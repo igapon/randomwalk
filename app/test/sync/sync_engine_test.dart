@@ -364,48 +364,42 @@ void main() {
   });
 
   group('pull loop bounds (M5 final review, Important I9)', () {
-    test(
-      'a backend returning the SAME cursor twice in a row stops the loop '
-      'instead of spinning forever, and the report says so',
-      () async {
-        final journal = newJournal('a');
-        final backend = _StuckCursorBackend();
-        final engine = SyncEngine(
-          journal: journal,
-          backend: backend,
-          stateStore: _MemoryStateStore(),
-        );
+    test('a backend returning the SAME cursor twice in a row stops the loop '
+        'instead of spinning forever, and the report says so', () async {
+      final journal = newJournal('a');
+      final backend = _StuckCursorBackend();
+      final engine = SyncEngine(
+        journal: journal,
+        backend: backend,
+        stateStore: _MemoryStateStore(),
+      );
 
-        final report = await engine.sync();
+      final report = await engine.sync();
 
-        // The event is real and gets appended once — only the SECOND,
-        // no-progress page is what stops the loop.
-        expect(report.pulledCount, 1);
-        expect(report.pullBounded, isTrue);
-        expect(backend.calls, 2);
-        expect(await journal.readAll(), hasLength(1));
-      },
-    );
+      // The event is real and gets appended once — only the SECOND,
+      // no-progress page is what stops the loop.
+      expect(report.pulledCount, 1);
+      expect(report.pullBounded, isTrue);
+      expect(backend.calls, 2);
+      expect(await journal.readAll(), hasLength(1));
+    });
 
-    test(
-      'a backend that never runs out of pages is capped at '
-      'kMaxSyncPullPages rather than looping forever',
-      () async {
-        final journal = newJournal('a');
-        final backend = _NeverEndingBackend();
-        final engine = SyncEngine(
-          journal: journal,
-          backend: backend,
-          stateStore: _MemoryStateStore(),
-        );
+    test('a backend that never runs out of pages is capped at '
+        'kMaxSyncPullPages rather than looping forever', () async {
+      final journal = newJournal('a');
+      final backend = _NeverEndingBackend();
+      final engine = SyncEngine(
+        journal: journal,
+        backend: backend,
+        stateStore: _MemoryStateStore(),
+      );
 
-        final report = await engine.sync();
+      final report = await engine.sync();
 
-        expect(backend.calls, kMaxSyncPullPages);
-        expect(report.pulledCount, kMaxSyncPullPages);
-        expect(report.pullBounded, isTrue);
-      },
-    );
+      expect(backend.calls, kMaxSyncPullPages);
+      expect(report.pulledCount, kMaxSyncPullPages);
+      expect(report.pullBounded, isTrue);
+    });
   });
 
   group('push marker: catch-up set', () {

@@ -176,22 +176,19 @@ void main() {
     });
 
     group('active route (M5 final review, Critical C1)', () {
-      test(
-        'deletes active_route.json — the destination + full route polyline '
-        'a deleted account left behind was otherwise re-rendered on the '
-        'very next launch',
-        () async {
-          final route = await writeFile(
-            'active_route.json',
-            jsonEncode({
-              'destination': [46.2, 6.1],
-              'profile': 'walk',
-            }),
-          );
-          await LocalDataPurge(dir).purge();
-          expect(await route.exists(), isFalse);
-        },
-      );
+      test('deletes active_route.json — the destination + full route polyline '
+          'a deleted account left behind was otherwise re-rendered on the '
+          'very next launch', () async {
+        final route = await writeFile(
+          'active_route.json',
+          jsonEncode({
+            'destination': [46.2, 6.1],
+            'profile': 'walk',
+          }),
+        );
+        await LocalDataPurge(dir).purge();
+        expect(await route.exists(), isFalse);
+      });
 
       test('is a no-op when nothing was ever planned', () async {
         final failures = await LocalDataPurge(dir).purge();
@@ -199,26 +196,23 @@ void main() {
         expect(await File('${dir.path}/active_route.json').exists(), isFalse);
       });
 
-      test(
-        'post-purge, FileActiveRouteStore.load finds nothing — the '
-        'unit-level standin for "relaunch shows no route"',
-        () async {
-          final store = FileActiveRouteStore(
-            File('${dir.path}/active_route.json'),
-          );
-          await store.save(
-            const ActiveRoute(
-              destination: (46.2, 6.1),
-              profile: RoutingProfile.walk,
-            ),
-          );
-          expect(await store.load(), isNotNull);
+      test('post-purge, FileActiveRouteStore.load finds nothing — the '
+          'unit-level standin for "relaunch shows no route"', () async {
+        final store = FileActiveRouteStore(
+          File('${dir.path}/active_route.json'),
+        );
+        await store.save(
+          const ActiveRoute(
+            destination: (46.2, 6.1),
+            profile: RoutingProfile.walk,
+          ),
+        );
+        expect(await store.load(), isNotNull);
 
-          await LocalDataPurge(dir).purge();
+        await LocalDataPurge(dir).purge();
 
-          expect(await store.load(), isNull);
-        },
-      );
+        expect(await store.load(), isNull);
+      });
     });
 
     group('.tmp write-ahead siblings (M5 final review, Important I1)', () {
@@ -251,32 +245,29 @@ void main() {
     });
 
     group('trip-memory prefs (M5 final review, Important I1)', () {
-      test(
-        'clears finalised_trip_ids and pending_trip_celebration',
-        () async {
-          final memory = PrefsFinalisedTripMemory();
-          final startedAt = DateTime.utc(2026, 8, 30, 9);
-          await memory.markFinalised(startedAt);
-          await memory.setPendingCelebration(
-            startedAt,
-            const PendingCelebrationStats(
-              distanceKm: 2.4,
-              duration: Duration(minutes: 30),
-              avgSpeedKmh: 4.8,
-              profile: RoutingProfile.walk,
-              isLoop: false,
-            ),
-          );
-          expect(await memory.wasFinalised(startedAt), isTrue);
-          expect(await memory.pendingCelebration(), isNotNull);
+      test('clears finalised_trip_ids and pending_trip_celebration', () async {
+        final memory = PrefsFinalisedTripMemory();
+        final startedAt = DateTime.utc(2026, 8, 30, 9);
+        await memory.markFinalised(startedAt);
+        await memory.setPendingCelebration(
+          startedAt,
+          const PendingCelebrationStats(
+            distanceKm: 2.4,
+            duration: Duration(minutes: 30),
+            avgSpeedKmh: 4.8,
+            profile: RoutingProfile.walk,
+            isLoop: false,
+          ),
+        );
+        expect(await memory.wasFinalised(startedAt), isTrue);
+        expect(await memory.pendingCelebration(), isNotNull);
 
-          final failures = await LocalDataPurge(dir).purge();
+        final failures = await LocalDataPurge(dir).purge();
 
-          expect(failures, isEmpty);
-          expect(await memory.wasFinalised(startedAt), isFalse);
-          expect(await memory.pendingCelebration(), isNull);
-        },
-      );
+        expect(failures, isEmpty);
+        expect(await memory.wasFinalised(startedAt), isFalse);
+        expect(await memory.pendingCelebration(), isNull);
+      });
 
       test('is a no-op when nothing was ever finalised', () async {
         final failures = await LocalDataPurge(dir).purge();
