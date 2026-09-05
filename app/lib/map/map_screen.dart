@@ -41,7 +41,6 @@ const kMapStyleUrlLight = 'https://tiles.openfreemap.org/styles/liberty';
 // OpenFreeMap's dark style — see task-12 brief: the map follows the app's
 // brightness instead of always rendering the light "liberty" style.
 const kMapStyleUrlDark = 'https://tiles.openfreemap.org/styles/dark';
-const kMapAttribution = 'OpenFreeMap © OpenMapTiles, Data from OpenStreetMap';
 
 /// Image ids registered once via [MapLibreMapController.addImage] — see
 /// [_registerWaymarkIcons]. "A" (departure) is the contour variant, "B"
@@ -385,7 +384,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
     try {
       await _gameLayer.install(c, brightness: Theme.of(context).brightness);
       await _gameLayer.setVisible(c, _gameLayerEnabled);
-    } catch (_) {
+    } catch (e) {
+      // Owner device QA 2026-09-05 ("pas de fog") taught us a silent catch
+      // here makes the failure undiagnosable — keep the never-crash contract
+      // but say WHY in the log (visible via `adb logcat` on a debug build).
+      debugPrint('GameLayer install failed on MapScreen: $e');
       // Game never blocks the tool: a style/layer failure just means no fog
       // is drawn this session, not a crash.
     }
@@ -1912,7 +1915,13 @@ class MapScreenState extends ConsumerState<MapScreen> {
               ),
               myLocationEnabled: _myLocationEnabled,
               myLocationTrackingMode: MyLocationTrackingMode.none,
+              // Owner decision (2026-09-05): no attribution UI on the map —
+              // the full credit lives in Réglages → « À propos des données »
+              // (AboutDataTile). maplibre_gl 0.27 has no off switch for the
+              // native (i) button, so it is pushed off-screen, the
+              // package-sanctioned workaround for exactly this.
               attributionButtonPosition: AttributionButtonPosition.bottomLeft,
+              attributionButtonMargins: const Point(-9999, -9999),
               onMapCreated: _onMapCreated,
               // addImage/addSymbol must wait for the style to finish loading
               // (see maplibre_map.dart's onStyleLoadedCallback doc).
@@ -1965,11 +1974,11 @@ class MapScreenState extends ConsumerState<MapScreen> {
                       _WizardExitButton(onPressed: widget.onExitToWizard!),
                       const SizedBox(height: 6),
                     ],
-                    // A row of its own above the bottom banner (not
-                    // overlapping it, e.g. the full-width "Enregistrer" pill) —
-                    // see task-8 brief point 7.
-                    const MapAttribution(),
-                    const SizedBox(height: 6),
+                    // No on-map attribution text any more (owner decision,
+                    // 2026-09-05: it collided with the « Accueil » chip and
+                    // duplicated Réglages → « À propos des données », which
+                    // carries the full OpenStreetMap/OpenFreeMap/Valhalla
+                    // credit — see `AboutDataTile`).
                     bottomBanner,
                   ],
                 ),
@@ -2610,7 +2619,7 @@ class RecenterButton extends StatelessWidget {
 /// Diamond/losange iconography matching the app's waymark identity: filled
 /// when the layer is showing, outlined when hidden — the same filled/
 /// outline convention [WaymarkDiamond] already uses for the A/B route
-/// markers. Public, like [RecenterButton]/[MapAttribution], so it can be
+/// markers. Public, like [RecenterButton], so it can be
 /// pumped directly in a widget test — `MapScreen` itself owns a real
 /// `MapLibreMapController` and cannot be (see this file's own doc comment
 /// on why).
@@ -2699,27 +2708,6 @@ class _ResultBanner extends StatelessWidget {
   }
 }
 
-/// Small, semi-transparent data-source credit — required by both
-/// OpenFreeMap's and OpenStreetMap's usage terms. Sits in its own row above
-/// the bottom banner (see the `Column` in [MapScreenState.build]) rather
-/// than literally overlapping it, so it never collides with the full-width
-/// "Enregistrer" pill. The fuller "OpenStreetMap © contributors (ODbL) ·
-/// OpenFreeMap · Valhalla" explanation lives in Settings → "À propos des
-/// données" (see `AboutDataTile`), reachable independently of the map.
-/// Public (not `_`-prefixed) so it can be pumped in isolation — see
-/// `map_screen_widgets_test.dart`.
-class MapAttribution extends StatelessWidget {
-  const MapAttribution({super.key});
-
-  @override
-  Widget build(BuildContext context) => Text(
-    kMapAttribution,
-    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
-    ),
-  );
-}
-
 /// Task 2i: the discreet "Accueil" affordance — see
 /// [MapScreen.onExitToWizard]'s doc comment. A plain text button, not a
 /// pill/FAB: this is a way *out*, not an action to draw the eye the way the
@@ -2730,15 +2718,25 @@ class _WizardExitButton extends StatelessWidget {
   final VoidCallback onPressed;
 
   @override
-  Widget build(BuildContext context) => TextButton.icon(
-    onPressed: onPressed,
-    icon: const Icon(Icons.arrow_back, size: 16),
-    label: const Text('Accueil'),
-    style: TextButton.styleFrom(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      visualDensity: VisualDensity.compact,
-    ),
-  );
+  Widget build(BuildContext context) {
+    // A translucent surface chip behind the label: as a bare TextButton the
+    // ink-on-map text was illegible over busy streets (owner device QA,
+    // 2026-09-05). Still deliberately NOT the yellow pill treatment — this
+    // stays a way out, not a call to action.
+    final scheme = Theme.of(context).colorScheme;
+    return TextButton.icon(
+      onPressed: onPressed,
+      icon: const Icon(Icons.arrow_back, size: 16),
+      label: const Text('Accueil'),
+      style: TextButton.styleFrom(
+        backgroundColor: scheme.surface.withValues(alpha: 0.88),
+        foregroundColor: scheme.onSurface,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        visualDensity: VisualDensity.compact,
+        shape: const StadiumBorder(),
+      ),
+    );
+  }
 }
 
 /// Idle, no route planned: the plain one-tap "Enregistrer" pill — free

@@ -214,29 +214,6 @@ void main() {
     });
   });
 
-  group('MapAttribution — task-8 point 7', () {
-    testWidgets('shows the OpenFreeMap/OpenStreetMap credit text', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: MapAttribution())),
-      );
-
-      expect(find.text(kMapAttribution), findsOneWidget);
-    });
-
-    testWidgets('renders semi-transparent, not fully opaque', (tester) async {
-      await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: MapAttribution())),
-      );
-
-      final text = tester.widget<Text>(find.text(kMapAttribution));
-      final alpha = text.style?.color?.a;
-      expect(alpha, isNotNull);
-      expect(alpha, lessThan(1.0));
-    });
-  });
-
   group(
     'PlanModeSegmentedButton — task 7: 4-segment narrow-phone overflow',
     () {

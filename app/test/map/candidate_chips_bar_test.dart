@@ -95,8 +95,10 @@ void main() {
         ]),
       );
 
-      expect(find.textContaining('5,0 km · ~67 min'), findsOneWidget);
-      expect(find.textContaining('5,6 km · ~75 min'), findsOneWidget);
+      expect(find.textContaining('5,0 km'), findsOneWidget);
+      expect(find.textContaining('~67 min'), findsOneWidget);
+      expect(find.textContaining('5,6 km'), findsOneWidget);
+      expect(find.textContaining('~75 min'), findsOneWidget);
     });
 
     testWidgets('shows a signed gap badge only for the off-target candidate', (
@@ -126,7 +128,7 @@ void main() {
         onSelect: (i) => selected = i,
       );
 
-      await tester.tap(find.textContaining('5,6 km · ~75 min'));
+      await tester.tap(find.textContaining('5,6 km'));
       expect(selected, 1);
     });
 
@@ -143,11 +145,11 @@ void main() {
         expect(
           find.descendant(
             of: find.byKey(const Key('candidateChipsRow')),
-            matching: find.text('Autres propositions'),
+            matching: find.text('Autres\npropositions'),
           ),
           findsOneWidget,
         );
-        await tester.tap(find.text('Autres propositions'));
+        await tester.tap(find.text('Autres\npropositions'));
         expect(otherTapped, isTrue);
       },
     );
@@ -164,7 +166,7 @@ void main() {
       expect(
         find.descendant(
           of: find.byKey(const Key('candidateChipsRow')),
-          matching: find.text('Autres propositions'),
+          matching: find.text('Autres\npropositions'),
         ),
         findsNothing,
       );
@@ -181,7 +183,7 @@ void main() {
         kind: PlanKind.toDestination,
       );
 
-      expect(find.text('Autres propositions'), findsOneWidget);
+      expect(find.text('Autres\npropositions'), findsOneWidget);
     });
 
     testWidgets(
@@ -194,7 +196,7 @@ void main() {
           kind: PlanKind.loop,
         );
 
-        expect(find.text('Autres propositions'), findsOneWidget);
+        expect(find.text('Autres\npropositions'), findsOneWidget);
       },
     );
 
@@ -286,7 +288,7 @@ void main() {
       await tester.drag(find.byType(ListView), const Offset(-1000, 0));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('Autres propositions'), findsOneWidget);
+      expect(find.text('Autres\npropositions'), findsOneWidget);
     });
   });
 }

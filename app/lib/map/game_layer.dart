@@ -27,7 +27,7 @@
 /// already followed for `FogLayer` alone.
 library;
 
-import 'package:flutter/material.dart' show Brightness;
+import 'package:flutter/material.dart' show Brightness, debugPrint;
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../adventure/fog_regen.dart';
@@ -161,10 +161,11 @@ class GameLayer {
     try {
       await controller.setLayerVisibility(FogLayerIds.fillLayer, value);
       await controller.setLayerVisibility(FogLayerIds.haloLayer, value);
-    } catch (_) {
+    } catch (e) {
       // Best-effort, like every other layer call here — a style not fully
       // installed yet just means the toggle takes effect on the next
       // install/refresh instead of this frame.
+      debugPrint('GameLayer setVisible($value) failed: $e');
     }
     if (!value) await _removeLandmarkSymbols(controller);
   }
@@ -277,9 +278,10 @@ class GameLayer {
             ),
         ]);
       }
-    } catch (_) {
+    } catch (e) {
       // Landmarks are decoration on top of the fog — never worth crashing
       // the screen over.
+      debugPrint('GameLayer landmark redraw failed: $e');
     }
   }
 

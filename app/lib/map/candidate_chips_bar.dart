@@ -161,6 +161,12 @@ class _CandidateChip extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Two lines rather than one 'X km · ~Y min' string: on a
+                // 128 px chip that single line overflows into '4,7 km …' at
+                // ordinary font scales (owner device QA, 2026-09-05), hiding
+                // the duration entirely — the piece of information duration
+                // mode was asked for. Distance and duration each get a line
+                // that fits at any realistic scale instead.
                 Row(
                   children: [
                     Icon(
@@ -173,12 +179,22 @@ class _CandidateChip extends StatelessWidget {
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
-                        '$km km · ~$minutes min',
+                        '$km km',
                         style: theme.textTheme.labelLarge,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: Text(
+                    '~$minutes min',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 if (badge != null) ...[
                   const SizedBox(height: 4),
@@ -216,17 +232,21 @@ class _OtherProposalsChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 96,
+    // Same width as the candidate chips: at 96 px « propositions » no longer
+    // fit on one line and wrapped mid-word ('Autres pr/oposition/s' — owner
+    // device QA, 2026-09-05). 128 px fits each word whole on its own line.
+    width: 128,
     child: OutlinedButton(
       onPressed: onTap,
       style: OutlinedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 8),
       ),
       child: const Text(
-        'Autres propositions',
+        'Autres\npropositions',
         textAlign: TextAlign.center,
-        maxLines: 3,
-        style: TextStyle(fontSize: 11),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 12),
       ),
     ),
   );

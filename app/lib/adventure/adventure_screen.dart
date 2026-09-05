@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show Point;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -153,9 +154,12 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
           brightness: Theme.of(context).brightness,
         );
       }
-    } catch (_) {
+    } catch (e) {
       // Game never blocks the tool: a style/layer failure just means no fog
-      // is drawn this session, not a crash.
+      // is drawn this session, not a crash — but the failure must be
+      // readable in `adb logcat` (owner device QA 2026-09-05: silent
+      // catches here made a no-fog session undiagnosable).
+      debugPrint('GameLayer install failed on AdventureScreen: $e');
     }
     _refreshMapContent();
   }
@@ -240,7 +244,11 @@ class _AdventureScreenState extends ConsumerState<AdventureScreen> {
             trackCameraPosition: true,
             myLocationEnabled: _myLocationEnabled,
             myLocationTrackingMode: MyLocationTrackingMode.none,
+            // Owner decision (2026-09-05): no attribution UI on the map —
+            // credit lives in Réglages → « À propos des données ». Same
+            // off-screen workaround as MapScreen (no off switch in 0.27).
             attributionButtonPosition: AttributionButtonPosition.bottomLeft,
+            attributionButtonMargins: const Point(-9999, -9999),
             onMapCreated: _onMapCreated,
             onStyleLoadedCallback: _onStyleLoaded,
             onCameraIdle: _refreshMapContent,

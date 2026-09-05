@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show debugPrint;
+
 /// Default throttle: the fog GeoJSON is regenerated at most once per this
 /// interval, regardless of how often the revealed set changes underneath
 /// it. Purely defensive — `fog_geometry.dart`'s builder is already bounded
@@ -5,6 +7,7 @@
 /// events are already rate-limited by real walking speed and the reducer's
 /// own batching — but a hard floor costs nothing and protects against any
 /// future caller that fires revealed-set updates faster than that.
+
 const kFogMinRegenInterval = Duration(seconds: 2);
 
 /// Pure decision function for the fog-of-war layer: whether the fog
@@ -121,9 +124,12 @@ class SingleFlightCoalescer<P, C> {
     _regenCallCount++;
     try {
       await regen(payload, version, target);
-    } catch (_) {
+    } catch (e) {
       // A failing regen must not wedge future requests — best-effort,
       // same contract every caller's own regen closure already follows.
+      // Logged (owner device QA 2026-09-05: a silently-failing fog regen
+      // rendered a no-fog session undiagnosable).
+      debugPrint('fog regen failed (version $version): $e');
     } finally {
       _inFlight = false;
       _inFlightVersion = null;
